@@ -2123,6 +2123,7 @@ def get_today_schedule():
                 "away_pitcher_id": away_pitcher_id,
                 "home_pitcher_id": home_pitcher_id,
                 "venue": game.get("venue", {}).get("name", "Unknown"),
+                "venue_id": game.get("venue", {}).get("id"),
                 "game_time": game.get("gameDate", ""),
                 "away_confirmed_count": away_confirmed,
                 "home_confirmed_count": home_confirmed,
@@ -5461,100 +5462,201 @@ def render_card_grid(df: pd.DataFrame, max_cards: int = 24, columns: int = 3, ti
 ROOF_PARKS = {
     "TB": "CLOSED DOME", "MIA": "RETRACTABLE", "HOU": "RETRACTABLE",
     "TEX": "RETRACTABLE", "MIL": "RETRACTABLE", "ARI": "RETRACTABLE",
-    "TOR": "RETRACTABLE", "SEA": "RETRACTABLE", "MIN": "OPEN AIR",
+    "TOR": "RETRACTABLE", "SEA": "RETRACTABLE",
+}
+
+# Venue aliases used only to join MLB schedule names to MLB Statcast park-factor rows.
+VENUE_ALIASES = {
+    "great american ball park": "great american ball park",
+    "oracle park": "oracle park",
+    "uniqlo field at dodger stadium": "dodger stadium",
+    "dodger stadium": "dodger stadium",
+    "rate field": "rate field",
+    "guaranteed rate field": "rate field",
+    "loanDepot park": "loandepot park",
+    "loandepot park": "loandepot park",
+    "sutter health park": "sutter health park",
+    "t-mobile park": "t-mobile park",
 }
 
 
-def weather_boost_display(score: float) -> tuple[str, str]:
+def _norm_venue(value: str) -> str:
+    s = normalize_name(value)
+    return VENUE_ALIASES.get(s, s)
+
+
+@st.cache_data(ttl=21600)
+def fetch_verified_statcast_park_factors() -> dict:
+    """Load official MLB Statcast park factors.
+
+    Returns venue -> metadata. No made-up fallback is produced. If MLB does not
+    expose a usable table at runtime, the weather tab shows Park Factor N/A and
+    will not claim a park boost.
+    """
+    urls = [
+        f"https://baseballsavant.mlb.com/leaderboard/statcast-park-factors?type=year&year={CURRENT_SEASON}&batSide=All&condition=All&rolling=3",
+        f"https://baseballsavant.mlb.com/leaderboard/statcast-park-factors?type=year&year={CURRENT_SEASON-1}&batSide=All&condition=All&rolling=3",
+        "https://baseballsavant.mlb.com/leaderboard/statcast-park-factors",
+    ]
+    headers = {"User-Agent": "Mozilla/5.0"}
+    for url in urls:
+        try:
+            html = requests.get(url, headers=headers, timeout=12).text
+            tables = pd.read_html(StringIO(html))
+        except Exception:
+            continue
+        for table in tables:
+            df = flatten_columns(table.copy())
+            cols = {str(c).strip().lower(): c for c in df.columns}
+            venue_col = next((orig for low, orig in cols.items() if low in {"venue", "park", "stadium"} or "venue" in low), None)
+            hr_col = next((orig for low, orig in cols.items() if low in {"hr", "home runs", "home run"} or low.endswith(" hr") or "home run" in low), None)
+            year_col = next((orig for low, orig in cols.items() if low == "year"), None)
+            if venue_col is None or hr_col is None:
+                continue
+            out = {}
+            for _, row in df.iterrows():
+                venue = str(row.get(venue_col, "")).strip()
+                if not venue or venue.lower() == "nan":
+                    continue
+                raw = safe_float(row.get(hr_col), None)
+                if raw is None:
+                    continue
+                # Statcast park factors use 100 as league average.
+                index = raw if raw > 5 else raw * 100.0
+                out[_norm_venue(venue)] = {
+                    "hr_index": round(index, 1),
+                    "factor": round(index / 100.0, 3),
+                    "source": "MLB Statcast",
+                    "year": safe_int(row.get(year_col), CURRENT_SEASON) if year_col else CURRENT_SEASON,
+                }
+            if out:
+                return out
+    return {}
+
+
+@st.cache_data(ttl=21600)
+def fetch_mlb_venue_field_info(venue_id) -> dict:
+    """Read MLB venue field information when MLB exposes it.
+
+    Dimensions are displayed for context only. They are not converted into a
+    fake boost because wall height, altitude and asymmetric geometry matter.
+    """
+    try:
+        vid = int(venue_id)
+    except Exception:
+        return {}
+    try:
+        resp = requests.get(
+            f"https://statsapi.mlb.com/api/v1/venues/{vid}",
+            params={"hydrate": "location,fieldInfo"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        venues = (resp.json() or {}).get("venues", []) or []
+        if not venues:
+            return {}
+        venue = venues[0]
+        fi = venue.get("fieldInfo") or {}
+        dims = []
+        labels = [
+            ("leftLine", "LF line"), ("left", "LF"), ("leftCenter", "LCF"),
+            ("center", "CF"), ("rightCenter", "RCF"), ("right", "RF"),
+            ("rightLine", "RF line"),
+        ]
+        for key, label in labels:
+            val = fi.get(key)
+            if val not in (None, ""):
+                dims.append(f"{label} {val}")
+        return {"dimensions": " • ".join(dims), "capacity": venue.get("capacity")}
+    except Exception:
+        return {}
+
+
+def weather_boost_display(score, confidence: str = "") -> tuple[str, str]:
+    if score is None or pd.isna(score):
+        return "No verified boost", "bf-grade-yellow"
     delta = round(safe_float(score, 50.0) - 50.0, 1)
-    if delta >= 12:
-        return f"+{delta:.1f} HR boost", "bf-grade-green"
+    if delta >= 10:
+        return f"+{delta:.1f} BF environment edge", "bf-grade-green"
     if delta >= 3:
-        return f"+{delta:.1f} slight boost", "bf-grade-green"
-    if delta <= -12:
-        return f"{delta:.1f} HR suppression", "bf-grade-red"
+        return f"+{delta:.1f} slight edge", "bf-grade-green"
+    if delta <= -10:
+        return f"{delta:.1f} BF environment suppression", "bf-grade-red"
     if delta <= -3:
         return f"{delta:.1f} slight suppression", "bf-grade-red"
     return f"{delta:+.1f} neutral", "bf-grade-yellow"
 
 
 def stadium_wind_svg(wind_deg, wind_mph: float, grade: str) -> str:
-    """Compact baseball-diamond visual. Arrow points toward where the wind travels."""
+    """Compass wind visual only.
+
+    The diamond is not assumed to be aligned to the actual field. The arrow
+    therefore shows geographic wind travel, not 'out to CF' unless a verified
+    field orientation is available.
+    """
     try:
         travel_deg = (float(wind_deg) + 180.0) % 360.0
     except Exception:
         travel_deg = 0.0
-    accent = "#35d07f" if grade in {"HR FRIENDLY", "FAVORABLE"} else ("#ffd166" if grade == "MIXED" else "#ff6666")
+    accent = "#35d07f" if grade in {"HR FRIENDLY", "FAVORABLE"} else ("#ffd166" if grade in {"MIXED", "UNVERIFIED"} else "#ff6666")
     mph = int(round(safe_float(wind_mph, 0.0)))
     return (
-        f'<svg width="112" height="92" viewBox="0 0 112 92" role="img" aria-label="stadium wind diagram">'
-        f'<path d="M56 5 C76 8 93 22 101 43 L56 88 L11 43 C19 22 36 8 56 5Z" fill="#17213b" stroke="{accent}" stroke-opacity=".7"/>'
-        '<path d="M56 76 L28 48 L56 20 L84 48 Z" fill="none" stroke="#7d8fb8" stroke-opacity=".55"/>'
-        '<circle cx="56" cy="48" r="15" fill="#2c68d7" stroke="#79a7ff" stroke-opacity=".65"/>'
-        f'<g transform="rotate({travel_deg:.1f} 56 48)"><path d="M56 61 L56 37 M56 37 L48 45 M56 37 L64 45" stroke="white" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></g>'
-        f'<text x="56" y="89" text-anchor="middle" fill="#dfe8ff" font-size="10" font-weight="800">{mph} MPH</text>'
+        f'<svg width="112" height="98" viewBox="0 0 112 98" role="img" aria-label="compass wind diagram">'
+        f'<path d="M56 8 C76 11 93 25 101 46 L56 91 L11 46 C19 25 36 11 56 8Z" fill="#17213b" stroke="{accent}" stroke-opacity=".7"/>'
+        '<text x="56" y="10" text-anchor="middle" fill="#9fb0d0" font-size="8" font-weight="800">N</text>'
+        '<path d="M56 79 L28 51 L56 23 L84 51 Z" fill="none" stroke="#7d8fb8" stroke-opacity=".55"/>'
+        '<circle cx="56" cy="51" r="15" fill="#2c68d7" stroke="#79a7ff" stroke-opacity=".65"/>'
+        f'<g transform="rotate({travel_deg:.1f} 56 51)"><path d="M56 64 L56 40 M56 40 L48 48 M56 40 L64 48" stroke="white" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></g>'
+        f'<text x="56" y="97" text-anchor="middle" fill="#dfe8ff" font-size="10" font-weight="800">{mph} MPH</text>'
         '</svg>'
     )
 
 
 def render_weather_stadium_cards(weather_board: pd.DataFrame):
-    """Render stadium weather cards as HTML, never as a Markdown code block."""
     if weather_board is None or weather_board.empty:
         return
-
     cards = []
     for _, row in weather_board.iterrows():
-        grade = str(row.get("Environment Grade", "MIXED"))
+        grade = str(row.get("Environment Grade", "UNVERIFIED"))
         cls = grade.lower().replace(" ", "-")
-        grade_cls = (
-            "bf-grade-green" if grade in {"HR FRIENDLY", "FAVORABLE"}
-            else "bf-grade-yellow" if grade == "MIXED"
-            else "bf-grade-red"
-        )
-        boost_text, boost_cls = weather_boost_display(row.get("HR Environment", 50))
+        grade_cls = "bf-grade-green" if grade in {"HR FRIENDLY", "FAVORABLE"} else "bf-grade-yellow" if grade in {"MIXED", "UNVERIFIED", "ROOF STATUS NEEDED"} else "bf-grade-red"
+        boost_text, boost_cls = weather_boost_display(row.get("HR Environment"))
         svg = stadium_wind_svg(row.get("Wind Degrees"), row.get("Wind MPH", 0), grade)
         roof = str(row.get("Roof", "OPEN AIR"))
-        note = (
-            f"Wind from {escape(str(row.get('Wind Direction', '—')))} "
-            f"({escape(str(row.get('Wind Bearing', '—')))}) • "
-            f"Park factor {safe_float(row.get('Park Factor'), 1.0):.2f} • {escape(roof)}"
-        )
-
-        # Keep every tag left-aligned. Leading spaces after a blank line can make
-        # Streamlit/Markdown display the HTML as a code block instead of rendering it.
+        park_factor = row.get("Park Factor")
+        park_text = "N/A" if park_factor is None or pd.isna(park_factor) else f"{safe_float(park_factor):.2f}"
+        note_bits = [
+            f"Forecast source: {escape(str(row.get('Weather Source', 'Open-Meteo')))}",
+            f"forecast hour {escape(str(row.get('Forecast Hour', '—')))}",
+            f"wind from {escape(str(row.get('Wind Direction', '—')))} ({escape(str(row.get('Wind Bearing', '—')))})",
+        ]
+        if str(row.get("Dimensions", "")).strip():
+            note_bits.append(escape(str(row.get("Dimensions"))))
+        if str(row.get("Model Note", "")).strip():
+            note_bits.append(escape(str(row.get("Model Note"))))
+        note = " • ".join(note_bits)
+        score = row.get("HR Environment")
+        score_text = "N/A" if score is None or pd.isna(score) else f"{safe_float(score):.0f}"
         card = (
-            f'<div class="bf-weather-card {cls}">'
-            f'<div class="bf-weather-head">'
-            f'<div><div class="bf-weather-game">{escape(str(row.get("Game", "")))}</div>'
-            f'<div class="bf-weather-venue">{escape(str(row.get("Venue", "")))}</div></div>'
-            f'<div class="bf-weather-time">{escape(str(row.get("First Pitch", "")))}</div>'
-            f'</div>'
-            f'<div class="bf-weather-body">'
-            f'<div class="bf-weather-stats">'
+            f'<div class="bf-weather-card {cls}"><div class="bf-weather-head">'
+            f'<div><div class="bf-weather-game">{escape(str(row.get("Game", "")))}</div><div class="bf-weather-venue">{escape(str(row.get("Venue", "")))}</div></div>'
+            f'<div class="bf-weather-time">{escape(str(row.get("First Pitch", "")))}</div></div>'
+            f'<div class="bf-weather-body"><div class="bf-weather-stats">'
             f'<div class="bf-weather-stat"><b>{escape(str(row.get("Condition", "—")))}</b><span>Condition</span></div>'
-            f'<div class="bf-weather-stat"><b>{safe_float(row.get("Temp °F"), 0):.0f}°F</b><span>Temperature</span></div>'
-            f'<div class="bf-weather-stat"><b>{safe_float(row.get("Precip %"), 0):.0f}%</b><span>Precip</span></div>'
-            f'<div class="bf-weather-stat"><b>{safe_float(row.get("Humidity %"), 0):.0f}%</b><span>Humidity</span></div>'
-            f'<div class="bf-weather-stat"><b>{safe_float(row.get("Park Factor"), 1):.2f}</b><span>Park Factor</span></div>'
-            f'<div class="bf-weather-stat"><b>{escape(roof)}</b><span>Roof</span></div>'
-            f'</div>'
-            f'<div class="bf-weather-visual">{svg}'
-            f'<div class="bf-weather-score">{safe_float(row.get("HR Environment"), 50):.0f}</div>'
-            f'<div class="bf-weather-grade {grade_cls}">{escape(grade)}</div>'
-            f'<div class="bf-weather-boost {boost_cls}">{escape(boost_text)}</div>'
-            f'</div>'
-            f'</div>'
-            f'<div class="bf-weather-note">{note}</div>'
-            f'</div>'
+            f'<div class="bf-weather-stat"><b>{_display_value(row.get("Temp °F"), "—")}°F</b><span>Game-time forecast</span></div>'
+            f'<div class="bf-weather-stat"><b>{_display_value(row.get("Precip %"), "—")}%</b><span>Precip</span></div>'
+            f'<div class="bf-weather-stat"><b>{_display_value(row.get("Humidity %"), "—")}%</b><span>Humidity</span></div>'
+            f'<div class="bf-weather-stat"><b>{park_text}</b><span>MLB Statcast HR factor</span></div>'
+            f'<div class="bf-weather-stat"><b>{escape(roof)}</b><span>Roof</span></div></div>'
+            f'<div class="bf-weather-visual">{svg}<div class="bf-weather-score">{score_text}</div>'
+            f'<div class="bf-weather-grade {grade_cls}">{escape(grade)}</div><div class="bf-weather-boost {boost_cls}">{escape(boost_text)}</div></div></div>'
+            f'<div class="bf-weather-note">{note}</div></div>'
         )
         cards.append(card)
-
-    weather_html = '<div class="bf-weather-grid">' + ''.join(cards) + '</div>'
-    st.markdown(weather_html, unsafe_allow_html=True)
+    st.markdown('<div class="bf-weather-grid">' + ''.join(cards) + '</div>', unsafe_allow_html=True)
 
 
 def wind_compass_direction(degrees) -> str:
-    """Convert meteorological wind bearing to a 16-point compass label."""
     try:
         deg = float(degrees) % 360
     except Exception:
@@ -5564,185 +5666,120 @@ def wind_compass_direction(degrees) -> str:
 
 
 def weather_code_label(code) -> str:
-    try:
-        code = int(code)
-    except Exception:
-        return "Unknown"
-    labels = {
-        0: "Clear", 1: "Mostly clear", 2: "Partly cloudy", 3: "Overcast",
-        45: "Fog", 48: "Rime fog", 51: "Light drizzle", 53: "Drizzle",
-        55: "Heavy drizzle", 61: "Light rain", 63: "Rain", 65: "Heavy rain",
-        71: "Light snow", 73: "Snow", 75: "Heavy snow", 80: "Rain showers",
-        81: "Showers", 82: "Heavy showers", 95: "Thunderstorms",
-        96: "Storms / hail", 99: "Severe storms / hail",
-    }
+    try: code = int(code)
+    except Exception: return "Unknown"
+    labels = {0:"Clear",1:"Mostly clear",2:"Partly cloudy",3:"Overcast",45:"Fog",48:"Rime fog",51:"Light drizzle",53:"Drizzle",55:"Heavy drizzle",61:"Light rain",63:"Rain",65:"Heavy rain",71:"Light snow",73:"Snow",75:"Heavy snow",80:"Rain showers",81:"Showers",82:"Heavy showers",95:"Thunderstorms",96:"Storms / hail",99:"Severe storms / hail"}
     return labels.get(code, f"Code {code}")
 
 
-def compute_hr_environment_score(home_team: str, temp_f: float, wind_mph: float, humidity: float, precip_prob: float) -> tuple[float, str]:
-    """Today-only park/weather score. Wind bearing is displayed separately because
-    exact in/out direction requires park-specific field orientation."""
-    park_factor = safe_float(PARK_FACTORS.get(home_team, 1.0), 1.0)
-    score = 50.0 + (park_factor - 1.0) * 125.0
+def compute_hr_environment_score(park_factor, temp_f, roof: str, roof_status_verified: bool) -> tuple[float|None, str, str]:
+    """Conservative, transparent environment score.
 
-    if temp_f >= 90:
-        score += 14
-    elif temp_f >= 82:
-        score += 10
-    elif temp_f >= 75:
-        score += 6
-    elif temp_f <= 50:
-        score -= 12
-    elif temp_f <= 60:
-        score -= 6
-
-    if wind_mph >= 18:
-        score += 8
-    elif wind_mph >= 12:
-        score += 5
-    elif wind_mph >= 8:
-        score += 2
-
-    if humidity >= 75 and temp_f >= 75:
-        score += 2
-    if precip_prob >= 60:
-        score -= 8
-    elif precip_prob >= 35:
-        score -= 4
-
+    Official Statcast HR park factor is the anchor. Temperature gets a small,
+    bounded carry adjustment. Wind is NOT scored without verified field
+    orientation. Retractable parks remain ungraded until roof status is known.
+    """
+    if park_factor is None or pd.isna(park_factor):
+        return None, "UNVERIFIED", "No official Statcast HR park factor was available; no boost assigned."
+    roof = str(roof or "OPEN AIR").upper()
+    if roof == "RETRACTABLE" and not roof_status_verified:
+        return None, "ROOF STATUS NEEDED", "Retractable roof status is unknown; outdoor weather was not applied."
+    score = 50.0 + (safe_float(park_factor, 1.0) - 1.0) * 125.0
+    if roof != "CLOSED DOME":
+        if temp_f >= 90: score += 6
+        elif temp_f >= 82: score += 4
+        elif temp_f >= 75: score += 2
+        elif temp_f <= 50: score -= 6
+        elif temp_f <= 60: score -= 4
     score = round(clip(score, 0, 100), 1)
-    if score >= 72:
-        label = "HR FRIENDLY"
-    elif score >= 58:
-        label = "FAVORABLE"
-    elif score >= 43:
-        label = "MIXED"
-    else:
-        label = "SUPPRESSIVE"
-    return score, label
+    label = "HR FRIENDLY" if score >= 65 else "FAVORABLE" if score >= 56 else "MIXED" if score >= 44 else "SUPPRESSIVE"
+    note = "Wind shown for research only; no wind boost is scored without verified field orientation."
+    if roof == "CLOSED DOME":
+        note = "Closed dome: outdoor temperature and wind are excluded from the grade."
+    return score, label, note
 
 
-@st.cache_data(ttl=900)
-def fetch_game_time_weather(home_team_abbr: str, game_time_value: str) -> dict:
-    """Fetch hourly weather nearest scheduled first pitch, including wind bearing."""
+@st.cache_data(ttl=600)
+def fetch_game_time_weather(home_team_abbr: str, game_time_value: str, venue_name: str = "", venue_id=None) -> dict:
+    """Fetch the hourly forecast nearest first pitch in the PARK'S local time.
+
+    The former implementation compared Eastern Time to local API timestamps,
+    which could select the wrong forecast hour for Central, Mountain and Pacific
+    parks. This version uses Open-Meteo's returned IANA timezone.
+    """
     coords = PARK_COORDS.get(home_team_abbr)
-    fallback = {
-        "TempF": 72.0, "FeelsLikeF": 72.0, "Humidity%": 50.0,
-        "Precip%": 0.0, "WindMPH": 7.0, "WindDeg": None,
-        "WindDir": "—", "Condition": "Unavailable", "ForecastTime": "—",
-    }
+    unavailable = {"available": False, "TempF": None, "FeelsLikeF": None, "Humidity%": None, "Precip%": None, "WindMPH": None, "WindDeg": None, "WindDir": "—", "Condition": "Unavailable", "ForecastTime": "—", "WeatherSource": "Open-Meteo"}
     if not coords:
-        score, label = compute_hr_environment_score(home_team_abbr, 72.0, 7.0, 50.0, 0.0)
-        return {**fallback, "ParkFactor": PARK_FACTORS.get(home_team_abbr, 1.0), "HREnvironment": score, "HREnvironmentLabel": label}
-
+        return unavailable
     lat, lon = coords
     try:
         params = {
-            "latitude": lat,
-            "longitude": lon,
+            "latitude": lat, "longitude": lon,
             "hourly": "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation_probability,weather_code,wind_speed_10m,wind_direction_10m",
             "current": "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_direction_10m",
-            "temperature_unit": "fahrenheit",
-            "wind_speed_unit": "mph",
-            "timezone": "auto",
-            "forecast_days": 2,
+            "temperature_unit": "fahrenheit", "wind_speed_unit": "mph",
+            "timezone": "auto", "forecast_days": 2,
         }
         resp = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=8)
         resp.raise_for_status()
         data = resp.json()
+        local_tz_name = data.get("timezone") or "UTC"
+        local_tz = ZoneInfo(local_tz_name)
         hourly = data.get("hourly", {}) or {}
         times = hourly.get("time", []) or []
-
         target_et = parse_game_time_et(game_time_value)
+        target_local = target_et.astimezone(local_tz).replace(tzinfo=None) if target_et is not None else None
         chosen_idx = None
-        if times and target_et is not None:
-            # Open-Meteo timestamps are local to the park due to timezone=auto.
-            # Nearest clock-hour is enough for game-time research.
-            target_naive = target_et.replace(tzinfo=None)
-            candidates = []
+        if times and target_local is not None:
+            candidates=[]
             for i, raw in enumerate(times):
-                try:
-                    dt = datetime.fromisoformat(str(raw))
-                    candidates.append((abs((dt - target_naive).total_seconds()), i))
-                except Exception:
-                    continue
-            if candidates:
-                chosen_idx = min(candidates)[1]
-
-        if chosen_idx is None and times:
-            chosen_idx = 0
-
-        if chosen_idx is not None:
-            def hv(name, default=None):
-                vals = hourly.get(name, []) or []
-                return vals[chosen_idx] if chosen_idx < len(vals) else default
-            temp = safe_float(hv("temperature_2m"), 72.0)
-            feels = safe_float(hv("apparent_temperature"), temp)
-            humidity = safe_float(hv("relative_humidity_2m"), 50.0)
-            precip = safe_float(hv("precipitation_probability"), 0.0)
-            wind = safe_float(hv("wind_speed_10m"), 7.0)
-            wind_deg = hv("wind_direction_10m")
-            code = hv("weather_code")
-            forecast_time = times[chosen_idx]
-        else:
-            current = data.get("current", {}) or {}
-            temp = safe_float(current.get("temperature_2m"), 72.0)
-            feels = safe_float(current.get("apparent_temperature"), temp)
-            humidity = safe_float(current.get("relative_humidity_2m"), 50.0)
-            precip = 0.0
-            wind = safe_float(current.get("wind_speed_10m"), 7.0)
-            wind_deg = current.get("wind_direction_10m")
-            code = current.get("weather_code")
-            forecast_time = current.get("time", "—")
-
-        score, label = compute_hr_environment_score(home_team_abbr, temp, wind, humidity, precip)
-        return {
-            "TempF": round(temp, 1),
-            "FeelsLikeF": round(feels, 1),
-            "Humidity%": round(humidity, 1),
-            "Precip%": round(precip, 1),
-            "WindMPH": round(wind, 1),
-            "WindDeg": round(safe_float(wind_deg, 0.0), 0) if wind_deg is not None else None,
-            "WindDir": wind_compass_direction(wind_deg),
-            "Condition": weather_code_label(code),
-            "ForecastTime": str(forecast_time),
-            "ParkFactor": PARK_FACTORS.get(home_team_abbr, 1.0),
-            "HREnvironment": score,
-            "HREnvironmentLabel": label,
-        }
+                try: candidates.append((abs((datetime.fromisoformat(str(raw)) - target_local).total_seconds()), i))
+                except Exception: pass
+            if candidates: chosen_idx=min(candidates)[1]
+        if chosen_idx is None:
+            return unavailable
+        def hv(name, default=None):
+            vals=hourly.get(name,[]) or []
+            return vals[chosen_idx] if chosen_idx < len(vals) else default
+        temp=safe_float(hv("temperature_2m"), None)
+        feels=safe_float(hv("apparent_temperature"), temp)
+        humidity=safe_float(hv("relative_humidity_2m"), None)
+        precip=safe_float(hv("precipitation_probability"), None)
+        wind=safe_float(hv("wind_speed_10m"), None)
+        wind_deg=hv("wind_direction_10m")
+        code=hv("weather_code")
+        return {"available": True, "TempF": round(temp,1) if temp is not None else None, "FeelsLikeF": round(feels,1) if feels is not None else None, "Humidity%": round(humidity,1) if humidity is not None else None, "Precip%": round(precip,1) if precip is not None else None, "WindMPH": round(wind,1) if wind is not None else None, "WindDeg": round(safe_float(wind_deg,0.0),0) if wind_deg is not None else None, "WindDir": wind_compass_direction(wind_deg), "Condition": weather_code_label(code), "ForecastTime": f"{times[chosen_idx]} {local_tz_name}", "WeatherSource": "Open-Meteo hourly forecast", "Timezone": local_tz_name}
     except Exception:
-        score, label = compute_hr_environment_score(home_team_abbr, 72.0, 7.0, 50.0, 0.0)
-        return {**fallback, "ParkFactor": PARK_FACTORS.get(home_team_abbr, 1.0), "HREnvironment": score, "HREnvironmentLabel": label}
+        return unavailable
 
 
 def build_live_weather_board(schedule_rows: list[dict]) -> pd.DataFrame:
-    rows = []
+    park_map = fetch_verified_statcast_park_factors()
+    rows=[]
     for game in sort_schedule_rows(schedule_rows):
-        home = team_abbr(game.get("home_team", ""))
-        wx = fetch_game_time_weather(home, game.get("game_time", ""))
+        home=team_abbr(game.get("home_team", ""))
+        venue=str(game.get("venue", ""))
+        wx=fetch_game_time_weather(home, game.get("game_time", ""), venue, game.get("venue_id"))
+        park=park_map.get(_norm_venue(venue), {})
+        park_factor=park.get("factor")
+        roof=ROOF_PARKS.get(home, "OPEN AIR")
+        # Roof status is only considered verified for fixed closed domes. MLB's
+        # schedule feed generally does not expose same-day retractable roof state.
+        roof_verified = roof == "CLOSED DOME" or roof == "OPEN AIR"
+        score, label, model_note = compute_hr_environment_score(park_factor, wx.get("TempF"), roof, roof_verified)
+        venue_info=fetch_mlb_venue_field_info(game.get("venue_id"))
         rows.append({
-            "Game": game.get("game_key", ""),
-            "First Pitch": format_game_time_et(game.get("game_time", "")),
-            "Venue": game.get("venue", ""),
-            "Condition": wx.get("Condition"),
-            "Temp °F": wx.get("TempF"),
-            "Feels °F": wx.get("FeelsLikeF"),
-            "Humidity %": wx.get("Humidity%"),
-            "Precip %": wx.get("Precip%"),
-            "Wind MPH": wx.get("WindMPH"),
-            "Wind Degrees": wx.get("WindDeg"),
-            "Wind Direction": wx.get("WindDir"),
-            "Wind Bearing": f"{int(wx['WindDeg'])}°" if wx.get("WindDeg") is not None else "—",
-            "Roof": ROOF_PARKS.get(home, "OPEN AIR"),
-            "Park Factor": wx.get("ParkFactor"),
-            "HR Environment": wx.get("HREnvironment"),
-            "Environment Grade": wx.get("HREnvironmentLabel"),
-            "Forecast Hour": wx.get("ForecastTime"),
+            "Game": game.get("game_key", ""), "First Pitch": format_game_time_et(game.get("game_time", "")), "Venue": venue,
+            "Condition": wx.get("Condition"), "Temp °F": wx.get("TempF"), "Feels °F": wx.get("FeelsLikeF"), "Humidity %": wx.get("Humidity%"), "Precip %": wx.get("Precip%"),
+            "Wind MPH": wx.get("WindMPH"), "Wind Degrees": wx.get("WindDeg"), "Wind Direction": wx.get("WindDir"), "Wind Bearing": f"{int(wx['WindDeg'])}°" if wx.get("WindDeg") is not None else "—",
+            "Roof": roof, "Park Factor": park_factor, "Park Factor Source": park.get("source", "Unavailable"), "Park Factor Year": park.get("year"),
+            "HR Environment": score, "Environment Grade": label, "Forecast Hour": wx.get("ForecastTime"), "Weather Source": wx.get("WeatherSource"),
+            "Dimensions": venue_info.get("dimensions", ""), "Model Note": model_note,
         })
-    if not rows:
-        return pd.DataFrame()
-    return pd.DataFrame(rows).sort_values(["HR Environment", "Park Factor"], ascending=[False, False]).reset_index(drop=True)
-
+    if not rows: return pd.DataFrame()
+    df=pd.DataFrame(rows)
+    df["_sort"] = pd.to_numeric(df["HR Environment"], errors="coerce").fillna(-1)
+    return df.sort_values(["_sort", "Game"], ascending=[False, True]).drop(columns=["_sort"]).reset_index(drop=True)
 
 def _current_lineup_for_team(game_pk: int, side: str) -> list[dict]:
     hitters = extract_boxscore_team_hitters(game_pk, side)
