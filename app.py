@@ -5573,19 +5573,23 @@ def fetch_mlb_venue_field_info(venue_id) -> dict:
 
 
 def weather_boost_display(score, confidence: str = "") -> tuple[str, str]:
+    """Display a BF environment edge without pretending it is a literal HR probability.
+
+    The value is a 0-100 environment index centered at 50. It is not a betting
+    percentage and is always labeled as a BF environment edge/suppression.
+    """
     if score is None or pd.isna(score):
-        return "No verified boost", "bf-grade-yellow"
+        return "DATA PENDING", "bf-grade-yellow"
     delta = round(safe_float(score, 50.0) - 50.0, 1)
     if delta >= 10:
         return f"+{delta:.1f} BF environment edge", "bf-grade-green"
     if delta >= 3:
-        return f"+{delta:.1f} slight edge", "bf-grade-green"
+        return f"+{delta:.1f} slight BF edge", "bf-grade-green"
     if delta <= -10:
         return f"{delta:.1f} BF environment suppression", "bf-grade-red"
     if delta <= -3:
-        return f"{delta:.1f} slight suppression", "bf-grade-red"
-    return f"{delta:+.1f} neutral", "bf-grade-yellow"
-
+        return f"{delta:.1f} slight BF suppression", "bf-grade-red"
+    return f"{delta:+.1f} neutral environment", "bf-grade-yellow"
 
 def stadium_wind_svg(wind_deg, wind_mph: float, grade: str) -> str:
     """Compass wind visual only.
@@ -5617,18 +5621,22 @@ def render_weather_stadium_cards(weather_board: pd.DataFrame):
         return
     cards = []
     for _, row in weather_board.iterrows():
-        grade = str(row.get("Environment Grade", "UNVERIFIED"))
-        cls = grade.lower().replace(" ", "-")
-        grade_cls = "bf-grade-green" if grade in {"HR FRIENDLY", "FAVORABLE"} else "bf-grade-yellow" if grade in {"MIXED", "UNVERIFIED", "ROOF STATUS NEEDED"} else "bf-grade-red"
+        grade = str(row.get("Environment Grade", "MIXED"))
+        cls_grade = grade if grade in {"HR FRIENDLY", "FAVORABLE", "MIXED", "SUPPRESSIVE"} else "MIXED"
+        cls = cls_grade.lower().replace(" ", "-")
+        grade_cls = "bf-grade-green" if grade in {"HR FRIENDLY", "FAVORABLE"} else "bf-grade-yellow" if grade in {"MIXED", "ROOF CHECK"} else "bf-grade-red"
         boost_text, boost_cls = weather_boost_display(row.get("HR Environment"))
-        svg = stadium_wind_svg(row.get("Wind Degrees"), row.get("Wind MPH", 0), grade)
+        svg = stadium_wind_svg(row.get("Wind Degrees"), row.get("Wind MPH", 0), cls_grade)
         roof = str(row.get("Roof", "OPEN AIR"))
-        park_factor = row.get("Park Factor")
-        park_text = "N/A" if park_factor is None or pd.isna(park_factor) else f"{safe_float(park_factor):.2f}"
+        park_grade = str(row.get("BF Park Grade", "NEUTRAL"))
+        rank_value = row.get("Today's Park Rank")
+        rank_text = f"#{safe_int(rank_value)}" if rank_value is not None and not pd.isna(rank_value) else "PENDING"
+        confidence = str(row.get("Park Data Confidence", "BF BASELINE"))
         note_bits = [
-            f"Forecast source: {escape(str(row.get('Weather Source', 'Open-Meteo')))}",
+            f"Weather: {escape(str(row.get('Weather Source', 'Open-Meteo hourly forecast')))}",
             f"forecast hour {escape(str(row.get('Forecast Hour', '—')))}",
             f"wind from {escape(str(row.get('Wind Direction', '—')))} ({escape(str(row.get('Wind Bearing', '—')))})",
+            f"park model: {escape(str(row.get('Park Factor Source', 'BF configured baseline')))}",
         ]
         if str(row.get("Dimensions", "")).strip():
             note_bits.append(escape(str(row.get("Dimensions"))))
@@ -5636,7 +5644,7 @@ def render_weather_stadium_cards(weather_board: pd.DataFrame):
             note_bits.append(escape(str(row.get("Model Note"))))
         note = " • ".join(note_bits)
         score = row.get("HR Environment")
-        score_text = "N/A" if score is None or pd.isna(score) else f"{safe_float(score):.0f}"
+        score_text = "PENDING" if score is None or pd.isna(score) else f"{safe_float(score):.0f}"
         card = (
             f'<div class="bf-weather-card {cls}"><div class="bf-weather-head">'
             f'<div><div class="bf-weather-game">{escape(str(row.get("Game", "")))}</div><div class="bf-weather-venue">{escape(str(row.get("Venue", "")))}</div></div>'
@@ -5646,15 +5654,16 @@ def render_weather_stadium_cards(weather_board: pd.DataFrame):
             f'<div class="bf-weather-stat"><b>{_display_value(row.get("Temp °F"), "—")}°F</b><span>Game-time forecast</span></div>'
             f'<div class="bf-weather-stat"><b>{_display_value(row.get("Precip %"), "—")}%</b><span>Precip</span></div>'
             f'<div class="bf-weather-stat"><b>{_display_value(row.get("Humidity %"), "—")}%</b><span>Humidity</span></div>'
-            f'<div class="bf-weather-stat"><b>{park_text}</b><span>MLB Statcast HR factor</span></div>'
-            f'<div class="bf-weather-stat"><b>{escape(roof)}</b><span>Roof</span></div></div>'
+            f'<div class="bf-weather-stat"><b>{escape(park_grade)}</b><span>BF Park Grade</span></div>'
+            f'<div class="bf-weather-stat"><b>{rank_text}</b><span>Today&apos;s Park Rank</span></div>'
+            f'<div class="bf-weather-stat"><b>{escape(roof)}</b><span>Roof</span></div>'
+            f'<div class="bf-weather-stat"><b>{escape(confidence)}</b><span>Park Data</span></div></div>'
             f'<div class="bf-weather-visual">{svg}<div class="bf-weather-score">{score_text}</div>'
             f'<div class="bf-weather-grade {grade_cls}">{escape(grade)}</div><div class="bf-weather-boost {boost_cls}">{escape(boost_text)}</div></div></div>'
             f'<div class="bf-weather-note">{note}</div></div>'
         )
         cards.append(card)
     st.markdown('<div class="bf-weather-grid">' + ''.join(cards) + '</div>', unsafe_allow_html=True)
-
 
 def wind_compass_direction(degrees) -> str:
     try:
@@ -5672,30 +5681,53 @@ def weather_code_label(code) -> str:
     return labels.get(code, f"Code {code}")
 
 
-def compute_hr_environment_score(park_factor, temp_f, roof: str, roof_status_verified: bool) -> tuple[float|None, str, str]:
-    """Conservative, transparent environment score.
+def compute_hr_environment_score(
+    park_factor,
+    temp_f,
+    roof: str,
+    roof_status_verified: bool,
+    park_source: str = "BF configured baseline",
+) -> tuple[float|None, str, str]:
+    """Transparent BF park-and-weather environment index.
 
-    Official Statcast HR park factor is the anchor. Temperature gets a small,
-    bounded carry adjustment. Wind is NOT scored without verified field
-    orientation. Retractable parks remain ungraded until roof status is known.
+    The index is centered at 50 and is not a literal home-run probability.
+    Park factor is the anchor. Temperature is applied only for open-air parks
+    or when a retractable roof is verified open. Wind is displayed but not
+    scored because field orientation is not verified in this build.
     """
     if park_factor is None or pd.isna(park_factor):
-        return None, "UNVERIFIED", "No official Statcast HR park factor was available; no boost assigned."
+        return None, "DATA PENDING", "No park baseline is available; no environment claim was made."
+
     roof = str(roof or "OPEN AIR").upper()
-    if roof == "RETRACTABLE" and not roof_status_verified:
-        return None, "ROOF STATUS NEEDED", "Retractable roof status is unknown; outdoor weather was not applied."
     score = 50.0 + (safe_float(park_factor, 1.0) - 1.0) * 125.0
-    if roof != "CLOSED DOME":
-        if temp_f >= 90: score += 6
-        elif temp_f >= 82: score += 4
-        elif temp_f >= 75: score += 2
-        elif temp_f <= 50: score -= 6
-        elif temp_f <= 60: score -= 4
+    weather_applied = True
+
+    if roof == "CLOSED DOME":
+        weather_applied = False
+    elif roof == "RETRACTABLE" and not roof_status_verified:
+        weather_applied = False
+
+    if weather_applied and temp_f is not None and not pd.isna(temp_f):
+        if temp_f >= 90:
+            score += 6
+        elif temp_f >= 82:
+            score += 4
+        elif temp_f >= 75:
+            score += 2
+        elif temp_f <= 50:
+            score -= 6
+        elif temp_f <= 60:
+            score -= 4
+
     score = round(clip(score, 0, 100), 1)
     label = "HR FRIENDLY" if score >= 65 else "FAVORABLE" if score >= 56 else "MIXED" if score >= 44 else "SUPPRESSIVE"
-    note = "Wind shown for research only; no wind boost is scored without verified field orientation."
+
     if roof == "CLOSED DOME":
-        note = "Closed dome: outdoor temperature and wind are excluded from the grade."
+        note = f"Closed dome: grade uses the {park_source} only; outdoor weather and wind are excluded."
+    elif roof == "RETRACTABLE" and not roof_status_verified:
+        note = f"Roof status unconfirmed: grade uses the {park_source} only; outdoor weather and wind are excluded."
+    else:
+        note = f"Grade uses the {park_source} plus game-time temperature. Wind is shown but not scored without verified field orientation."
     return score, label, note
 
 
@@ -5754,32 +5786,73 @@ def fetch_game_time_weather(home_team_abbr: str, game_time_value: str, venue_nam
 
 
 def build_live_weather_board(schedule_rows: list[dict]) -> pd.DataFrame:
-    park_map = fetch_verified_statcast_park_factors()
-    rows=[]
+    official_map = fetch_verified_statcast_park_factors()
+    rows = []
     for game in sort_schedule_rows(schedule_rows):
-        home=team_abbr(game.get("home_team", ""))
-        venue=str(game.get("venue", ""))
-        wx=fetch_game_time_weather(home, game.get("game_time", ""), venue, game.get("venue_id"))
-        park=park_map.get(_norm_venue(venue), {})
-        park_factor=park.get("factor")
-        roof=ROOF_PARKS.get(home, "OPEN AIR")
-        # Roof status is only considered verified for fixed closed domes. MLB's
-        # schedule feed generally does not expose same-day retractable roof state.
-        roof_verified = roof == "CLOSED DOME" or roof == "OPEN AIR"
-        score, label, model_note = compute_hr_environment_score(park_factor, wx.get("TempF"), roof, roof_verified)
-        venue_info=fetch_mlb_venue_field_info(game.get("venue_id"))
+        home = team_abbr(game.get("home_team", ""))
+        venue = str(game.get("venue", ""))
+        wx = fetch_game_time_weather(home, game.get("game_time", ""), venue, game.get("venue_id"))
+        official = official_map.get(_norm_venue(venue), {})
+
+        if official.get("factor") is not None:
+            park_factor = official.get("factor")
+            park_source = f"MLB Statcast {official.get('year', CURRENT_SEASON)}"
+            park_confidence = "OFFICIAL"
+        else:
+            park_factor = PARK_FACTORS.get(home)
+            park_source = "BF configured park baseline"
+            park_confidence = "BF BASELINE"
+
+        roof = ROOF_PARKS.get(home, "OPEN AIR")
+        roof_verified = roof in {"CLOSED DOME", "OPEN AIR"}
+        score, label, model_note = compute_hr_environment_score(
+            park_factor,
+            wx.get("TempF"),
+            roof,
+            roof_verified,
+            park_source,
+        )
+        venue_info = fetch_mlb_venue_field_info(game.get("venue_id"))
+        park_grade = (
+            "ELITE" if safe_float(park_factor, 1.0) >= 1.08 else
+            "FAVORABLE" if safe_float(park_factor, 1.0) >= 1.03 else
+            "NEUTRAL" if safe_float(park_factor, 1.0) >= 0.98 else
+            "SUPPRESSIVE"
+        ) if park_factor is not None else "PENDING"
+
         rows.append({
-            "Game": game.get("game_key", ""), "First Pitch": format_game_time_et(game.get("game_time", "")), "Venue": venue,
-            "Condition": wx.get("Condition"), "Temp °F": wx.get("TempF"), "Feels °F": wx.get("FeelsLikeF"), "Humidity %": wx.get("Humidity%"), "Precip %": wx.get("Precip%"),
-            "Wind MPH": wx.get("WindMPH"), "Wind Degrees": wx.get("WindDeg"), "Wind Direction": wx.get("WindDir"), "Wind Bearing": f"{int(wx['WindDeg'])}°" if wx.get("WindDeg") is not None else "—",
-            "Roof": roof, "Park Factor": park_factor, "Park Factor Source": park.get("source", "Unavailable"), "Park Factor Year": park.get("year"),
-            "HR Environment": score, "Environment Grade": label, "Forecast Hour": wx.get("ForecastTime"), "Weather Source": wx.get("WeatherSource"),
-            "Dimensions": venue_info.get("dimensions", ""), "Model Note": model_note,
+            "Game": game.get("game_key", ""),
+            "First Pitch": format_game_time_et(game.get("game_time", "")),
+            "Venue": venue,
+            "Condition": wx.get("Condition"),
+            "Temp °F": wx.get("TempF"),
+            "Feels °F": wx.get("FeelsLikeF"),
+            "Humidity %": wx.get("Humidity%"),
+            "Precip %": wx.get("Precip%"),
+            "Wind MPH": wx.get("WindMPH"),
+            "Wind Degrees": wx.get("WindDeg"),
+            "Wind Direction": wx.get("WindDir"),
+            "Wind Bearing": f"{int(wx['WindDeg'])}°" if wx.get("WindDeg") is not None else "—",
+            "Roof": roof,
+            "Park Factor": park_factor,
+            "Park Factor Source": park_source,
+            "Park Data Confidence": park_confidence,
+            "BF Park Grade": park_grade,
+            "HR Environment": score,
+            "Environment Grade": label,
+            "Forecast Hour": wx.get("ForecastTime"),
+            "Weather Source": wx.get("WeatherSource"),
+            "Dimensions": venue_info.get("dimensions", ""),
+            "Model Note": model_note,
         })
-    if not rows: return pd.DataFrame()
-    df=pd.DataFrame(rows)
+
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
     df["_sort"] = pd.to_numeric(df["HR Environment"], errors="coerce").fillna(-1)
-    return df.sort_values(["_sort", "Game"], ascending=[False, True]).drop(columns=["_sort"]).reset_index(drop=True)
+    df = df.sort_values(["_sort", "Game"], ascending=[False, True]).drop(columns=["_sort"]).reset_index(drop=True)
+    df["Today's Park Rank"] = range(1, len(df) + 1)
+    return df
 
 def _current_lineup_for_team(game_pk: int, side: str) -> list[dict]:
     hitters = extract_boxscore_team_hitters(game_pk, side)
@@ -6266,7 +6339,7 @@ with tabs[8]:
 
 with tabs[9]:
     st.subheader("Live Weather")
-    st.caption("Game-time forecast with temperature, humidity, precipitation, wind speed, compass direction, wind bearing, park factor, and a today-only HR environment grade.")
+    st.caption("Game-time forecast plus a transparent BF park-and-weather environment index. The index is not a home-run probability; official MLB Statcast factors are used when available, otherwise the card is clearly labeled BF BASELINE.")
 
     ww1, ww2 = st.columns([1, 3])
     with ww1:
