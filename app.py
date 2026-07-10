@@ -405,6 +405,169 @@ hr { margin-top: .38rem !important; margin-bottom: .38rem !important; }
  .bf-combo-leg{grid-template-columns:1fr}
  .bf-combo-footer{grid-template-columns:repeat(2,1fr)}
 }
+
+
+/* BF DATA MOBILE COMPACT PATCH — desktop styling remains unchanged */
+@media (max-width: 760px) {
+  .block-container {
+    padding: .28rem .42rem 1.25rem !important;
+    max-width: 100% !important;
+  }
+  .bf-hero {
+    padding: 8px 9px !important;
+    margin-bottom: 5px !important;
+    border-radius: 11px !important;
+  }
+  .bf-title { font-size: 1.18rem !important; line-height: 1.05 !important; }
+  .bf-subtitle { font-size: .66rem !important; line-height: 1.18 !important; }
+  .bf-kicker { font-size: .53rem !important; letter-spacing: .11em !important; }
+
+  h1 { font-size: 1.34rem !important; margin:.28rem 0 !important; }
+  h2 { font-size: 1.08rem !important; margin:.30rem 0 !important; }
+  h3 { font-size: .91rem !important; margin:.30rem 0 !important; }
+  p, .stMarkdown { line-height: 1.22 !important; }
+  .stCaption, [data-testid="stCaptionContainer"] { font-size: .66rem !important; }
+
+  [data-testid="stMetric"] {
+    padding: 5px 7px !important;
+    border-radius: 9px !important;
+    min-height: 52px !important;
+  }
+  [data-testid="stMetricLabel"] p { font-size: .60rem !important; }
+  [data-testid="stMetricValue"] { font-size: .90rem !important; }
+
+  .stTabs [data-baseweb="tab-list"] {
+    gap: 4px !important;
+    overflow-x: auto !important;
+    flex-wrap: nowrap !important;
+    scrollbar-width: none !important;
+  }
+  .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar { display:none !important; }
+  .stTabs [data-baseweb="tab"] {
+    flex: 0 0 auto !important;
+    min-height: 30px !important;
+    padding: 4px 7px !important;
+    font-size: .66rem !important;
+    border-radius: 999px !important;
+  }
+
+  .stButton > button, .stDownloadButton > button {
+    min-height: 31px !important;
+    padding: .27rem .55rem !important;
+    font-size: .68rem !important;
+    border-radius: 8px !important;
+  }
+  div[data-testid="stExpander"] { border-radius: 9px !important; }
+  div[data-testid="stExpander"] summary {
+    min-height: 34px !important;
+    padding: 5px 8px !important;
+    font-size: .70rem !important;
+  }
+  div[data-testid="stDataFrame"] { border-radius: 9px !important; }
+
+  .bf-chip, .bf-key-chip {
+    font-size: .54rem !important;
+    padding: 2px 5px !important;
+    gap: 3px !important;
+  }
+  .bf-key { gap:3px !important; margin:1px 0 !important; }
+  .bf-mini-row { gap:3px !important; margin:2px 0 !important; }
+  .bf-signal-line { font-size:.65rem !important; line-height:1.15 !important; }
+
+  /* Combo cards: compact, single-screen-first phone layout */
+  .bf-combo-summary { gap:4px !important; margin:3px 0 7px !important; }
+  .bf-combo-card {
+    border-radius: 10px !important;
+    margin: 5px 0 8px !important;
+  }
+  .bf-combo-head {
+    display:grid !important;
+    grid-template-columns:minmax(0,1fr) auto !important;
+    gap:6px !important;
+    align-items:start !important;
+    padding:7px 8px !important;
+  }
+  .bf-combo-kicker { font-size:.49rem !important; letter-spacing:.08em !important; }
+  .bf-combo-title {
+    font-size:.73rem !important;
+    line-height:1.13 !important;
+    margin-top:2px !important;
+    overflow-wrap:anywhere !important;
+  }
+  .bf-combo-status {
+    font-size:.49rem !important;
+    padding:3px 5px !important;
+    max-width:106px !important;
+    white-space:normal !important;
+    text-align:center !important;
+    line-height:1.05 !important;
+  }
+  .bf-combo-legs { padding:4px 7px !important; }
+  .bf-combo-leg {
+    display:grid !important;
+    grid-template-columns:minmax(0,1fr) !important;
+    gap:3px !important;
+    padding:5px 0 !important;
+  }
+  .bf-combo-player { font-size:.72rem !important; line-height:1.08 !important; }
+  .bf-combo-sub { font-size:.52rem !important; line-height:1.12 !important; margin-top:1px !important; }
+  .bf-combo-leg-metrics { gap:3px !important; }
+  .bf-combo-leg-metrics span {
+    font-size:.49rem !important;
+    padding:2px 4px !important;
+  }
+  .bf-combo-reason {
+    font-size:.53rem !important;
+    line-height:1.12 !important;
+    display:-webkit-box !important;
+    -webkit-line-clamp:2 !important;
+    -webkit-box-orient:vertical !important;
+    overflow:hidden !important;
+  }
+  .bf-combo-footer { grid-template-columns:repeat(4,minmax(0,1fr)) !important; }
+  .bf-combo-footer div { padding:5px 2px !important; }
+  .bf-combo-footer b { font-size:.72rem !important; }
+  .bf-combo-footer span { font-size:.43rem !important; letter-spacing:.04em !important; }
+
+  /* Weather and matchup cards also shrink for phone */
+  .bf-weather-grid { gap:6px !important; margin:5px 0 8px !important; }
+  .bf-weather-card { border-radius:10px !important; }
+  .bf-weather-head { padding:7px 8px !important; }
+  .bf-weather-game { font-size:.75rem !important; }
+  .bf-weather-venue,.bf-weather-time { font-size:.53rem !important; }
+  .bf-weather-body { padding:7px 8px !important; gap:6px !important; }
+  .bf-weather-stats { gap:4px !important; }
+  .bf-weather-stat { padding:5px 3px !important; border-radius:7px !important; }
+  .bf-weather-stat b { font-size:.70rem !important; }
+  .bf-weather-stat span { font-size:.43rem !important; }
+  .bf-weather-score { font-size:1.08rem !important; }
+  .bf-weather-grade { font-size:.49rem !important; }
+  .bf-weather-boost { font-size:.53rem !important; }
+  .bf-weather-note { padding:0 8px 7px !important; font-size:.51rem !important; }
+
+  .bf-quick-row {
+    grid-template-columns:minmax(0,1fr) minmax(84px,.72fr) repeat(3,38px) !important;
+    gap:4px !important;
+    padding:5px 6px !important;
+    margin-bottom:4px !important;
+    border-radius:8px !important;
+  }
+  .bf-quick-player { font-size:.69rem !important; }
+  .bf-quick-sub { font-size:.50rem !important; }
+  .bf-mini-score { padding:2px !important; border-radius:6px !important; }
+  .bf-mini-score b { font-size:.40rem !important; }
+  .bf-mini-score span { font-size:.64rem !important; }
+}
+
+@media (max-width: 430px) {
+  .block-container { padding-left:.30rem !important; padding-right:.30rem !important; }
+  .bf-combo-footer { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
+  .bf-combo-footer div:nth-child(2) { border-right:0 !important; }
+  .bf-weather-stats { grid-template-columns:repeat(3,minmax(0,1fr)) !important; }
+  .bf-quick-row { grid-template-columns:minmax(0,1fr) 34px 34px 34px !important; }
+  .bf-quick-row > :nth-child(2) { display:none !important; }
+}
+
 </style>
 <div class="bf-hero">
     <div class="bf-kicker">BF DATA PRO LAB</div>
