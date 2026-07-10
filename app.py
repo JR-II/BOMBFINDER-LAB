@@ -345,6 +345,32 @@ hr { margin-top: .38rem !important; margin-bottom: .38rem !important; }
 .bf-bvp-grid{grid-template-columns:repeat(auto-fit,minmax(82px,1fr)) !important;}
 @media(max-width:640px){.bf-bvp-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}.bf-pitch-note{font-size:.46rem !important;}}
 
+
+
+/* BF DATA STADIUM WEATHER CARDS */
+.bf-weather-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:8px 0 14px 0;}
+.bf-weather-card{border:1px solid rgba(255,255,255,.13);border-radius:14px;overflow:hidden;background:#0c1016;box-shadow:0 8px 24px rgba(0,0,0,.16);}
+.bf-weather-card.hr-friendly{border-color:rgba(53,208,127,.72);background:linear-gradient(135deg,rgba(53,208,127,.16),#0c1016 62%);}
+.bf-weather-card.favorable{border-color:rgba(167,220,84,.60);background:linear-gradient(135deg,rgba(167,220,84,.12),#0c1016 62%);}
+.bf-weather-card.mixed{border-color:rgba(255,209,102,.62);background:linear-gradient(135deg,rgba(255,209,102,.14),#0c1016 62%);}
+.bf-weather-card.suppressive{border-color:rgba(255,85,85,.58);background:linear-gradient(135deg,rgba(255,85,85,.12),#0c1016 62%);}
+.bf-weather-head{display:flex;justify-content:space-between;gap:10px;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,.08);align-items:flex-start;}
+.bf-weather-game{font-weight:950;font-size:.96rem;color:#fff;}
+.bf-weather-venue{font-size:.70rem;color:#b9a1ff;margin-top:3px;}
+.bf-weather-time{font-size:.70rem;color:#aab4c4;white-space:nowrap;}
+.bf-weather-body{display:grid;grid-template-columns:1.2fr .8fr;gap:10px;padding:10px 12px;align-items:center;}
+.bf-weather-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;}
+.bf-weather-stat{background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08);border-radius:9px;padding:7px 6px;text-align:center;}
+.bf-weather-stat b{display:block;color:#fff;font-size:.90rem;line-height:1.05;}
+.bf-weather-stat span{display:block;color:#8f9aaa;font-size:.54rem;letter-spacing:.09em;text-transform:uppercase;margin-top:3px;}
+.bf-weather-visual{text-align:center;}
+.bf-weather-score{font-size:1.55rem;font-weight:950;line-height:1;color:#fff;}
+.bf-weather-grade{font-size:.62rem;font-weight:950;letter-spacing:.09em;margin-top:4px;}
+.bf-weather-boost{font-size:.70rem;font-weight:900;margin-top:5px;}
+.bf-weather-note{padding:0 12px 10px 12px;color:#aeb7c5;font-size:.68rem;line-height:1.25;}
+.bf-grade-green{color:#35d07f}.bf-grade-yellow{color:#ffd166}.bf-grade-red{color:#ff6b6b}
+@media(max-width:900px){.bf-weather-grid{grid-template-columns:1fr}.bf-weather-body{grid-template-columns:1.15fr .85fr}}
+@media(max-width:520px){.bf-weather-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.bf-weather-body{grid-template-columns:1fr}.bf-weather-visual{order:-1}}
 </style>
 <div class="bf-hero">
     <div class="bf-kicker">BF DATA PRO LAB</div>
@@ -5431,6 +5457,85 @@ def render_card_grid(df: pd.DataFrame, max_cards: int = 24, columns: int = 3, ti
 # BF DATA LIVE OPERATIONS
 # =========================
 
+
+ROOF_PARKS = {
+    "TB": "CLOSED DOME", "MIA": "RETRACTABLE", "HOU": "RETRACTABLE",
+    "TEX": "RETRACTABLE", "MIL": "RETRACTABLE", "ARI": "RETRACTABLE",
+    "TOR": "RETRACTABLE", "SEA": "RETRACTABLE", "MIN": "OPEN AIR",
+}
+
+
+def weather_boost_display(score: float) -> tuple[str, str]:
+    delta = round(safe_float(score, 50.0) - 50.0, 1)
+    if delta >= 12:
+        return f"+{delta:.1f} HR boost", "bf-grade-green"
+    if delta >= 3:
+        return f"+{delta:.1f} slight boost", "bf-grade-green"
+    if delta <= -12:
+        return f"{delta:.1f} HR suppression", "bf-grade-red"
+    if delta <= -3:
+        return f"{delta:.1f} slight suppression", "bf-grade-red"
+    return f"{delta:+.1f} neutral", "bf-grade-yellow"
+
+
+def stadium_wind_svg(wind_deg, wind_mph: float, grade: str) -> str:
+    """Compact baseball-diamond visual. Arrow points toward where the wind travels."""
+    try:
+        travel_deg = (float(wind_deg) + 180.0) % 360.0
+    except Exception:
+        travel_deg = 0.0
+    accent = "#35d07f" if grade in {"HR FRIENDLY", "FAVORABLE"} else ("#ffd166" if grade == "MIXED" else "#ff6666")
+    mph = int(round(safe_float(wind_mph, 0.0)))
+    return (
+        f'<svg width="112" height="92" viewBox="0 0 112 92" role="img" aria-label="stadium wind diagram">'
+        f'<path d="M56 5 C76 8 93 22 101 43 L56 88 L11 43 C19 22 36 8 56 5Z" fill="#17213b" stroke="{accent}" stroke-opacity=".7"/>'
+        '<path d="M56 76 L28 48 L56 20 L84 48 Z" fill="none" stroke="#7d8fb8" stroke-opacity=".55"/>'
+        '<circle cx="56" cy="48" r="15" fill="#2c68d7" stroke="#79a7ff" stroke-opacity=".65"/>'
+        f'<g transform="rotate({travel_deg:.1f} 56 48)"><path d="M56 61 L56 37 M56 37 L48 45 M56 37 L64 45" stroke="white" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></g>'
+        f'<text x="56" y="89" text-anchor="middle" fill="#dfe8ff" font-size="10" font-weight="800">{mph} MPH</text>'
+        '</svg>'
+    )
+
+
+def render_weather_stadium_cards(weather_board: pd.DataFrame):
+    if weather_board is None or weather_board.empty:
+        return
+    cards = []
+    for _, row in weather_board.iterrows():
+        grade = str(row.get("Environment Grade", "MIXED"))
+        cls = grade.lower().replace(" ", "-")
+        grade_cls = "bf-grade-green" if grade in {"HR FRIENDLY", "FAVORABLE"} else ("bf-grade-yellow" if grade == "MIXED" else "bf-grade-red")
+        boost_text, boost_cls = weather_boost_display(row.get("HR Environment", 50))
+        svg = stadium_wind_svg(row.get("Wind Degrees"), row.get("Wind MPH", 0), grade)
+        roof = str(row.get("Roof", "OPEN AIR"))
+        note = (
+            f"Wind from {escape(str(row.get('Wind Direction', '—')))} ({escape(str(row.get('Wind Bearing', '—')))}) • "
+            f"Park factor {safe_float(row.get('Park Factor'),1.0):.2f} • {escape(roof)}"
+        )
+        card = f"""
+        <div class="bf-weather-card {cls}">
+          <div class="bf-weather-head">
+            <div><div class="bf-weather-game">{escape(str(row.get('Game','')))}</div><div class="bf-weather-venue">{escape(str(row.get('Venue','')))}</div></div>
+            <div class="bf-weather-time">{escape(str(row.get('First Pitch','')))}</div>
+          </div>
+          <div class="bf-weather-body">
+            <div class="bf-weather-stats">
+              <div class="bf-weather-stat"><b>{escape(str(row.get('Condition','—')))}</b><span>Condition</span></div>
+              <div class="bf-weather-stat"><b>{safe_float(row.get('Temp °F'),0):.0f}°F</b><span>Temperature</span></div>
+              <div class="bf-weather-stat"><b>{safe_float(row.get('Precip %'),0):.0f}%</b><span>Precip</span></div>
+              <div class="bf-weather-stat"><b>{safe_float(row.get('Humidity %'),0):.0f}%</b><span>Humidity</span></div>
+              <div class="bf-weather-stat"><b>{safe_float(row.get('Park Factor'),1):.2f}</b><span>Park Factor</span></div>
+              <div class="bf-weather-stat"><b>{escape(roof)}</b><span>Roof</span></div>
+            </div>
+            <div class="bf-weather-visual">{svg}<div class="bf-weather-score">{safe_float(row.get('HR Environment'),50):.0f}</div><div class="bf-weather-grade {grade_cls}">{escape(grade)}</div><div class="bf-weather-boost {boost_cls}">{escape(boost_text)}</div></div>
+          </div>
+          <div class="bf-weather-note">{note}</div>
+        </div>
+        """
+        cards.append(card)
+    st.markdown('<div class="bf-weather-grid">' + ''.join(cards) + '</div>', unsafe_allow_html=True)
+
+
 def wind_compass_direction(degrees) -> str:
     """Convert meteorological wind bearing to a 16-point compass label."""
     try:
@@ -5608,8 +5713,10 @@ def build_live_weather_board(schedule_rows: list[dict]) -> pd.DataFrame:
             "Humidity %": wx.get("Humidity%"),
             "Precip %": wx.get("Precip%"),
             "Wind MPH": wx.get("WindMPH"),
+            "Wind Degrees": wx.get("WindDeg"),
             "Wind Direction": wx.get("WindDir"),
             "Wind Bearing": f"{int(wx['WindDeg'])}°" if wx.get("WindDeg") is not None else "—",
+            "Roof": ROOF_PARKS.get(home, "OPEN AIR"),
             "Park Factor": wx.get("ParkFactor"),
             "HR Environment": wx.get("HREnvironment"),
             "Environment Grade": wx.get("HREnvironmentLabel"),
@@ -6128,12 +6235,16 @@ with tabs[9]:
         b.metric("Mixed", len(mixed))
         c.metric("Suppressive", len(suppressive))
 
+        st.markdown("### Stadium Weather Map")
+        render_weather_stadium_cards(weather_board)
+
         st.markdown("### All Parks — Ranked")
-        st.dataframe(
-            dedupe_columns(weather_board),
-            use_container_width=True,
-            hide_index=True,
-        )
+        with st.expander("Open full weather and park table", expanded=False):
+            st.dataframe(
+                dedupe_columns(weather_board),
+                use_container_width=True,
+                hide_index=True,
+            )
 
         if not friendly.empty:
             st.markdown("### Best HR Environments")
