@@ -371,6 +371,40 @@ hr { margin-top: .38rem !important; margin-bottom: .38rem !important; }
 .bf-grade-green{color:#35d07f}.bf-grade-yellow{color:#ffd166}.bf-grade-red{color:#ff6b6b}
 @media(max-width:900px){.bf-weather-grid{grid-template-columns:1fr}.bf-weather-body{grid-template-columns:1.15fr .85fr}}
 @media(max-width:520px){.bf-weather-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.bf-weather-body{grid-template-columns:1fr}.bf-weather-visual{order:-1}}
+
+/* BF DATA COMBO LAB */
+.bf-combo-summary{display:flex;gap:7px;flex-wrap:wrap;margin:5px 0 12px 0}
+.bf-combo-card{border:1px solid rgba(255,255,255,.13);border-radius:15px;background:#0b1017;margin:8px 0 12px;overflow:hidden}
+.bf-combo-card.bf-combo-green{border-color:rgba(53,208,127,.48);box-shadow:0 0 0 1px rgba(53,208,127,.05) inset}
+.bf-combo-card.bf-combo-yellow{border-color:rgba(255,209,102,.42)}
+.bf-combo-card.bf-combo-red{border-color:rgba(255,85,85,.48)}
+.bf-combo-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding:11px 12px;background:#111720;border-bottom:1px solid rgba(255,255,255,.08)}
+.bf-combo-kicker{font-size:.62rem;color:#7fa6ff;font-weight:950;letter-spacing:.12em;text-transform:uppercase}
+.bf-combo-title{font-size:.94rem;font-weight:950;color:#fff;margin-top:4px;line-height:1.25}
+.bf-combo-status{font-size:.61rem;font-weight:950;letter-spacing:.06em;border:1px solid currentColor;border-radius:999px;padding:4px 8px;white-space:nowrap}
+.bf-combo-status.bf-combo-green,.bf-combo-green{color:#35d07f}
+.bf-combo-status.bf-combo-yellow,.bf-combo-yellow{color:#ffd166}
+.bf-combo-status.bf-combo-red,.bf-combo-red{color:#ff6b6b}
+.bf-combo-legs{padding:8px 11px}
+.bf-combo-leg{display:grid;grid-template-columns:minmax(180px,1.3fr) minmax(180px,.9fr) minmax(150px,1fr);gap:9px;align-items:center;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.07)}
+.bf-combo-leg:last-child{border-bottom:0}
+.bf-combo-player{font-size:.88rem;font-weight:950;color:#fff}
+.bf-combo-sub{font-size:.65rem;color:#9aa6b7;margin-top:2px}
+.bf-combo-leg-metrics{display:flex;gap:5px;flex-wrap:wrap}
+.bf-combo-leg-metrics span{font-size:.60rem;font-weight:900;border:1px solid rgba(255,255,255,.10);border-radius:999px;padding:3px 6px;background:#121923;color:#e8edf5}
+.bf-combo-leg-metrics .bf-combo-green{color:#35d07f;border-color:rgba(53,208,127,.35)}
+.bf-combo-leg-metrics .bf-combo-yellow{color:#ffd166;border-color:rgba(255,209,102,.35)}
+.bf-combo-reason{font-size:.65rem;color:#b7c2d1;line-height:1.2}
+.bf-combo-footer{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid rgba(255,255,255,.08);background:#0f151e}
+.bf-combo-footer div{text-align:center;padding:8px 5px;border-right:1px solid rgba(255,255,255,.07)}
+.bf-combo-footer div:last-child{border-right:0}
+.bf-combo-footer b{display:block;color:#fff;font-size:.92rem}
+.bf-combo-footer span{display:block;color:#8490a0;font-size:.52rem;text-transform:uppercase;letter-spacing:.08em;margin-top:2px}
+@media(max-width:760px){
+ .bf-combo-head{flex-direction:column}
+ .bf-combo-leg{grid-template-columns:1fr}
+ .bf-combo-footer{grid-template-columns:repeat(2,1fr)}
+}
 </style>
 <div class="bf-hero">
     <div class="bf-kicker">BF DATA PRO LAB</div>
@@ -799,7 +833,8 @@ def save_tracker(df: pd.DataFrame):
 def load_combo_tracker() -> pd.DataFrame:
     columns = [
         "date", "combo_id", "combo_label", "combo_size", "legs", "games",
-        "avg_leg_probability", "combined_score", "source_pool", "result",
+        "avg_leg_probability", "estimated_combo_probability", "combined_score",
+        "combo_style", "lineup_status", "source_pool", "result",
         "result_state", "legs_hit", "total_legs", "updated_at"
     ]
     if os.path.exists(COMBO_TRACKER_FILE):
@@ -4654,110 +4689,313 @@ def auto_update_tracker_results(tracker: pd.DataFrame, schedule: list[dict]):
     save_tracker(tracker)
     return tracker
 
+
 def _combo_signature(players: list[str]) -> str:
-    return " | ".join(sorted(players))
+    return " | ".join(sorted(normalize_name(p) for p in players))
 
 
-def _pick_combo_rows(candidates: pd.DataFrame, size: int, max_combos: int, global_usage: dict) -> list[dict]:
-    from itertools import combinations
+def _confirmed_lineup_index(schedule: list[dict]) -> dict:
+    """Current confirmed batting orders keyed by (game, team).
 
-    if candidates.empty or len(candidates) < size:
-        return []
-
-    ranked = candidates.reset_index(drop=True).copy()
-    combos = []
-    for idxs in combinations(ranked.index.tolist(), size):
-        rows = ranked.loc[list(idxs)].copy()
-        players = rows["Player"].tolist()
-        games = rows["Game"].tolist()
-        teams = rows["Team"].tolist()
-        if len(set(players)) != size:
-            continue
-        if size >= 3 and len(set(games)) < size - 1:
-            continue
-        if len(set(teams)) < max(2, size - 1):
-            continue
-
-        avg_prob = rows["HR Probability %"].mean()
-        total_prob = rows["HR Probability %"].sum()
-        total_model = rows["Model Rank Score"].sum()
-        diversity_bonus = len(set(games)) * 2.4 + len(set(teams)) * 1.2
-        same_game_penalty = max(0, size - len(set(games))) * 6.0
-        score = total_prob + (total_model * 0.08) + diversity_bonus - same_game_penalty
-        combos.append({
-            "players": players,
-            "games": games,
-            "rows": rows,
-            "score": round(score, 2),
-            "avg_prob": round(avg_prob, 2),
-        })
-
-    combos = sorted(combos, key=lambda x: (x["score"], x["avg_prob"]), reverse=True)
-
-    selected = []
-    seen = set()
-    for combo in combos:
-        sig = _combo_signature(combo["players"])
-        if sig in seen:
-            continue
-        if any(global_usage.get(p, 0) >= 3 for p in combo["players"]):
-            continue
-        if any(len(set(combo["players"]) & set(existing["players"])) > max(1, size // 2) for existing in selected):
-            continue
-        selected.append(combo)
-        seen.add(sig)
-        for p in combo["players"]:
-            global_usage[p] = global_usage.get(p, 0) + 1
-        if len(selected) >= max_combos:
-            break
-    return selected
+    Empty/missing keys mean the lineup is still projected. A present key means
+    that team has a real batting order and only those names are valid combo legs.
+    """
+    index = {}
+    for game in schedule or []:
+        game_key = game.get("game_key", "")
+        for side, team_name in [("away", game.get("away_team", "")), ("home", game.get("home_team", ""))]:
+            hitters = extract_boxscore_team_hitters(game.get("game_pk"), side)
+            confirmed = [h for h in hitters if h.get("confirmed")]
+            if confirmed:
+                team = team_abbr(team_name)
+                index[(game_key, team)] = {
+                    normalize_name(h.get("player_name", "")): safe_int(h.get("lineup_spot"), 99)
+                    for h in confirmed
+                    if h.get("player_name")
+                }
+    return index
 
 
-def build_combo_board(df: pd.DataFrame) -> pd.DataFrame:
+def _combo_leg_status(row: pd.Series, lineup_index: dict) -> tuple[str, int]:
+    key = (str(row.get("Game", "")), str(row.get("Team", "")))
+    current = lineup_index.get(key)
+    player_key = normalize_name(row.get("Player", ""))
+    if current is not None:
+        if player_key in current:
+            return "CONFIRMED", safe_int(current[player_key], 99)
+        return "OUT", 99
+    source = str(row.get("Lineup Source", "PROJECTED")).upper()
+    spot = safe_int(row.get("Lineup Spot"), 99)
+    return ("CONFIRMED" if source == "CONFIRMED" and spot <= 9 else "PROJECTED"), spot
+
+
+def _prepare_combo_candidates(df: pd.DataFrame, schedule: list[dict]) -> pd.DataFrame:
     shortlist = get_research_shortlist_pool(df)
     top12 = get_top12_hybrid(df)
     if shortlist.empty and top12.empty:
         return pd.DataFrame()
 
-    candidate_pool = pd.concat([top12, shortlist], ignore_index=True)
-    candidate_pool = candidate_pool.drop_duplicates(subset=["Player", "Team", "Game"])
-    candidate_pool = sort_for_hr(candidate_pool).head(14).reset_index(drop=True)
+    pool = pd.concat([top12, shortlist], ignore_index=True)
+    pool = pool.drop_duplicates(subset=["Player", "Team", "Game"]).copy()
+    lineup_index = _confirmed_lineup_index(schedule)
 
-    global_usage = {}
-    rows = []
-    combo_counts = {2: 5, 3: 4, 4: 3, 5: 2}
+    statuses, spots = [], []
+    for _, row in pool.iterrows():
+        status, spot = _combo_leg_status(row, lineup_index)
+        statuses.append(status)
+        spots.append(spot)
+    pool["Combo Lineup"] = statuses
+    pool["Combo Lineup Spot"] = spots
+
+    # A confirmed scratch never belongs in a live combo. Projected players remain
+    # available but are clearly separated from confirmed "play now" combinations.
+    pool = pool[pool["Combo Lineup"] != "OUT"].copy()
+    if pool.empty:
+        return pool
+
+    prob = safe_numeric_series(pool, "HR Probability %", 0.0)
+    matchup = safe_numeric_series(pool, "Matchup Advantage Score", 0.0)
+    attack = safe_numeric_series(pool, "HR Attackability Score", 0.0)
+    authority = safe_numeric_series(pool, "Statcast Authority Score", 0.0)
+    pitch = safe_numeric_series(pool, "Pitch Matchup Score", 0.0)
+    barrel = safe_numeric_series(pool, "Barrel%", 0.0)
+    hard_hit = safe_numeric_series(pool, "HardHit%", 0.0)
+    air = safe_numeric_series(pool, "AIR%", 0.0)
+    gb = safe_numeric_series(pool, "GroundBall%", 99.0)
+    lineup_bonus = pool["Combo Lineup"].map({"CONFIRMED": 8.0, "PROJECTED": 0.0}).fillna(0.0)
+    spot_bonus = pd.to_numeric(pool["Combo Lineup Spot"], errors="coerce").fillna(99).map(
+        lambda x: 5.0 if x <= 4 else (2.0 if x <= 6 else (-2.0 if x <= 9 else 0.0))
+    )
+    trend = pool.get("Recent Trend", pd.Series(["NEUTRAL"] * len(pool), index=pool.index)).map(
+        {"HOT": 5.0, "LIVE": 3.0, "NEUTRAL": 0.0, "COLD": -5.0}
+    ).fillna(0.0)
+
+    pool["Combo Leg Score"] = (
+        prob * 1.45
+        + matchup * 0.65
+        + attack * 0.55
+        + authority * 0.40
+        + pitch * 1.25
+        + barrel * 1.15
+        + hard_hit * 0.32
+        + air * 0.16
+        + lineup_bonus + spot_bonus + trend
+        - (gb - 44).clip(lower=0) * 1.10
+    ).round(2)
+
+    # A leg cannot be called "safe" simply because every model probability is
+    # capped at 28. This floor score separates complete profiles from inflated ties.
+    pool["Combo Floor Score"] = (
+        prob * 1.20
+        + attack * 0.60
+        + authority * 0.45
+        + barrel * 1.00
+        + hard_hit * 0.28
+        + lineup_bonus + spot_bonus
+        - (gb - 45).clip(lower=0) * 1.35
+    ).round(2)
+
+    return pool.sort_values(
+        ["Combo Lineup", "Combo Leg Score", "Combo Floor Score"],
+        ascending=[True, False, False]
+    ).head(18).reset_index(drop=True)
+
+
+def _score_combo(rows: pd.DataFrame, size: int) -> dict:
+    probs = safe_numeric_series(rows, "HR Probability %", 0.0).clip(lower=0, upper=60)
+    games = rows["Game"].astype(str).tolist()
+    teams = rows["Team"].astype(str).tolist()
+    pitchers = rows.get("Pitcher", pd.Series([""] * len(rows))).astype(str).tolist()
+    lineup_states = rows["Combo Lineup"].astype(str).tolist()
+    leg_scores = safe_numeric_series(rows, "Combo Leg Score", 0.0)
+    floor_scores = safe_numeric_series(rows, "Combo Floor Score", 0.0)
+    attack = safe_numeric_series(rows, "HR Attackability Score", 0.0)
+    weather = safe_numeric_series(rows, "WeatherBoost", 0.0)
+    park_signal = safe_numeric_series(rows, "Matchup Advantage Score", 0.0)
+
+    unique_games = len(set(games))
+    unique_pitchers = len(set(pitchers))
+    confirmed_count = lineup_states.count("CONFIRMED")
+    projected_count = lineup_states.count("PROJECTED")
+
+    # Independence is only an estimate, so label it as BF estimated combo chance.
+    estimated_combo = 100.0
+    for p in probs.tolist():
+        estimated_combo *= max(0.0, min(1.0, p / 100.0))
+    estimated_combo = estimated_combo / (100.0 ** (size - 1)) if size > 1 else estimated_combo
+
+    diversity_bonus = unique_games * 5.0 + unique_pitchers * 2.0
+    correlation_penalty = max(0, size - unique_games) * 12.0
+    projected_penalty = projected_count * 7.0
+    weakest_leg = float(floor_scores.min()) if len(floor_scores) else 0.0
+    score = (
+        float(leg_scores.sum())
+        + weakest_leg * 0.85
+        + diversity_bonus
+        + float(attack.mean()) * 0.55
+        + max(0.0, float(weather.mean())) * 2.0
+        + float(park_signal.mean()) * 0.15
+        - correlation_penalty
+        - projected_penalty
+    )
+
+    if projected_count == 0:
+        lineup_status = "ALL CONFIRMED"
+    elif confirmed_count == 0:
+        lineup_status = "WAIT FOR LINEUPS"
+    else:
+        lineup_status = f"{confirmed_count}/{size} CONFIRMED"
+
+    return {
+        "score": round(score, 2),
+        "avg_prob": round(float(probs.mean()), 1),
+        "estimated_combo": round(float(estimated_combo), 3),
+        "weakest_leg": round(weakest_leg, 1),
+        "unique_games": unique_games,
+        "unique_pitchers": unique_pitchers,
+        "lineup_status": lineup_status,
+        "projected_count": projected_count,
+        "attack_avg": round(float(attack.mean()), 1),
+    }
+
+
+def _pick_combo_rows(candidates: pd.DataFrame, size: int, max_combos: int, global_usage: dict) -> list[dict]:
+    from itertools import combinations
+    if candidates.empty or len(candidates) < size:
+        return []
+
+    ranked = candidates.reset_index(drop=True).copy()
+    possible = []
+    for idxs in combinations(ranked.index.tolist(), size):
+        rows = ranked.loc[list(idxs)].copy()
+        players = rows["Player"].astype(str).tolist()
+        games = rows["Game"].astype(str).tolist()
+        teams = rows["Team"].astype(str).tolist()
+        if len(set(players)) != size:
+            continue
+        if len(set(teams)) < min(size, 2):
+            continue
+        # Core combos should diversify across games. Same-game HR stacks are kept
+        # out of the primary board because they create fragile, correlated cards.
+        if len(set(games)) < max(2, size - 1):
+            continue
+
+        scored = _score_combo(rows, size)
+        if scored["weakest_leg"] < 45:
+            continue
+        possible.append({
+            "players": players,
+            "games": games,
+            "rows": rows,
+            **scored,
+        })
+
+    possible.sort(
+        key=lambda x: (
+            x["lineup_status"] == "ALL CONFIRMED",
+            x["weakest_leg"],
+            x["score"],
+            x["estimated_combo"],
+        ),
+        reverse=True,
+    )
+
+    selected, seen = [], set()
+    for combo in possible:
+        sig = _combo_signature(combo["players"])
+        if sig in seen:
+            continue
+        # Prevent one popular hitter from making the entire board look cloned.
+        if any(global_usage.get(normalize_name(p), 0) >= 3 for p in combo["players"]):
+            continue
+        max_overlap = 1 if size <= 3 else 2
+        if any(len(set(combo["players"]) & set(x["players"])) > max_overlap for x in selected):
+            continue
+        selected.append(combo)
+        seen.add(sig)
+        for p in combo["players"]:
+            key = normalize_name(p)
+            global_usage[key] = global_usage.get(key, 0) + 1
+        if len(selected) >= max_combos:
+            break
+    return selected
+
+
+def _combo_style(combo: dict, size: int, ordinal: int) -> str:
+    rows = combo["rows"]
+    all_confirmed = combo["lineup_status"] == "ALL CONFIRMED"
+    attack_avg = combo["attack_avg"]
+    min_floor = combo["weakest_leg"]
+    weather_avg = safe_numeric_series(rows, "WeatherBoost", 0.0).mean()
+    if size == 2 and all_confirmed and min_floor >= 75:
+        return "BEST CONFIRMED PAIR"
+    if all_confirmed and attack_avg >= 22:
+        return "PITCHER ATTACK"
+    if weather_avg >= 1.5:
+        return "PARK + WEATHER"
+    if combo["unique_games"] == size:
+        return "CROSS-GAME EDGE"
+    if combo["projected_count"] > 0:
+        return "LINEUP WATCH"
+    return "BALANCED EDGE"
+
+
+def build_combo_board(df: pd.DataFrame, schedule: list[dict] | None = None) -> pd.DataFrame:
+    candidate_pool = _prepare_combo_candidates(df, schedule or [])
+    if candidate_pool.empty:
+        return pd.DataFrame()
+
+    global_usage, output = {}, []
+    # Prioritize actionable tickets. Four- and five-leg cards remain available,
+    # but the board intentionally gives most space to 2- and 3-leg combinations.
+    combo_counts = {2: 4, 3: 3, 4: 2, 5: 1}
     for size in [2, 3, 4, 5]:
         selected = _pick_combo_rows(candidate_pool, size, combo_counts[size], global_usage)
         for idx, combo in enumerate(selected, start=1):
-            players = combo["players"]
-            games = combo["games"]
-            labels = [f"{p} ({t})" for p, t in zip(combo["players"], combo["rows"]["Team"].tolist())]
-            unique_games = len(set(games))
-            avg_prob = round(combo["avg_prob"], 2)
-            confidence = round(clip(avg_prob * 3.0 + unique_games * 4.0 + combo["score"] * 0.18, 0, 99), 1)
-            if size == 2 and unique_games == 2 and avg_prob >= 14:
-                style = "SAFE PAIR"
-            elif unique_games == 1:
-                style = "SAME GAME"
-            elif avg_prob >= 16:
-                style = "HIGHEST EV"
-            elif avg_prob < 11:
-                style = "LONGSHOT"
-            else:
-                style = "CROSS GAME"
-            rows.append({
+            rows = combo["rows"]
+            labels = [f"{p} ({t})" for p, t in zip(combo["players"], rows["Team"].astype(str).tolist())]
+            leg_details = []
+            for _, leg in rows.iterrows():
+                leg_details.append({
+                    "player": str(leg.get("Player", "")),
+                    "team": str(leg.get("Team", "")),
+                    "game": str(leg.get("Game", "")),
+                    "pitcher": str(leg.get("Pitcher", "")),
+                    "hr_prob": safe_float(leg.get("HR Probability %"), 0.0),
+                    "lineup": str(leg.get("Combo Lineup", "PROJECTED")),
+                    "spot": safe_int(leg.get("Combo Lineup Spot"), 99),
+                    "attack": safe_float(leg.get("HR Attackability Score"), 0.0),
+                    "matchup": safe_float(leg.get("Matchup Advantage Score"), 0.0),
+                    "barrel": safe_float(leg.get("Barrel%"), 0.0),
+                    "hard_hit": safe_float(leg.get("HardHit%"), 0.0),
+                    "gb": safe_float(leg.get("GroundBall%"), 0.0),
+                    "reason": str(leg.get("Ranking Reasons", leg.get("Why", ""))),
+                })
+            style = _combo_style(combo, size, idx)
+            confidence = clip(
+                combo["weakest_leg"] * 0.55
+                + combo["score"] / max(size, 1) * 0.20
+                + (8 if combo["lineup_status"] == "ALL CONFIRMED" else 0)
+                - combo["projected_count"] * 5,
+                0, 99
+            )
+            output.append({
                 "Combo Type": f"{size}-Leg",
                 "Combo #": idx,
                 "Combo Style": style,
                 "Combo Label": " + ".join(labels),
-                "Players": " | ".join(players),
-                "Games": " | ".join(games),
-                "Avg Leg HR %": avg_prob,
-                "Combo Confidence": confidence,
+                "Players": " | ".join(combo["players"]),
+                "Games": " | ".join(combo["games"]),
+                "Avg Leg HR %": combo["avg_prob"],
+                "Estimated Combo %": combo["estimated_combo"],
+                "Combo Confidence": round(confidence, 1),
+                "Weakest Leg": combo["weakest_leg"],
+                "Lineup Status": combo["lineup_status"],
                 "Combined Score": combo["score"],
-                "Source Pool": "TOP12+CORE",
+                "Leg Details": json.dumps(leg_details),
+                "Source Pool": "TOP12+CORE+LINEUP",
             })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(output)
 
 
 def sync_combo_tracker_with_board(combo_df: pd.DataFrame):
@@ -4766,18 +5004,16 @@ def sync_combo_tracker_with_board(combo_df: pd.DataFrame):
     if combo_df.empty:
         return tracker
 
-    existing_ids = set()
-    if not tracker.empty:
-        existing_today = tracker[tracker["date"].astype(str) == date_key].copy()
-        if not existing_today.empty and "combo_id" in existing_today.columns:
-            existing_ids = set(existing_today["combo_id"].astype(str).tolist())
-
+    existing_ids = set(tracker.get("combo_id", pd.Series(dtype=str)).astype(str).tolist()) if not tracker.empty else set()
     new_rows = []
     for _, row in combo_df.iterrows():
-        combo_id = f"{date_key}-{row['Combo Type']}-{int(row['Combo #'])}"
+        signature = hashlib.md5(
+            f"{date_key}|{row['Combo Type']}|{_combo_signature(str(row['Players']).split(' | '))}".encode("utf-8")
+        ).hexdigest()[:12]
+        combo_id = f"{date_key}-{signature}"
         if combo_id in existing_ids:
             continue
-        legs = str(row["Players"]).split(" | ")
+        legs = [x.strip() for x in str(row["Players"]).split(" | ") if x.strip()]
         new_rows.append({
             "date": date_key,
             "combo_id": combo_id,
@@ -4786,14 +5022,18 @@ def sync_combo_tracker_with_board(combo_df: pd.DataFrame):
             "legs": row["Players"],
             "games": row["Games"],
             "avg_leg_probability": row["Avg Leg HR %"],
+            "estimated_combo_probability": row.get("Estimated Combo %", pd.NA),
             "combined_score": row["Combined Score"],
+            "combo_style": row.get("Combo Style", ""),
+            "lineup_status": row.get("Lineup Status", "WAIT FOR LINEUPS"),
             "source_pool": row["Source Pool"],
             "result": pd.NA,
-            "result_state": "PENDING",
+            "result_state": "PENDING_LINEUPS" if "CONFIRMED" not in str(row.get("Lineup Status", "")) else "PREGAME",
             "legs_hit": 0,
             "total_legs": len(legs),
             "updated_at": now_et_string(),
         })
+        existing_ids.add(combo_id)
 
     if new_rows:
         tracker = pd.concat([tracker, pd.DataFrame(new_rows)], ignore_index=True)
@@ -4808,53 +5048,164 @@ def auto_update_combo_tracker_results(combo_tracker: pd.DataFrame, schedule: lis
     combo_tracker = combo_tracker.copy()
     date_key = today_str()
     today_mask = combo_tracker["date"].astype(str) == date_key
+    lineup_index = _confirmed_lineup_index(schedule)
 
-    homer_maps = {}
-    schedule_states = {}
+    homer_maps, schedule_states = {}, {}
     for game in schedule:
         homer_maps[game["game_pk"]] = get_boxscore_homers(game["game_pk"])
-        schedule_states[game["game_key"]] = (game.get("game_state", "Preview"), game.get("detailed_state", "Scheduled"))
+        schedule_states[game["game_key"]] = (
+            game.get("game_state", "Preview"),
+            game.get("detailed_state", "Scheduled"),
+        )
 
     for idx in combo_tracker.index[today_mask]:
         legs = [x.strip() for x in str(combo_tracker.at[idx, "legs"]).split("|") if x.strip()]
         games = [x.strip() for x in str(combo_tracker.at[idx, "games"]).split("|") if x.strip()]
-        legs_hit = 0
-        any_live = False
-        all_final = True
+        legs_hit, any_live, all_final = 0, False, True
+        lineup_out, projected_legs = [], []
+
         for leg, game_key in zip(legs, games):
-            game_state, detailed = schedule_states.get(game_key, ("Preview", "Scheduled"))
+            game_state, _ = schedule_states.get(game_key, ("Preview", "Scheduled"))
             if game_state != "Final":
                 all_final = False
             if game_state not in ["Preview", "Final"]:
                 any_live = True
-            # find matching homer map by game key via schedule lookup
-            matched = False
-            for game in schedule:
-                if game["game_key"] == game_key:
-                    if get_player_hr_count_from_map(homer_maps.get(game["game_pk"], {}), leg) > 0:
-                        legs_hit += 1
-                    matched = True
-                    break
-            if not matched:
+
+            matched_game = next((g for g in schedule if g.get("game_key") == game_key), None)
+            if matched_game:
+                away_team = team_abbr(matched_game.get("away_team", ""))
+                home_team = team_abbr(matched_game.get("home_team", ""))
+                leg_key = normalize_name(leg)
+                confirmed_maps = [
+                    lineup_index.get((game_key, away_team)),
+                    lineup_index.get((game_key, home_team)),
+                ]
+                confirmed_maps = [m for m in confirmed_maps if m is not None]
+                if confirmed_maps:
+                    if not any(leg_key in m for m in confirmed_maps):
+                        lineup_out.append(leg)
+                else:
+                    projected_legs.append(leg)
+
+                if get_player_hr_count_from_map(homer_maps.get(matched_game["game_pk"], {}), leg) > 0:
+                    legs_hit += 1
+            else:
                 all_final = False
+                projected_legs.append(leg)
 
         combo_tracker.at[idx, "legs_hit"] = legs_hit
         combo_tracker.at[idx, "total_legs"] = len(legs)
         combo_tracker.at[idx, "updated_at"] = now_et_string()
-        if legs_hit == len(legs) and len(legs) > 0:
+
+        if lineup_out and not any_live and not all_final:
+            combo_tracker.at[idx, "result"] = pd.NA
+            combo_tracker.at[idx, "lineup_status"] = "VOID — PLAYER OUT"
+            combo_tracker.at[idx, "result_state"] = "VOID_LINEUP"
+        elif projected_legs and not any_live:
+            combo_tracker.at[idx, "lineup_status"] = f"WAITING ({len(projected_legs)} LEG{'S' if len(projected_legs) != 1 else ''})"
+            combo_tracker.at[idx, "result_state"] = "PENDING_LINEUPS"
+        elif legs_hit == len(legs) and len(legs) > 0:
             combo_tracker.at[idx, "result"] = 1
+            combo_tracker.at[idx, "lineup_status"] = "ACTIVE"
             combo_tracker.at[idx, "result_state"] = "FULL_HIT"
         elif all_final:
             combo_tracker.at[idx, "result"] = 0
+            combo_tracker.at[idx, "lineup_status"] = "FINAL"
             combo_tracker.at[idx, "result_state"] = "PARTIAL_HIT" if legs_hit > 0 else "FINAL_MISS"
         elif any_live:
+            combo_tracker.at[idx, "lineup_status"] = "ACTIVE"
             combo_tracker.at[idx, "result_state"] = "LIVE" if legs_hit == 0 else f"LIVE_{legs_hit}_HIT"
         else:
+            combo_tracker.at[idx, "lineup_status"] = "ALL CONFIRMED"
             combo_tracker.at[idx, "result_state"] = "PREGAME"
 
     save_combo_tracker(combo_tracker)
     return combo_tracker
 
+
+def summarize_combo_tracker(df: pd.DataFrame) -> dict:
+    summary = {
+        "today_total": 0, "today_full_hits": 0, "today_partial_hits": 0,
+        "today_void": 0, "today_active": 0,
+        "all_total": 0, "all_full_hits": 0, "all_partial_hits": 0,
+    }
+    if df.empty:
+        return summary
+    work = df.copy()
+    today_df = work[work["date"].astype(str) == today_str()]
+    valid_today = today_df[today_df["result_state"].astype(str) != "VOID_LINEUP"]
+    summary["today_total"] = len(valid_today)
+    summary["today_void"] = int((today_df["result_state"].astype(str) == "VOID_LINEUP").sum())
+    summary["today_active"] = int(today_df["result_state"].astype(str).isin(["PREGAME", "LIVE", "PENDING_LINEUPS"]).sum())
+    summary["today_full_hits"] = int((valid_today["result_state"].astype(str) == "FULL_HIT").sum())
+    summary["today_partial_hits"] = int(valid_today["legs_hit"].fillna(0).astype(int).gt(0).sum())
+    valid_all = work[work["result_state"].astype(str) != "VOID_LINEUP"]
+    summary["all_total"] = len(valid_all)
+    summary["all_full_hits"] = int((valid_all["result_state"].astype(str) == "FULL_HIT").sum())
+    summary["all_partial_hits"] = int(valid_all["legs_hit"].fillna(0).astype(int).gt(0).sum())
+    return summary
+
+
+def _combo_status_color(status: str) -> str:
+    s = str(status).upper()
+    if "ALL CONFIRMED" in s or s in {"ACTIVE", "FINAL"}:
+        return "green"
+    if "VOID" in s or "OUT" in s:
+        return "red"
+    return "yellow"
+
+
+def render_combo_cards(combo_df: pd.DataFrame, combo_type: str):
+    cdf = combo_df[combo_df["Combo Type"] == combo_type].copy()
+    if cdf.empty:
+        return
+    st.markdown(f"### {combo_type} HR Combos")
+    for _, row in cdf.iterrows():
+        status = str(row.get("Lineup Status", "WAIT FOR LINEUPS"))
+        status_color = _combo_status_color(status)
+        style = escape(str(row.get("Combo Style", "BALANCED EDGE")))
+        conf = safe_float(row.get("Combo Confidence"), 0.0)
+        est = safe_float(row.get("Estimated Combo %"), 0.0)
+        weakest = safe_float(row.get("Weakest Leg"), 0.0)
+        try:
+            legs = json.loads(str(row.get("Leg Details", "[]")))
+        except Exception:
+            legs = []
+
+        leg_html = []
+        for leg in legs:
+            lineup = str(leg.get("lineup", "PROJECTED"))
+            line_color = "green" if lineup == "CONFIRMED" else "yellow"
+            spot = safe_int(leg.get("spot"), 99)
+            spot_txt = f"#{spot}" if spot <= 9 else "TBD"
+            reason = str(leg.get("reason", "")).split("|")[0].strip() or "BF matchup edge"
+            leg_html.append(
+                '<div class="bf-combo-leg">'
+                f'<div><div class="bf-combo-player">{escape(str(leg.get("player", "")))}</div>'
+                f'<div class="bf-combo-sub">{escape(str(leg.get("team", "")))} • {escape(str(leg.get("game", "")))} • vs {escape(str(leg.get("pitcher", "")))}</div></div>'
+                f'<div class="bf-combo-leg-metrics"><span>{safe_float(leg.get("hr_prob"),0):.1f}% HR</span>'
+                f'<span>ATK {safe_float(leg.get("attack"),0):.0f}</span>'
+                f'<span class="bf-combo-{line_color}">{escape(lineup)} {escape(spot_txt)}</span></div>'
+                f'<div class="bf-combo-reason">{escape(reason)}</div>'
+                '</div>'
+            )
+
+        html = (
+            f'<div class="bf-combo-card bf-combo-{status_color}">'
+            '<div class="bf-combo-head">'
+            f'<div><div class="bf-combo-kicker">#{safe_int(row.get("Combo #"),0)} • {style}</div>'
+            f'<div class="bf-combo-title">{escape(str(row.get("Combo Label", "")))}</div></div>'
+            f'<div class="bf-combo-status bf-combo-{status_color}">{escape(status)}</div>'
+            '</div>'
+            f'<div class="bf-combo-legs">{"".join(leg_html)}</div>'
+            '<div class="bf-combo-footer">'
+            f'<div><b>{conf:.0f}</b><span>BF Confidence</span></div>'
+            f'<div><b>{weakest:.0f}</b><span>Weakest Leg</span></div>'
+            f'<div><b>{safe_float(row.get("Avg Leg HR %"),0):.1f}%</b><span>Avg Leg</span></div>'
+            f'<div><b>{est:.2f}%</b><span>Est. Combo</span></div>'
+            '</div></div>'
+        )
+        st.markdown(html, unsafe_allow_html=True)
 
 
 def summarize_tracker_sources(df: pd.DataFrame) -> dict:
@@ -5999,7 +6350,7 @@ tracked_df = build_visible_tracker_pool(locked_df_raw, schedule)
 save_daily_board_snapshot(tracked_df, today_str())
 
 tracker = sync_tracker_with_board(tracked_df)
-combo_board = build_combo_board(locked_df_raw)
+combo_board = build_combo_board(locked_df_raw, schedule)
 combo_tracker = sync_combo_tracker_with_board(combo_board)
 
 # Always update results every run. Refresh/update should not be required for HR counts to move off zero.
@@ -6098,36 +6449,61 @@ with tabs[3]:
     )
 
 with tabs[4]:
-    st.subheader("HR Combos")
-    st.caption("Randomized but high-likelihood HR ladders built from the best current board without cloning the same pairings.")
+    st.subheader("HR Combo Lab")
+    st.caption("Primary combos favor confirmed lineups, strong weakest-leg quality, different games, and attackable pitchers. Projected legs are marked as lineup watch and never presented as confirmed plays.")
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Today Combos", combo_summary["today_total"])
-    m2.metric("Today Full Hits", combo_summary["today_full_hits"])
-    m3.metric("Today Partial Hits", combo_summary["today_partial_hits"])
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Valid Today", combo_summary["today_total"])
+    m2.metric("Full Hits", combo_summary["today_full_hits"])
+    m3.metric("Partial Hits", combo_summary["today_partial_hits"])
+    m4.metric("Voided / Player Out", combo_summary.get("today_void", 0))
 
     if combo_board.empty:
-        st.caption("No combos generated yet.")
+        st.caption("No combo passed the current quality and lineup gates.")
     else:
-        for combo_type in ["2-Leg", "3-Leg", "4-Leg", "5-Leg"]:
-            cdf = combo_board[combo_board["Combo Type"] == combo_type].copy()
-            if cdf.empty:
-                continue
-            st.markdown(f"**{combo_type} HR Combos**")
-            st.dataframe(
-                cdf[["Combo #", "Combo Style", "Combo Label", "Avg Leg HR %", "Combo Confidence", "Combined Score", "Games"]],
-                use_container_width=True,
-                hide_index=True
+        ready = int((combo_board["Lineup Status"] == "ALL CONFIRMED").sum())
+        waiting = int((combo_board["Lineup Status"] != "ALL CONFIRMED").sum())
+        st.markdown(
+            f'<div class="bf-combo-summary">'
+            f'<span class="bf-chip bf-chip-green">READY: {ready}</span>'
+            f'<span class="bf-chip bf-chip-yellow">LINEUP WATCH: {waiting}</span>'
+            f'<span class="bf-chip bf-chip-gray">2–3 LEGS = PRIMARY</span>'
+            f'<span class="bf-chip bf-chip-gray">4–5 LEGS = LOTTERY</span>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+
+        primary_tabs = st.tabs(["Best 2-Leg", "Best 3-Leg", "4–5 Leg Longshots", "Raw Combo Data"])
+        with primary_tabs[0]:
+            render_combo_cards(combo_board, "2-Leg")
+        with primary_tabs[1]:
+            render_combo_cards(combo_board, "3-Leg")
+        with primary_tabs[2]:
+            render_combo_cards(combo_board, "4-Leg")
+            render_combo_cards(combo_board, "5-Leg")
+        with primary_tabs[3]:
+            display_existing_columns(
+                combo_board,
+                ["Combo Type", "Combo #", "Combo Style", "Combo Label", "Lineup Status",
+                 "Avg Leg HR %", "Estimated Combo %", "Combo Confidence", "Weakest Leg",
+                 "Combined Score", "Games"]
             )
 
     if not combo_tracker.empty:
         st.divider()
-        st.caption("Tracked combo history")
-        st.dataframe(
-            dedupe_columns(combo_tracker.sort_values(by=["date", "combo_size", "combined_score"], ascending=[False, True, False])),
-            use_container_width=True,
-            hide_index=True
-        )
+        with st.expander("Tracked combo history", expanded=False):
+            history_cols = [
+                "date", "combo_style", "combo_label", "combo_size", "lineup_status",
+                "estimated_combo_probability", "result_state", "legs_hit", "total_legs",
+                "combined_score", "updated_at"
+            ]
+            display_existing_columns(
+                dedupe_columns(combo_tracker.sort_values(
+                    by=["date", "combo_size", "combined_score"],
+                    ascending=[False, True, False]
+                )),
+                history_cols
+            )
 
 with tabs[5]:
     st.subheader("Hits + Runs + RBIs Board")
