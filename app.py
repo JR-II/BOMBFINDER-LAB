@@ -5498,42 +5498,59 @@ def stadium_wind_svg(wind_deg, wind_mph: float, grade: str) -> str:
 
 
 def render_weather_stadium_cards(weather_board: pd.DataFrame):
+    """Render stadium weather cards as HTML, never as a Markdown code block."""
     if weather_board is None or weather_board.empty:
         return
+
     cards = []
     for _, row in weather_board.iterrows():
         grade = str(row.get("Environment Grade", "MIXED"))
         cls = grade.lower().replace(" ", "-")
-        grade_cls = "bf-grade-green" if grade in {"HR FRIENDLY", "FAVORABLE"} else ("bf-grade-yellow" if grade == "MIXED" else "bf-grade-red")
+        grade_cls = (
+            "bf-grade-green" if grade in {"HR FRIENDLY", "FAVORABLE"}
+            else "bf-grade-yellow" if grade == "MIXED"
+            else "bf-grade-red"
+        )
         boost_text, boost_cls = weather_boost_display(row.get("HR Environment", 50))
         svg = stadium_wind_svg(row.get("Wind Degrees"), row.get("Wind MPH", 0), grade)
         roof = str(row.get("Roof", "OPEN AIR"))
         note = (
-            f"Wind from {escape(str(row.get('Wind Direction', '—')))} ({escape(str(row.get('Wind Bearing', '—')))}) • "
-            f"Park factor {safe_float(row.get('Park Factor'),1.0):.2f} • {escape(roof)}"
+            f"Wind from {escape(str(row.get('Wind Direction', '—')))} "
+            f"({escape(str(row.get('Wind Bearing', '—')))}) • "
+            f"Park factor {safe_float(row.get('Park Factor'), 1.0):.2f} • {escape(roof)}"
         )
-        card = f"""
-        <div class="bf-weather-card {cls}">
-          <div class="bf-weather-head">
-            <div><div class="bf-weather-game">{escape(str(row.get('Game','')))}</div><div class="bf-weather-venue">{escape(str(row.get('Venue','')))}</div></div>
-            <div class="bf-weather-time">{escape(str(row.get('First Pitch','')))}</div>
-          </div>
-          <div class="bf-weather-body">
-            <div class="bf-weather-stats">
-              <div class="bf-weather-stat"><b>{escape(str(row.get('Condition','—')))}</b><span>Condition</span></div>
-              <div class="bf-weather-stat"><b>{safe_float(row.get('Temp °F'),0):.0f}°F</b><span>Temperature</span></div>
-              <div class="bf-weather-stat"><b>{safe_float(row.get('Precip %'),0):.0f}%</b><span>Precip</span></div>
-              <div class="bf-weather-stat"><b>{safe_float(row.get('Humidity %'),0):.0f}%</b><span>Humidity</span></div>
-              <div class="bf-weather-stat"><b>{safe_float(row.get('Park Factor'),1):.2f}</b><span>Park Factor</span></div>
-              <div class="bf-weather-stat"><b>{escape(roof)}</b><span>Roof</span></div>
-            </div>
-            <div class="bf-weather-visual">{svg}<div class="bf-weather-score">{safe_float(row.get('HR Environment'),50):.0f}</div><div class="bf-weather-grade {grade_cls}">{escape(grade)}</div><div class="bf-weather-boost {boost_cls}">{escape(boost_text)}</div></div>
-          </div>
-          <div class="bf-weather-note">{note}</div>
-        </div>
-        """
+
+        # Keep every tag left-aligned. Leading spaces after a blank line can make
+        # Streamlit/Markdown display the HTML as a code block instead of rendering it.
+        card = (
+            f'<div class="bf-weather-card {cls}">'
+            f'<div class="bf-weather-head">'
+            f'<div><div class="bf-weather-game">{escape(str(row.get("Game", "")))}</div>'
+            f'<div class="bf-weather-venue">{escape(str(row.get("Venue", "")))}</div></div>'
+            f'<div class="bf-weather-time">{escape(str(row.get("First Pitch", "")))}</div>'
+            f'</div>'
+            f'<div class="bf-weather-body">'
+            f'<div class="bf-weather-stats">'
+            f'<div class="bf-weather-stat"><b>{escape(str(row.get("Condition", "—")))}</b><span>Condition</span></div>'
+            f'<div class="bf-weather-stat"><b>{safe_float(row.get("Temp °F"), 0):.0f}°F</b><span>Temperature</span></div>'
+            f'<div class="bf-weather-stat"><b>{safe_float(row.get("Precip %"), 0):.0f}%</b><span>Precip</span></div>'
+            f'<div class="bf-weather-stat"><b>{safe_float(row.get("Humidity %"), 0):.0f}%</b><span>Humidity</span></div>'
+            f'<div class="bf-weather-stat"><b>{safe_float(row.get("Park Factor"), 1):.2f}</b><span>Park Factor</span></div>'
+            f'<div class="bf-weather-stat"><b>{escape(roof)}</b><span>Roof</span></div>'
+            f'</div>'
+            f'<div class="bf-weather-visual">{svg}'
+            f'<div class="bf-weather-score">{safe_float(row.get("HR Environment"), 50):.0f}</div>'
+            f'<div class="bf-weather-grade {grade_cls}">{escape(grade)}</div>'
+            f'<div class="bf-weather-boost {boost_cls}">{escape(boost_text)}</div>'
+            f'</div>'
+            f'</div>'
+            f'<div class="bf-weather-note">{note}</div>'
+            f'</div>'
+        )
         cards.append(card)
-    st.markdown('<div class="bf-weather-grid">' + ''.join(cards) + '</div>', unsafe_allow_html=True)
+
+    weather_html = '<div class="bf-weather-grid">' + ''.join(cards) + '</div>'
+    st.markdown(weather_html, unsafe_allow_html=True)
 
 
 def wind_compass_direction(degrees) -> str:
