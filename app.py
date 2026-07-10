@@ -5426,6 +5426,320 @@ def render_card_grid(df: pd.DataFrame, max_cards: int = 24, columns: int = 3, ti
         render_player_card(row, rank_override=rank)
     st.markdown('</div>', unsafe_allow_html=True)
 
+
+# =========================
+# BF DATA LIVE OPERATIONS
+# =========================
+
+def wind_compass_direction(degrees) -> str:
+    """Convert meteorological wind bearing to a 16-point compass label."""
+    try:
+        deg = float(degrees) % 360
+    except Exception:
+        return "—"
+    points = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"]
+    return points[int((deg + 11.25) // 22.5) % 16]
+
+
+def weather_code_label(code) -> str:
+    try:
+        code = int(code)
+    except Exception:
+        return "Unknown"
+    labels = {
+        0: "Clear", 1: "Mostly clear", 2: "Partly cloudy", 3: "Overcast",
+        45: "Fog", 48: "Rime fog", 51: "Light drizzle", 53: "Drizzle",
+        55: "Heavy drizzle", 61: "Light rain", 63: "Rain", 65: "Heavy rain",
+        71: "Light snow", 73: "Snow", 75: "Heavy snow", 80: "Rain showers",
+        81: "Showers", 82: "Heavy showers", 95: "Thunderstorms",
+        96: "Storms / hail", 99: "Severe storms / hail",
+    }
+    return labels.get(code, f"Code {code}")
+
+
+def compute_hr_environment_score(home_team: str, temp_f: float, wind_mph: float, humidity: float, precip_prob: float) -> tuple[float, str]:
+    """Today-only park/weather score. Wind bearing is displayed separately because
+    exact in/out direction requires park-specific field orientation."""
+    park_factor = safe_float(PARK_FACTORS.get(home_team, 1.0), 1.0)
+    score = 50.0 + (park_factor - 1.0) * 125.0
+
+    if temp_f >= 90:
+        score += 14
+    elif temp_f >= 82:
+        score += 10
+    elif temp_f >= 75:
+        score += 6
+    elif temp_f <= 50:
+        score -= 12
+    elif temp_f <= 60:
+        score -= 6
+
+    if wind_mph >= 18:
+        score += 8
+    elif wind_mph >= 12:
+        score += 5
+    elif wind_mph >= 8:
+        score += 2
+
+    if humidity >= 75 and temp_f >= 75:
+        score += 2
+    if precip_prob >= 60:
+        score -= 8
+    elif precip_prob >= 35:
+        score -= 4
+
+    score = round(clip(score, 0, 100), 1)
+    if score >= 72:
+        label = "HR FRIENDLY"
+    elif score >= 58:
+        label = "FAVORABLE"
+    elif score >= 43:
+        label = "MIXED"
+    else:
+        label = "SUPPRESSIVE"
+    return score, label
+
+
+@st.cache_data(ttl=900)
+def fetch_game_time_weather(home_team_abbr: str, game_time_value: str) -> dict:
+    """Fetch hourly weather nearest scheduled first pitch, including wind bearing."""
+    coords = PARK_COORDS.get(home_team_abbr)
+    fallback = {
+        "TempF": 72.0, "FeelsLikeF": 72.0, "Humidity%": 50.0,
+        "Precip%": 0.0, "WindMPH": 7.0, "WindDeg": None,
+        "WindDir": "—", "Condition": "Unavailable", "ForecastTime": "—",
+    }
+    if not coords:
+        score, label = compute_hr_environment_score(home_team_abbr, 72.0, 7.0, 50.0, 0.0)
+        return {**fallback, "ParkFactor": PARK_FACTORS.get(home_team_abbr, 1.0), "HREnvironment": score, "HREnvironmentLabel": label}
+
+    lat, lon = coords
+    try:
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "hourly": "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation_probability,weather_code,wind_speed_10m,wind_direction_10m",
+            "current": "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_direction_10m",
+            "temperature_unit": "fahrenheit",
+            "wind_speed_unit": "mph",
+            "timezone": "auto",
+            "forecast_days": 2,
+        }
+        resp = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=8)
+        resp.raise_for_status()
+        data = resp.json()
+        hourly = data.get("hourly", {}) or {}
+        times = hourly.get("time", []) or []
+
+        target_et = parse_game_time_et(game_time_value)
+        chosen_idx = None
+        if times and target_et is not None:
+            # Open-Meteo timestamps are local to the park due to timezone=auto.
+            # Nearest clock-hour is enough for game-time research.
+            target_naive = target_et.replace(tzinfo=None)
+            candidates = []
+            for i, raw in enumerate(times):
+                try:
+                    dt = datetime.fromisoformat(str(raw))
+                    candidates.append((abs((dt - target_naive).total_seconds()), i))
+                except Exception:
+                    continue
+            if candidates:
+                chosen_idx = min(candidates)[1]
+
+        if chosen_idx is None and times:
+            chosen_idx = 0
+
+        if chosen_idx is not None:
+            def hv(name, default=None):
+                vals = hourly.get(name, []) or []
+                return vals[chosen_idx] if chosen_idx < len(vals) else default
+            temp = safe_float(hv("temperature_2m"), 72.0)
+            feels = safe_float(hv("apparent_temperature"), temp)
+            humidity = safe_float(hv("relative_humidity_2m"), 50.0)
+            precip = safe_float(hv("precipitation_probability"), 0.0)
+            wind = safe_float(hv("wind_speed_10m"), 7.0)
+            wind_deg = hv("wind_direction_10m")
+            code = hv("weather_code")
+            forecast_time = times[chosen_idx]
+        else:
+            current = data.get("current", {}) or {}
+            temp = safe_float(current.get("temperature_2m"), 72.0)
+            feels = safe_float(current.get("apparent_temperature"), temp)
+            humidity = safe_float(current.get("relative_humidity_2m"), 50.0)
+            precip = 0.0
+            wind = safe_float(current.get("wind_speed_10m"), 7.0)
+            wind_deg = current.get("wind_direction_10m")
+            code = current.get("weather_code")
+            forecast_time = current.get("time", "—")
+
+        score, label = compute_hr_environment_score(home_team_abbr, temp, wind, humidity, precip)
+        return {
+            "TempF": round(temp, 1),
+            "FeelsLikeF": round(feels, 1),
+            "Humidity%": round(humidity, 1),
+            "Precip%": round(precip, 1),
+            "WindMPH": round(wind, 1),
+            "WindDeg": round(safe_float(wind_deg, 0.0), 0) if wind_deg is not None else None,
+            "WindDir": wind_compass_direction(wind_deg),
+            "Condition": weather_code_label(code),
+            "ForecastTime": str(forecast_time),
+            "ParkFactor": PARK_FACTORS.get(home_team_abbr, 1.0),
+            "HREnvironment": score,
+            "HREnvironmentLabel": label,
+        }
+    except Exception:
+        score, label = compute_hr_environment_score(home_team_abbr, 72.0, 7.0, 50.0, 0.0)
+        return {**fallback, "ParkFactor": PARK_FACTORS.get(home_team_abbr, 1.0), "HREnvironment": score, "HREnvironmentLabel": label}
+
+
+def build_live_weather_board(schedule_rows: list[dict]) -> pd.DataFrame:
+    rows = []
+    for game in sort_schedule_rows(schedule_rows):
+        home = team_abbr(game.get("home_team", ""))
+        wx = fetch_game_time_weather(home, game.get("game_time", ""))
+        rows.append({
+            "Game": game.get("game_key", ""),
+            "First Pitch": format_game_time_et(game.get("game_time", "")),
+            "Venue": game.get("venue", ""),
+            "Condition": wx.get("Condition"),
+            "Temp °F": wx.get("TempF"),
+            "Feels °F": wx.get("FeelsLikeF"),
+            "Humidity %": wx.get("Humidity%"),
+            "Precip %": wx.get("Precip%"),
+            "Wind MPH": wx.get("WindMPH"),
+            "Wind Direction": wx.get("WindDir"),
+            "Wind Bearing": f"{int(wx['WindDeg'])}°" if wx.get("WindDeg") is not None else "—",
+            "Park Factor": wx.get("ParkFactor"),
+            "HR Environment": wx.get("HREnvironment"),
+            "Environment Grade": wx.get("HREnvironmentLabel"),
+            "Forecast Hour": wx.get("ForecastTime"),
+        })
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values(["HR Environment", "Park Factor"], ascending=[False, False]).reset_index(drop=True)
+
+
+def _current_lineup_for_team(game_pk: int, side: str) -> list[dict]:
+    hitters = extract_boxscore_team_hitters(game_pk, side)
+    return sorted(
+        [h for h in hitters if h.get("confirmed")],
+        key=lambda h: safe_int(h.get("lineup_spot"), 99)
+    )
+
+
+def build_lineup_watch_board(schedule_rows: list[dict], current_board: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return team status rows plus individual change rows.
+
+    The saved daily board snapshot is used as the original/locked reference, so
+    live lineup changes never rewrite historical predictions.
+    """
+    snapshot = load_daily_board_snapshot(today_str())
+    baseline = snapshot if snapshot is not None and not snapshot.empty else current_board
+    status_rows, change_rows = [], []
+
+    for game in sort_schedule_rows(schedule_rows):
+        game_key = game.get("game_key", "")
+        for side, team_name, pitcher_key, opponent_pitcher_key in [
+            ("away", game.get("away_team", ""), "away_pitcher", "home_pitcher"),
+            ("home", game.get("home_team", ""), "home_pitcher", "away_pitcher"),
+        ]:
+            team = team_abbr(team_name)
+            current_lineup = _current_lineup_for_team(game.get("game_pk"), side)
+            current_map = {normalize_name(x.get("player_name")): x for x in current_lineup if x.get("player_name")}
+
+            base_team = baseline[(baseline.get("Game", pd.Series(dtype=str)).astype(str) == str(game_key)) &
+                                 (baseline.get("Team", pd.Series(dtype=str)).astype(str) == str(team))].copy() if not baseline.empty else pd.DataFrame()
+            base_map = {}
+            if not base_team.empty:
+                for _, r in base_team.iterrows():
+                    base_map[normalize_name(r.get("Player"))] = {
+                        "player_name": r.get("Player"),
+                        "lineup_spot": r.get("Lineup Spot"),
+                    }
+
+            added = [v for k, v in current_map.items() if k not in base_map]
+            removed = [v for k, v in base_map.items() if k not in current_map] if current_lineup else []
+            moved = []
+            for key in set(current_map).intersection(base_map):
+                old_spot = safe_int(base_map[key].get("lineup_spot"), 0)
+                new_spot = safe_int(current_map[key].get("lineup_spot"), 0)
+                if old_spot and new_spot and old_spot != new_spot:
+                    moved.append((current_map[key], old_spot, new_spot))
+
+            original_pitcher = "—"
+            if not base_team.empty and "Pitcher" in base_team.columns:
+                vals = base_team["Pitcher"].dropna().astype(str)
+                if not vals.empty:
+                    original_pitcher = vals.iloc[0]
+            current_pitcher = game.get(opponent_pitcher_key, "Starter Pending")
+            pitcher_changed = (
+                original_pitcher not in {"—", "", "Starter Pending"}
+                and current_pitcher not in {"—", "", "Starter Pending"}
+                and normalize_name(original_pitcher) != normalize_name(current_pitcher)
+            )
+
+            if pitcher_changed or removed:
+                impact = "CRITICAL"
+            elif added or moved:
+                impact = "HIGH" if any(abs(a-b) >= 3 for _, a, b in moved) else "MEDIUM"
+            else:
+                impact = "LOW"
+
+            confirmed_count = len(current_lineup)
+            status = "CONFIRMED" if confirmed_count >= 9 else ("PARTIAL" if confirmed_count > 0 else "PROJECTED")
+            status_rows.append({
+                "Game": game_key,
+                "Team": team,
+                "Lineup Status": status,
+                "Confirmed": f"{confirmed_count}/9",
+                "Original Opposing Pitcher": original_pitcher,
+                "Current Opposing Pitcher": current_pitcher,
+                "Pitcher Changed": "YES" if pitcher_changed else "NO",
+                "Added": len(added),
+                "Scratched / Removed": len(removed),
+                "Moved": len(moved),
+                "Impact": impact,
+                "Game State": game.get("detailed_state", game.get("game_state", "")),
+            })
+
+            for item in added:
+                change_rows.append({
+                    "Game": game_key, "Team": team, "Player": item.get("player_name"),
+                    "Change": "REPLACEMENT / ADDED", "Old Spot": "—",
+                    "New Spot": item.get("lineup_spot") or "—", "Impact": "HIGH",
+                })
+            for item in removed:
+                change_rows.append({
+                    "Game": game_key, "Team": team, "Player": item.get("player_name"),
+                    "Change": "SCRATCHED / REMOVED", "Old Spot": item.get("lineup_spot") or "—",
+                    "New Spot": "—", "Impact": "CRITICAL",
+                })
+            for item, old_spot, new_spot in moved:
+                change_rows.append({
+                    "Game": game_key, "Team": team, "Player": item.get("player_name"),
+                    "Change": "LINEUP SPOT MOVED", "Old Spot": old_spot,
+                    "New Spot": new_spot, "Impact": "HIGH" if abs(old_spot-new_spot) >= 3 else "MEDIUM",
+                })
+            if pitcher_changed:
+                change_rows.append({
+                    "Game": game_key, "Team": team, "Player": "TEAM MATCHUP",
+                    "Change": f"PITCHER CHANGED: {original_pitcher} → {current_pitcher}",
+                    "Old Spot": "—", "New Spot": "—", "Impact": "CRITICAL",
+                })
+
+    return pd.DataFrame(status_rows), pd.DataFrame(change_rows)
+
+
+def clear_live_operations_cache():
+    """Clear only live lineup/weather sources and rebuild affected app data."""
+    fetch_schedule_payload.clear()
+    get_today_schedule.clear()
+    fetch_boxscore.clear()
+    fetch_game_time_weather.clear()
+    build_daily_dataset.clear()
+
+
 c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
 with c1:
     if st.button("Update Board", use_container_width=True):
@@ -5486,7 +5800,7 @@ if locked_df.empty:
     st.warning("No games or hitter data loaded.")
     st.stop()
 
-base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker"]
+base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker", "Lineup Watch", "Live Weather"]
 schedule = sort_schedule_rows(schedule)
 game_tabs = [f"{format_game_time_et(g.get('game_time', ''))} | {g['game_key']}" for g in schedule]
 tabs = st.tabs(base_tabs + game_tabs)
@@ -5750,7 +6064,86 @@ with tabs[7]:
         st.markdown("### Daily HR Prediction Accuracy History")
         st.dataframe(dedupe_columns(daily_summary), use_container_width=True, hide_index=True)
 
-for idx, game in enumerate(schedule, start=8):
+
+with tabs[8]:
+    st.subheader("Lineup Watch")
+    st.caption("Live confirmation, scratches, replacements, batting-order moves, and probable-pitcher changes. Locked prediction history is never overwritten.")
+
+    lw1, lw2 = st.columns([1, 3])
+    with lw1:
+        if st.button("Refresh Lineups Now", key="refresh_lineup_watch"):
+            clear_live_operations_cache()
+            st.session_state.manual_refresh_trigger = True
+            st.rerun()
+    with lw2:
+        st.caption("Automatic source cache: 5 minutes • use the button after lineup news or a probable-pitcher change.")
+
+    lineup_status_df, lineup_changes_df = build_lineup_watch_board(schedule, locked_df_raw)
+    if lineup_status_df.empty:
+        st.info("No lineup information is available yet.")
+    else:
+        st.markdown("### Team Status")
+        st.dataframe(
+            dedupe_columns(lineup_status_df),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        critical = lineup_status_df[lineup_status_df["Impact"].isin(["CRITICAL", "HIGH"])].copy()
+        if not critical.empty:
+            st.warning(f"{len(critical)} team matchup(s) currently have a high-impact lineup or pitcher condition.")
+
+    st.markdown("### Detected Changes")
+    if lineup_changes_df.empty:
+        st.success("No scratches, replacements, batting-order moves, or pitcher changes detected against the saved board.")
+    else:
+        st.dataframe(
+            dedupe_columns(lineup_changes_df),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+with tabs[9]:
+    st.subheader("Live Weather")
+    st.caption("Game-time forecast with temperature, humidity, precipitation, wind speed, compass direction, wind bearing, park factor, and a today-only HR environment grade.")
+
+    ww1, ww2 = st.columns([1, 3])
+    with ww1:
+        if st.button("Refresh Weather Now", key="refresh_live_weather"):
+            fetch_game_time_weather.clear()
+            st.rerun()
+    with ww2:
+        st.caption("Forecast cache: 15 minutes. Wind direction is meteorological compass direction; exact out/in carry depends on each park's field orientation.")
+
+    weather_board = build_live_weather_board(schedule)
+    if weather_board.empty:
+        st.info("No weather rows are available.")
+    else:
+        friendly = weather_board[weather_board["Environment Grade"].isin(["HR FRIENDLY", "FAVORABLE"])].copy()
+        mixed = weather_board[weather_board["Environment Grade"] == "MIXED"].copy()
+        suppressive = weather_board[weather_board["Environment Grade"] == "SUPPRESSIVE"].copy()
+
+        a, b, c = st.columns(3)
+        a.metric("HR Friendly / Favorable", len(friendly))
+        b.metric("Mixed", len(mixed))
+        c.metric("Suppressive", len(suppressive))
+
+        st.markdown("### All Parks — Ranked")
+        st.dataframe(
+            dedupe_columns(weather_board),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        if not friendly.empty:
+            st.markdown("### Best HR Environments")
+            st.dataframe(dedupe_columns(friendly), use_container_width=True, hide_index=True)
+        if not suppressive.empty:
+            st.markdown("### Suppressive Environments")
+            st.dataframe(dedupe_columns(suppressive), use_container_width=True, hide_index=True)
+
+
+for idx, game in enumerate(schedule, start=10):
     with tabs[idx]:
         st.subheader(f"{game['game_key']} — {format_game_time_et(game.get('game_time', ''))}")
         st.caption(
