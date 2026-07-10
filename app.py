@@ -568,6 +568,22 @@ hr { margin-top: .38rem !important; margin-bottom: .38rem !important; }
   .bf-quick-row > :nth-child(2) { display:none !important; }
 }
 
+
+
+/* BF DATA DECISION DISTINCTION PATCH */
+.bf-target-strip{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:4px}
+.bf-target-role{display:inline-flex;align-items:center;border-radius:999px;padding:2px 7px;font-size:.58rem;font-weight:950;letter-spacing:.06em;border:1px solid currentColor}
+.bf-role-primary{color:#35d07f;background:rgba(53,208,127,.10)}
+.bf-role-pair{color:#6da2ff;background:rgba(109,162,255,.10)}
+.bf-role-value{color:#ffd166;background:rgba(255,209,102,.10)}
+.bf-role-sleeper{color:#c89cff;background:rgba(200,156,255,.10)}
+.bf-role-alt{color:#a8adb5;background:rgba(255,255,255,.04)}
+.bf-letter-grade{display:inline-flex;align-items:center;justify-content:center;min-width:32px;border-radius:7px;padding:3px 6px;font-size:.76rem;font-weight:950;border:1px solid rgba(255,255,255,.13);background:#111823}
+.bf-edge-note{font-size:.56rem;color:#94a0b3;font-weight:800}
+.bf-primary-row{border-color:rgba(53,208,127,.48)!important;box-shadow:0 0 0 1px rgba(53,208,127,.06) inset}
+.bf-pair-row{border-color:rgba(109,162,255,.34)!important}
+@media(max-width:760px){.bf-target-strip{gap:3px!important;margin-top:2px!important}.bf-target-role{font-size:.45rem!important;padding:2px 4px!important}.bf-letter-grade{font-size:.61rem!important;min-width:26px!important;padding:2px 4px!important}.bf-edge-note{font-size:.44rem!important}}
+
 </style>
 <div class="bf-hero">
     <div class="bf-kicker">BF DATA PRO LAB</div>
@@ -5756,13 +5772,13 @@ def _match_card_html(row: pd.Series, rank_override=None):
     l10_bbe_quality = safe_float(row.get("L10 BBE Quality"), 0.0)
     pitch_matchup = safe_float(row.get("Pitch Matchup Score"), 0.0)
 
-    overall_score = clip((matchup_score * 1.25) + (hr_attack_pct * .18) + (hr_prob * .65), 0, 99)
-    hr_score = clip(max(hr_prob * 3.55, authority_score * 2.1, l10_bbe_quality), 0, 99)
-    k_score = clip(100 - max(0, safe_float(row.get("GroundBall%"), 0) - 35) * 1.3 + max(0, safe_float(row.get("AIR%"), 0) - 50) * .35, 0, 99)
+    overall_score = safe_float(row.get("BF Decision Score"), clip((matchup_score * 1.25) + (hr_attack_pct * .18) + (hr_prob * .65), 0, 99))
+    pitch_fit_score = clip(50 + (pitch_matchup * 5.5) + safe_float(row.get("Handedness Edge"), 0) * 4.0, 0, 99)
+    decision_grade = str(row.get("BF Decision Grade", _letter_grade(overall_score)))
 
-    ovr_cls = _score_color_class(overall_score, 70, 50)
-    hr_cls = _score_color_class(hr_score, 70, 50)
-    k_cls = _score_color_class(k_score, 70, 50)
+    ovr_cls = _score_color_class(overall_score, 82, 68)
+    hr_cls = _score_color_class(hr_prob, 16, 10)
+    k_cls = _score_color_class(pitch_fit_score, 75, 58)
 
     barrel = safe_float(row.get("Barrel%"), 0.0)
     hard_hit = safe_float(row.get("HardHit%"), 0.0)
@@ -5782,7 +5798,7 @@ def _match_card_html(row: pd.Series, rank_override=None):
     season_hr9 = safe_float(row.get("Pitcher Season HR/9", row.get("Pitcher_Season_HR9", pitch_hr9)), pitch_hr9)
     opp_avg = clip(.190 + pitch_hh / 500 + pitch_barrel / 1000, .180, .330)
     era_proxy = clip(2.20 + pitch_hr9 * 1.15 + pitch_barrel * .05, 1.50, 6.50)
-    k_proxy = clip(18 + (100 - k_score) * .12 + pitch_hh * .08, 12, 35)
+    k_proxy = clip(18 + (100 - pitch_fit_score) * .12 + pitch_hh * .08, 12, 35)
     stuff_label = "Elite" if hr_attack_pct < 45 else ("Mixed" if hr_attack_pct < 70 else "Attackable")
 
     pitches = _parse_relevant_pitches(row)
@@ -5846,17 +5862,17 @@ def _match_card_html(row: pd.Series, rank_override=None):
   <div class="bf-match-topline">
     <div class="bf-cell-head"><div class="bf-head-label">PLAYER</div><div class="bf-head-main">#{escape(str(rank))} {escape(player)} <span class="bf-hand-badge">{escape(bats)}</span></div><div class="bf-quick-sub">{escape(team)} • {escape(game)}</div></div>
     <div class="bf-cell-head"><div class="bf-head-label">VS PITCHER</div><div class="bf-head-main">{escape(pitcher)} <span class="bf-hand-badge">{escape(throws)}</span></div></div>
-    <div class="bf-score-box"><div class="lab">OVR</div><div class="num {ovr_cls}">{overall_score:.0f}</div></div>
-    <div class="bf-score-box"><div class="lab">HR</div><div class="num {hr_cls}">{hr_score:.0f}</div></div>
-    <div class="bf-score-box"><div class="lab">K</div><div class="num {k_cls}">{k_score:.0f}</div></div>
+    <div class="bf-score-box"><div class="lab">EDGE</div><div class="num {ovr_cls}">{overall_score:.1f}</div></div>
+    <div class="bf-score-box"><div class="lab">GRADE</div><div class="num {ovr_cls}">{escape(decision_grade)}</div></div>
+    <div class="bf-score-box"><div class="lab">HR%</div><div class="num {hr_cls}">{hr_prob:.1f}</div></div>
   </div>
   {hit_banner}
   <div class="bf-card-body">
     <div class="bf-side-panel">
       <div class="bf-section-title">MATCHUP SCORES</div>
-      <div class="bf-score-line"><span>Overall</span><span class="bf-pill-num {ovr_cls}">{overall_score:.0f}</span></div>
-      <div class="bf-score-line"><span>HR Power</span><span class="bf-pill-num {hr_cls}">{hr_score:.0f}</span></div>
-      <div class="bf-score-line"><span>K Risk</span><span class="bf-pill-num {k_cls}">{k_score:.0f}</span></div>
+      <div class="bf-score-line"><span>BF Edge</span><span class="bf-pill-num {ovr_cls}">{overall_score:.1f}</span></div>
+      <div class="bf-score-line"><span>Decision Grade</span><span class="bf-pill-num {ovr_cls}">{escape(decision_grade)}</span></div>
+      <div class="bf-score-line"><span>Pitch Fit</span><span class="bf-pill-num {k_cls}">{pitch_fit_score:.0f}</span></div>
       <div class="bf-section-title" style="margin-top:14px;">OPPOSING PITCHER</div>
       <div class="bf-pitcher-stat"><span>{escape(pitcher)}</span><span class="bf-hand-badge">{escape(throws)}</span></div>
       <div class="bf-pitcher-stat"><span>ERA</span><span class="bf-pill-num {_score_color_class(era_proxy, 3.75, 4.75, True)}">{era_proxy:.2f}</span></div>
@@ -5876,6 +5892,64 @@ def _match_card_html(row: pd.Series, rank_override=None):
   <div class="bf-card-foot"><b>Why:</b> {escape(why2)}</div>
 </div>'''
 
+
+
+def _letter_grade(score: float) -> str:
+    val = safe_float(score, 0.0)
+    if val >= 96: return "A+"
+    if val >= 91: return "A"
+    if val >= 86: return "A-"
+    if val >= 80: return "B+"
+    if val >= 74: return "B"
+    if val >= 68: return "B-"
+    if val >= 60: return "C+"
+    if val >= 52: return "C"
+    return "D"
+
+
+def _decision_raw_score(row: pd.Series) -> float:
+    """UI-only separation score. It does not alter rankings or tracker history."""
+    return (
+        safe_float(row.get("Matchup Advantage Score"), 0.0) * 1.20
+        + _attackability_pct(row.get("HR Attackability Score", 0.0)) * 0.26
+        + safe_float(row.get("Statcast Authority Score"), 0.0) * 0.72
+        + safe_float(row.get("HR Probability %"), 0.0) * 2.10
+        + safe_float(row.get("Barrel%"), 0.0) * 1.10
+        + safe_float(row.get("HardHit%"), 0.0) * 0.28
+        + safe_float(row.get("Pitch Matchup Score"), 0.0) * 1.35
+        + safe_float(row.get("Model Rank Score"), 0.0) * 0.018
+        - max(0.0, safe_float(row.get("GroundBall%"), 0.0) - 45.0) * 0.75
+    )
+
+
+def _prepare_decision_view(df: pd.DataFrame) -> pd.DataFrame:
+    view = df.copy().reset_index(drop=True)
+    if view.empty:
+        return view
+    raw = view.apply(_decision_raw_score, axis=1)
+    top = float(raw.max()) if len(raw) else 0.0
+    bottom = float(raw.min()) if len(raw) else 0.0
+    spread = max(top - bottom, 1.0)
+    abs_component = raw.apply(lambda x: clip(58.0 + x / 8.5, 58.0, 98.8))
+    rel_component = raw.apply(lambda x: 72.0 + ((x - bottom) / spread) * 26.0)
+    view["BF Decision Score"] = (abs_component * 0.62 + rel_component * 0.38).round(1)
+    view["BF Decision Grade"] = view["BF Decision Score"].apply(_letter_grade)
+    view["BF Decision Gap"] = (top - raw).round(1)
+    roles = []
+    for i, row in view.iterrows():
+        gap = safe_float(row.get("BF Decision Gap"), 0.0)
+        if i == 0: role = "PRIMARY TARGET"
+        elif i == 1 and gap <= 12: role = "STRONG PAIR"
+        elif i <= 2 and gap <= 20: role = "VALUE TARGET"
+        elif i == len(view) - 1 or gap > 28: role = "SLEEPER"
+        else: role = "ALTERNATE"
+        roles.append(role)
+    view["BF Decision Role"] = roles
+    return view
+
+
+def _role_css(role: str) -> str:
+    return {"PRIMARY TARGET":"bf-role-primary","STRONG PAIR":"bf-role-pair","VALUE TARGET":"bf-role-value","SLEEPER":"bf-role-sleeper"}.get(str(role), "bf-role-alt")
 
 def bf_display_grade(row: pd.Series) -> tuple[str, str]:
     prob = safe_float(row.get("HR Probability %"), 0.0)
@@ -5925,27 +5999,31 @@ def render_player_card(row: pd.Series, rank_override=None):
     game = _display_value(row.get("Game"))
     pitcher = _display_value(row.get("Pitcher"))
     hr_prob = safe_float(row.get("HR Probability %"), 0.0)
-    matchup_score = safe_float(row.get("Matchup Advantage Score"), 0.0)
-    hr_attack_pct = safe_float(row.get("HR Attackability %", _attackability_pct(row.get("HR Attackability Score", 0))), 0.0)
-    authority_score = safe_float(row.get("Statcast Authority Score"), 0.0)
-    l10_bbe_quality = safe_float(row.get("L10 BBE Quality"), 0.0)
-    overall_score = clip((matchup_score * 1.25) + (hr_attack_pct * .18) + (hr_prob * .65), 0, 99)
-    hr_score = clip(max(hr_prob * 3.55, authority_score * 2.1, l10_bbe_quality), 0, 99)
-    k_score = clip(100 - max(0, safe_float(row.get("GroundBall%"), 0) - 35) * 1.3 + max(0, safe_float(row.get("AIR%"), 0) - 50) * .35, 0, 99)
+    decision_score = safe_float(row.get("BF Decision Score"), 0.0)
+    decision_grade = str(row.get("BF Decision Grade", _letter_grade(decision_score)))
+    decision_gap = safe_float(row.get("BF Decision Gap"), 0.0)
+    role = str(row.get("BF Decision Role", "ALTERNATE"))
+    role_cls = _role_css(role)
+    pitch_fit = clip(50 + safe_float(row.get("Pitch Matchup Score"), 0.0) * 5.5 + safe_float(row.get("Handedness Edge"), 0.0) * 4.0, 0, 99)
     actual_hr = safe_int(row.get("Actual HR Today"), 0)
     hit = f" · HR HIT {actual_hr}" if actual_hr > 0 else ""
-    grade, confidence = bf_display_grade(row)
     badges = " · ".join(bf_player_badges(row))
     pf_elite, pf_super, pf_nuke = propfinder_profile(row)
     pf_text = f"PF: {'NUKE' if pf_nuke else 'SUPER' if pf_super else 'ELITE' if pf_elite else 'NO'}"
+    row_cls = "bf-primary-row" if role == "PRIMARY TARGET" else ("bf-pair-row" if role == "STRONG PAIR" else "")
+    gap_text = "TOP PLAY" if decision_gap <= 0.05 else f"-{decision_gap:.1f} vs #1"
 
     quick_html = f'''
-<div class="bf-quick-row">
-  <div><div class="bf-quick-player">#{escape(str(rank))} {escape(player)}</div><div class="bf-quick-sub">{escape(team)} • {escape(game)}<br>{escape(grade)} · CONF {escape(confidence)}<br>{escape(badges)}</div></div>
+<div class="bf-quick-row {row_cls}">
+  <div>
+    <div class="bf-quick-player">#{escape(str(rank))} {escape(player)}</div>
+    <div class="bf-target-strip"><span class="bf-target-role {role_cls}">{escape(role)}</span><span class="bf-letter-grade">{escape(decision_grade)}</span><span class="bf-edge-note">{escape(gap_text)}</span></div>
+    <div class="bf-quick-sub">{escape(team)} • {escape(game)}<br>{escape(badges)}</div>
+  </div>
   <div><div class="bf-quick-player">vs {escape(pitcher)}</div><div class="bf-quick-sub">HR {hr_prob:.1f}%{escape(hit)}<br>{escape(pf_text)}</div></div>
-  <div class="bf-mini-score"><b>OVR</b><span>{overall_score:.0f}</span></div>
-  <div class="bf-mini-score"><b>HR</b><span>{hr_score:.0f}</span></div>
-  <div class="bf-mini-score"><b>K</b><span>{k_score:.0f}</span></div>
+  <div class="bf-mini-score"><b>EDGE</b><span>{decision_score:.1f}</span></div>
+  <div class="bf-mini-score"><b>GRADE</b><span>{escape(decision_grade)}</span></div>
+  <div class="bf-mini-score"><b>PITCH</b><span>{pitch_fit:.0f}</span></div>
 </div>'''
     st.markdown(quick_html, unsafe_allow_html=True)
     with st.expander(f"Open matchup card — {player} vs {pitcher}", expanded=False):
@@ -5956,11 +6034,19 @@ def render_card_grid(df: pd.DataFrame, max_cards: int = 24, columns: int = 3, ti
     if df is None or df.empty:
         st.caption("No cards to display.")
         return
-
-    view = df.copy().head(max_cards).reset_index(drop=True)
+    view = _prepare_decision_view(df.copy().head(max_cards)).reset_index(drop=True)
     if title:
         st.markdown(f"### {title}")
-
+    if len(view) >= 2:
+        top = view.iloc[0]
+        second = view.iloc[1]
+        st.markdown(
+            f'<div class="bf-signal-line"><strong>BF decision:</strong> '
+            f'<span class="bf-signal-value-green">{escape(str(top.get("Player", "—")))}</span> is the primary target '
+            f'({safe_float(top.get("BF Decision Score"),0):.1f}, {escape(str(top.get("BF Decision Grade","—")))}) · '
+            f'Best pair: <span class="bf-signal-value-yellow">{escape(str(second.get("Player", "—")))}</span></div>',
+            unsafe_allow_html=True,
+        )
     st.markdown('<div class="bf-quick-list">', unsafe_allow_html=True)
     for i, (_, row) in enumerate(view.iterrows()):
         rank = row.get("Rank", i + 1)
