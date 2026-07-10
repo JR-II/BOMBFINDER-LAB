@@ -380,11 +380,35 @@ def ensure_snapshot_folder():
     os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 
 
+def atomic_write_csv(df: pd.DataFrame, path: str):
+    """Crash-safe CSV write so refreshes/redeploys do not leave a half-written tracker."""
+    folder = os.path.dirname(path) or "."
+    os.makedirs(folder, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix="bfdata_", suffix=".csv", dir=folder)
+    os.close(fd)
+    try:
+        df.to_csv(tmp_path, index=False)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+def load_csv_safely(path: str) -> pd.DataFrame:
+    try:
+        return pd.read_csv(path) if os.path.exists(path) else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
 def save_daily_tracker_snapshot(tracker_df: pd.DataFrame, snapshot_date: str):
     """Persist the day's tracker state so historical results never disappear."""
     ensure_snapshot_folder()
     tracker_path = os.path.join(SNAPSHOT_DIR, f"hr_tracker_{snapshot_date}.csv")
-    tracker_df.to_csv(tracker_path, index=False)
+    atomic_write_csv(tracker_df, tracker_path)
 
 
 def save_daily_board_snapshot(board_df: pd.DataFrame, snapshot_date: str):
@@ -406,7 +430,7 @@ def save_daily_board_snapshot(board_df: pd.DataFrame, snapshot_date: str):
 
     key_cols = [c for c in ["Tracker Source", "Player", "Team", "Game"] if c in clean_board.columns]
     if len(key_cols) < 4:
-        clean_board.to_csv(board_path, index=False)
+        atomic_write_csv(clean_board, board_path)
         return
 
     if os.path.exists(board_path):
@@ -424,10 +448,10 @@ def save_daily_board_snapshot(board_df: pd.DataFrame, snapshot_date: str):
                     old_keys.add(k)
             if add_rows:
                 merged = pd.concat([old_board, pd.DataFrame(add_rows)], ignore_index=True)
-                merged.to_csv(board_path, index=False)
+                atomic_write_csv(merged, board_path)
             return
 
-    clean_board.to_csv(board_path, index=False)
+    atomic_write_csv(clean_board, board_path)
 
 
 def load_daily_board_snapshot(snapshot_date: str) -> pd.DataFrame:
@@ -447,7 +471,7 @@ def available_tracker_dates(tracker_df: pd.DataFrame) -> list[str]:
         dates.update(tracker_df["date"].dropna().astype(str).tolist())
     if os.path.exists(SNAPSHOT_DIR):
         for name in os.listdir(SNAPSHOT_DIR):
-            m = re.match(r"hr_board_(\d{4}-\d{2}-\d{2})\.csv", name)
+            m = re.match(r"hr_(?:board|tracker)_(\d{4}-\d{2}-\d{2})\.csv", name)
             if m:
                 dates.add(m.group(1))
     dates.add(today_str())
@@ -676,16 +700,29 @@ def load_tracker() -> pd.DataFrame:
         "hr_probability", "hr_tier", "hr_eligible", "tracker_source",
         "result", "hr_count", "result_state", "game_state", "updated_at"
     ]
-    if os.path.exists(TRACKER_FILE):
-        try:
-            df = pd.read_csv(TRACKER_FILE)
-            for col in columns:
-                if col not in df.columns:
-                    df[col] = pd.NA
-            return df[columns]
-        except Exception:
-            pass
-    return pd.DataFrame(columns=columns)
+    frames = []
+    live = load_csv_safely(TRACKER_FILE)
+    if not live.empty:
+        frames.append(live)
+
+    # Recover history from daily snapshots. This protects older slates when the
+    # Streamlit filesystem or main CSV is replaced during a deploy.
+    ensure_snapshot_folder()
+    for name in sorted(os.listdir(SNAPSHOT_DIR)):
+        if not re.match(r"hr_tracker_\d{4}-\d{2}-\d{2}\.csv$", name):
+            continue
+        snap = load_csv_safely(os.path.join(SNAPSHOT_DIR, name))
+        if not snap.empty:
+            frames.append(snap)
+
+    if not frames:
+        return pd.DataFrame(columns=columns)
+
+    df = pd.concat(frames, ignore_index=True, sort=False)
+    for col in columns:
+        if col not in df.columns:
+            df[col] = pd.NA
+    return dedupe_tracker_rows(df[columns])
 
 
 def dedupe_tracker_rows(df: pd.DataFrame) -> pd.DataFrame:
@@ -725,7 +762,12 @@ def dedupe_tracker_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 def save_tracker(df: pd.DataFrame):
     df = dedupe_tracker_rows(df)
-    df.to_csv(TRACKER_FILE, index=False)
+    atomic_write_csv(df, TRACKER_FILE)
+    # Mirror every affected date into its own recovery snapshot.
+    if df is not None and not df.empty and "date" in df.columns:
+        for date_key in df["date"].dropna().astype(str).unique():
+            day = df[df["date"].astype(str) == date_key].copy()
+            atomic_write_csv(day, os.path.join(SNAPSHOT_DIR, f"hr_tracker_{date_key}.csv"))
 
 
 def load_combo_tracker() -> pd.DataFrame:
@@ -747,7 +789,7 @@ def load_combo_tracker() -> pd.DataFrame:
 
 
 def save_combo_tracker(df: pd.DataFrame):
-    df.to_csv(COMBO_TRACKER_FILE, index=False)
+    atomic_write_csv(df, COMBO_TRACKER_FILE)
 
 
 def load_board_locks() -> pd.DataFrame:
@@ -760,7 +802,7 @@ def load_board_locks() -> pd.DataFrame:
 
 
 def save_board_locks(df: pd.DataFrame):
-    df.to_csv(LOCK_FILE, index=False)
+    atomic_write_csv(df, LOCK_FILE)
 
 
 def get_locked_board_for_date(date_key: str) -> pd.DataFrame:
@@ -3902,8 +3944,6 @@ def build_hitter_metrics(
         "Statcast Authority Tier": statcast_authority_tier,
         "HR Attackability Score": round(pitcher_target_score, 2),
         "HR Attackability Label": pitcher_target_label,
-        "HR Attackability Score": round(pitcher_target_score, 2),
-        "HR Attackability Label": pitcher_target_label,
         "Matchup Advantage Score": round(matchup_advantage_score, 2),
         "Matchup Advantage": matchup_advantage_tier,
         "Ranking Reasons": ranking_reasons,
@@ -4665,13 +4705,28 @@ def build_combo_board(df: pd.DataFrame) -> pd.DataFrame:
             players = combo["players"]
             games = combo["games"]
             labels = [f"{p} ({t})" for p, t in zip(combo["players"], combo["rows"]["Team"].tolist())]
+            unique_games = len(set(games))
+            avg_prob = round(combo["avg_prob"], 2)
+            confidence = round(clip(avg_prob * 3.0 + unique_games * 4.0 + combo["score"] * 0.18, 0, 99), 1)
+            if size == 2 and unique_games == 2 and avg_prob >= 14:
+                style = "SAFE PAIR"
+            elif unique_games == 1:
+                style = "SAME GAME"
+            elif avg_prob >= 16:
+                style = "HIGHEST EV"
+            elif avg_prob < 11:
+                style = "LONGSHOT"
+            else:
+                style = "CROSS GAME"
             rows.append({
                 "Combo Type": f"{size}-Leg",
                 "Combo #": idx,
+                "Combo Style": style,
                 "Combo Label": " + ".join(labels),
                 "Players": " | ".join(players),
                 "Games": " | ".join(games),
-                "Avg Leg HR %": round(combo["avg_prob"], 2),
+                "Avg Leg HR %": avg_prob,
+                "Combo Confidence": confidence,
                 "Combined Score": combo["score"],
                 "Source Pool": "TOP12+CORE",
             })
@@ -5281,6 +5336,47 @@ def _match_card_html(row: pd.Series, rank_override=None):
 </div>'''
 
 
+def bf_display_grade(row: pd.Series) -> tuple[str, str]:
+    prob = safe_float(row.get("HR Probability %"), 0.0)
+    matchup = safe_float(row.get("Matchup Advantage Score"), 0.0)
+    authority = safe_float(row.get("Statcast Authority Score"), 0.0)
+    attack = _attackability_pct(row.get("HR Attackability Score", 0.0))
+    confidence = clip((prob * 2.25) + (matchup * 0.42) + (authority * 0.42) + (attack * 0.12), 0, 99)
+    if confidence >= 88:
+        return "★★★★★ NUCLEAR", f"{confidence:.0f}"
+    if confidence >= 76:
+        return "★★★★☆ ELITE", f"{confidence:.0f}"
+    if confidence >= 64:
+        return "★★★★ STRONG", f"{confidence:.0f}"
+    if confidence >= 52:
+        return "★★★☆ SOLID", f"{confidence:.0f}"
+    return "★★ RISKY", f"{confidence:.0f}"
+
+
+def bf_player_badges(row: pd.Series) -> list[str]:
+    badges = []
+    if str(row.get("HR Tier", "")).upper() == "CORE TARGET": badges.append("🔥 CORE")
+    if safe_float(row.get("Barrel%"), 0) >= 14: badges.append("⚡ BARREL GOD")
+    if safe_float(row.get("Pitch Matchup Score"), 0) >= 7: badges.append("🎯 PERFECT PITCH FIT")
+    if safe_float(row.get("WeatherBoost"), 0) >= 1.5: badges.append("🌬 WIND/CARRY")
+    if safe_float(row.get("HR Attackability Score"), 0) >= 24: badges.append("🟢 ATTACK PITCHER")
+    if str(row.get("Recent Trend", "")).upper() == "HOT": badges.append("📈 HOT")
+    if safe_int(row.get("Actual HR Today"), 0) > 0: badges.append("💣 HR TODAY")
+    return badges[:4]
+
+
+def propfinder_profile(row: pd.Series) -> tuple[bool, bool, bool]:
+    ev = safe_float(row.get("EV"), 0)
+    barrel = safe_float(row.get("Barrel%"), 0)
+    hh = safe_float(row.get("HardHit%"), 0)
+    air = safe_float(row.get("AIR%"), 0)
+    gb = safe_float(row.get("GroundBall%"), 100)
+    elite = ev >= 90 and barrel >= 10 and hh >= 40 and air >= 50 and gb < 50
+    super_elite = ev >= 92 and barrel >= 14 and hh >= 45 and air >= 55 and gb <= 45
+    nuke = ev >= 94 and barrel >= 18 and hh >= 50 and air >= 60 and gb <= 40
+    return elite, super_elite, nuke
+
+
 def render_player_card(row: pd.Series, rank_override=None):
     rank = rank_override if rank_override is not None else row.get("Rank", "—")
     player = _display_value(row.get("Player"))
@@ -5297,11 +5393,15 @@ def render_player_card(row: pd.Series, rank_override=None):
     k_score = clip(100 - max(0, safe_float(row.get("GroundBall%"), 0) - 35) * 1.3 + max(0, safe_float(row.get("AIR%"), 0) - 50) * .35, 0, 99)
     actual_hr = safe_int(row.get("Actual HR Today"), 0)
     hit = f" · HR HIT {actual_hr}" if actual_hr > 0 else ""
+    grade, confidence = bf_display_grade(row)
+    badges = " · ".join(bf_player_badges(row))
+    pf_elite, pf_super, pf_nuke = propfinder_profile(row)
+    pf_text = f"PF: {'NUKE' if pf_nuke else 'SUPER' if pf_super else 'ELITE' if pf_elite else 'NO'}"
 
     quick_html = f'''
 <div class="bf-quick-row">
-  <div><div class="bf-quick-player">#{escape(str(rank))} {escape(player)}</div><div class="bf-quick-sub">{escape(team)} • {escape(game)}</div></div>
-  <div><div class="bf-quick-player">vs {escape(pitcher)}</div><div class="bf-quick-sub">HR {hr_prob:.1f}%{escape(hit)}</div></div>
+  <div><div class="bf-quick-player">#{escape(str(rank))} {escape(player)}</div><div class="bf-quick-sub">{escape(team)} • {escape(game)}<br>{escape(grade)} · CONF {escape(confidence)}<br>{escape(badges)}</div></div>
+  <div><div class="bf-quick-player">vs {escape(pitcher)}</div><div class="bf-quick-sub">HR {hr_prob:.1f}%{escape(hit)}<br>{escape(pf_text)}</div></div>
   <div class="bf-mini-score"><b>OVR</b><span>{overall_score:.0f}</span></div>
   <div class="bf-mini-score"><b>HR</b><span>{hr_score:.0f}</span></div>
   <div class="bf-mini-score"><b>K</b><span>{k_score:.0f}</span></div>
@@ -5467,7 +5567,7 @@ with tabs[4]:
                 continue
             st.markdown(f"**{combo_type} HR Combos**")
             st.dataframe(
-                cdf[["Combo #", "Combo Label", "Avg Leg HR %", "Combined Score", "Games"]],
+                cdf[["Combo #", "Combo Style", "Combo Label", "Avg Leg HR %", "Combo Confidence", "Combined Score", "Games"]],
                 use_container_width=True,
                 hide_index=True
             )
@@ -5530,6 +5630,36 @@ with tabs[7]:
     ].copy()
     if "hr_count" not in selected_tracker.columns:
         selected_tracker["hr_count"] = pd.to_numeric(selected_tracker.get("result", 0), errors="coerce").fillna(0).astype(int)
+
+    # Fast audit/search controls and rolling tracker performance.
+    tracker_search = st.text_input("Find tracked hitter", placeholder="Type a player, team, or game")
+    if tracker_search.strip():
+        q = tracker_search.strip().lower()
+        mask = (
+            selected_tracker["player"].astype(str).str.lower().str.contains(q, regex=False)
+            | selected_tracker["team"].astype(str).str.lower().str.contains(q, regex=False)
+            | selected_tracker["game"].astype(str).str.lower().str.contains(q, regex=False)
+        )
+        selected_tracker = selected_tracker[mask].copy()
+
+    tracker_dates = pd.to_datetime(tracker.get("date", pd.Series(dtype=str)), errors="coerce")
+    today_dt = pd.Timestamp(today_str())
+    week_mask = tracker_dates.ge(today_dt - pd.Timedelta(days=6)) & tracker_dates.le(today_dt)
+    week_df = tracker[week_mask].copy() if len(tracker_dates) else pd.DataFrame()
+    def _period_stats(frame):
+        if frame is None or frame.empty:
+            return 0, 0, 0.0
+        hc = pd.to_numeric(frame.get("hr_count", 0), errors="coerce").fillna(0)
+        hits = int((hc > 0).sum())
+        total = len(frame)
+        return total, hits, round(hits / total * 100, 2) if total else 0.0
+    t_total, t_hits, t_pct = _period_stats(tracker[tracker["date"].astype(str) == today_str()].copy())
+    w_total, w_hits, w_pct = _period_stats(week_df)
+    s_total, s_hits, s_pct = _period_stats(tracker)
+    p1, p2, p3 = st.columns(3)
+    p1.metric("Today", f"{t_hits}/{t_total}", f"{t_pct}%")
+    p2.metric("Last 7 Days", f"{w_hits}/{w_total}", f"{w_pct}%")
+    p3.metric("Season History", f"{s_hits}/{s_total}", f"{s_pct}%")
 
     st.markdown(f"### {selected_tracker_date} by Section")
     s1, s2, s3 = st.columns(3)
