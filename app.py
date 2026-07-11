@@ -5954,23 +5954,20 @@ def _match_card_html(row: pd.Series, rank_override=None):
     barrel = safe_float(row.get("Barrel%"), 0.0)
     hard_hit = safe_float(row.get("HardHit%"), 0.0)
     ev = safe_float(row.get("EV"), 0.0)
-    contact = clip(100 - max(0, safe_float(row.get("GroundBall%"), 0) - 40) - max(0, 40 - hard_hit) * .6, 0, 100)
     fb = safe_float(row.get("FlyBall%"), 0.0)
     gb = safe_float(row.get("GroundBall%"), 0.0)
     ld = safe_float(row.get("LineDrive%"), 0.0)
     launch = safe_float(row.get("LaunchAngle"), 0.0)
-    max_ev = max(ev, safe_float(row.get("EV"), 0.0) + 20.5)
-    pull = clip(35 + safe_float(row.get("Handedness Edge"), 0) * 4 + safe_float(row.get("Barrel%"), 0) * .25, 0, 100)
-    oppo = clip(100 - pull - 35, 0, 100)
+    xslg = safe_float(row.get("xSLG"), 0.0)
+    xwoba = safe_float(row.get("xwOBA"), 0.0)
+    air_pct = safe_float(row.get("AIR%"), fb + ld)
 
     pitch_hr9 = safe_float(row.get("Pitcher_HR9_Last7"), 0.0)
     pitch_barrel = safe_float(row.get("Pitcher_Barrel_Allowed"), 0.0)
     pitch_hh = safe_float(row.get("Pitcher_HardHit_Allowed"), 0.0)
-    season_hr9 = safe_float(row.get("Pitcher Season HR/9", row.get("Pitcher_Season_HR9", pitch_hr9)), pitch_hr9)
-    opp_avg = clip(.190 + pitch_hh / 500 + pitch_barrel / 1000, .180, .330)
-    era_proxy = clip(2.20 + pitch_hr9 * 1.15 + pitch_barrel * .05, 1.50, 6.50)
-    k_proxy = clip(18 + (100 - pitch_fit_score) * .12 + pitch_hh * .08, 12, 35)
-    stuff_label = "Elite" if hr_attack_pct < 45 else ("Mixed" if hr_attack_pct < 70 else "Attackable")
+    season_hr9 = safe_float(row.get("Pitcher_Season_HR9", pitch_hr9), pitch_hr9)
+    recent_hr9 = safe_float(row.get("Pitcher_Recent_HR9", pitch_hr9), pitch_hr9)
+    attack_label = _display_value(row.get("HR Attackability Label", "—"))
 
     pitches = _parse_relevant_pitches(row)
     tiles = []
@@ -5998,29 +5995,34 @@ def _match_card_html(row: pd.Series, rank_override=None):
     if not tiles:
         tiles.append('<div class="bf-pitch-tile"><div class="bf-pitch-name">NO VERIFIED ARSENAL</div><div class="bf-pitch-note">No pitch-type data returned. BF Data will not invent pitches.</div></div>')
 
-    def bvp_cell(label, batter_val, pitcher_val, suffix=""):
-        b = safe_float(batter_val, 0.0)
-        p = safe_float(pitcher_val, 0.0)
+    def metric_cell(label, value, suffix="", digits=1, tone="green"):
+        try:
+            numeric = float(value)
+            shown = f"{numeric:.{digits}f}{suffix}"
+        except Exception:
+            shown = "—"
+        cls = "bf-green-txt" if tone == "green" else ("bf-red-txt" if tone == "red" else "bf-yellow-txt")
         return (
             '<div class="bf-bvp-cell">'
             f'<div class="bf-bvp-label">{escape(label)}</div>'
-            f'<div class="bf-bvp-values"><span class="bf-green-txt">{b:.1f}{suffix}</span> <span class="bf-red-txt">{p:.1f}{suffix}</span></div>'
+            f'<div class="bf-bvp-values"><span class="{cls}">{escape(shown)}</span></div>'
             '</div>'
         )
 
     bvp_cells = "".join([
-        bvp_cell("BARREL%", barrel, pitch_barrel, "%"),
-        bvp_cell("EXIT VELO", ev, max(80, ev - 3.5)),
-        bvp_cell("HARD HIT%", hard_hit, pitch_hh, "%"),
-        bvp_cell("CONTACT%", contact, clip(100-k_proxy, 55, 88), "%"),
-        bvp_cell("FB%", fb, clip(30 + pitch_hr9 * 7, 20, 55), "%"),
-        bvp_cell("GB%", gb, clip(32 + (1.4 - pitch_hr9) * 8, 20, 55), "%"),
-        bvp_cell("LD%", ld, 17, "%"),
-        bvp_cell("LAUNCH", launch, 16.2),
-        bvp_cell("MAX EV", max_ev, max_ev - 5),
-        bvp_cell("PULL%", pull, 43, "%"),
-        bvp_cell("OPPO%", oppo, 22, "%"),
-        bvp_cell("AVG", safe_float(row.get("xwOBA", 0.0), 0.0), opp_avg),
+        metric_cell("BATTER EV", ev),
+        metric_cell("BATTER BARREL", barrel, "%"),
+        metric_cell("BATTER HARD HIT", hard_hit, "%"),
+        metric_cell("BATTER AIR", air_pct, "%"),
+        metric_cell("BATTER FB", fb, "%"),
+        metric_cell("BATTER LD", ld, "%"),
+        metric_cell("BATTER GB", gb, "%", tone="yellow" if gb >= 45 else "green"),
+        metric_cell("LAUNCH ANGLE", launch),
+        metric_cell("xSLG", xslg, digits=3),
+        metric_cell("xwOBA", xwoba, digits=3),
+        metric_cell("P HR/9 BLEND", pitch_hr9, digits=2, tone="red"),
+        metric_cell("P BARREL ALLOWED", pitch_barrel, "%", tone="red"),
+        metric_cell("P HARD HIT ALLOWED", pitch_hh, "%", tone="red"),
     ])
 
     why = _display_value(row.get("Ranking Reasons", row.get("Why", "")))
@@ -6046,16 +6048,17 @@ def _match_card_html(row: pd.Series, rank_override=None):
       <div class="bf-score-line"><span>Pitch Fit</span><span class="bf-pill-num {k_cls}">{pitch_fit_score:.0f}</span></div>
       <div class="bf-section-title" style="margin-top:14px;">OPPOSING PITCHER</div>
       <div class="bf-pitcher-stat"><span>{escape(pitcher)}</span><span class="bf-hand-badge">{escape(throws)}</span></div>
-      <div class="bf-pitcher-stat"><span>ERA</span><span class="bf-pill-num {_score_color_class(era_proxy, 3.75, 4.75, True)}">{era_proxy:.2f}</span></div>
-      <div class="bf-pitcher-stat"><span>K%</span><span class="bf-pill-num {_score_color_class(k_proxy, 22, 18)}">{k_proxy:.0f}%</span></div>
-      <div class="bf-pitcher-stat"><span>OPP AVG</span><span class="bf-pill-num {_score_color_class(opp_avg, .235, .270, True)}">{opp_avg:.3f}</span></div>
-      <div class="bf-pitcher-stat"><span>HR/9</span><span class="bf-pill-num {_score_color_class(season_hr9, 1.25, .85)}">{season_hr9:.2f}</span></div>
-      <div class="bf-pitcher-stat"><span>STUFF</span><span class="bf-pill-num {_score_color_class(100-hr_attack_pct, 60, 35)}">{escape(stuff_label)}</span></div>
+      <div class="bf-pitcher-stat"><span>Season HR/9</span><span class="bf-pill-num {_score_color_class(season_hr9, 1.25, .85)}">{season_hr9:.2f}</span></div>
+      <div class="bf-pitcher-stat"><span>Recent HR/9</span><span class="bf-pill-num {_score_color_class(recent_hr9, 1.25, .85)}">{recent_hr9:.2f}</span></div>
+      <div class="bf-pitcher-stat"><span>BF Blend HR/9</span><span class="bf-pill-num {_score_color_class(pitch_hr9, 1.25, .85)}">{pitch_hr9:.2f}</span></div>
+      <div class="bf-pitcher-stat"><span>Barrel Allowed</span><span class="bf-pill-num {_score_color_class(pitch_barrel, 8, 6.5)}">{pitch_barrel:.1f}%</span></div>
+      <div class="bf-pitcher-stat"><span>Hard Hit Allowed</span><span class="bf-pill-num {_score_color_class(pitch_hh, 40, 36)}">{pitch_hh:.1f}%</span></div>
+      <div class="bf-pitcher-stat"><span>Attack Read</span><span class="bf-pill-num {_score_color_class(hr_attack_pct, 70, 50)}">{escape(attack_label)}</span></div>
     </div>
     <div>
       <div class="bf-section-title">X-ARSENAL · PITCH TYPE MATCHUP</div>
       <div class="bf-arsenal-grid">{''.join(tiles)}</div>
-      <div class="bf-bvp-title">BATTER VS PITCHER · <span class="bf-green-txt">BATTER</span> / <span class="bf-red-txt">PITCHER</span></div>
+      <div class="bf-bvp-title">VERIFIED MATCHUP METRICS · <span class="bf-green-txt">BATTER</span> / <span class="bf-red-txt">PITCHER</span></div>
       <div class="bf-bvp-grid">{bvp_cells}</div>
     </div>
   </div>
@@ -7182,9 +7185,9 @@ with tabs[9]:
 
 
 
-# Individual per-game boards remain ready across the tab strip. To keep startup
-# fast and prevent iPhone crashes, these tabs render compact decision cards only;
-# full arsenal cards remain available in the main slate tabs.
+# Individual per-game boards remain ready across the tab strip. Each player keeps
+# the original expandable batter-vs-pitcher matchup card. The expanders are collapsed
+# by default, so the detailed HTML is available without adding new network calls.
 for game_index, game in enumerate(schedule):
     with tabs[10 + game_index]:
         st.subheader(f"{game['game_key']} — {format_game_time_et(game.get('game_time', ''))}")
@@ -7206,7 +7209,7 @@ for game_index, game in enumerate(schedule):
             st.markdown(f"### {away_team} · {away_status}")
             st.caption(f"Official hitters: {safe_int(game.get('away_confirmed_count'), 0)}/9")
             if not away_hr.empty:
-                render_card_grid(away_hr, max_cards=4, columns=1, allow_expand=False)
+                render_card_grid(away_hr, max_cards=4, columns=1, allow_expand=True)
             else:
                 st.caption("No HR-qualified bats surfaced.")
             with st.expander("Hits + Runs + RBIs"):
@@ -7216,7 +7219,7 @@ for game_index, game in enumerate(schedule):
             st.markdown(f"### {home_team} · {home_status}")
             st.caption(f"Official hitters: {safe_int(game.get('home_confirmed_count'), 0)}/9")
             if not home_hr.empty:
-                render_card_grid(home_hr, max_cards=4, columns=1, allow_expand=False)
+                render_card_grid(home_hr, max_cards=4, columns=1, allow_expand=True)
             else:
                 st.caption("No HR-qualified bats surfaced.")
             with st.expander("Hits + Runs + RBIs"):
