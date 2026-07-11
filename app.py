@@ -589,6 +589,39 @@ hr { margin-top: .38rem !important; margin-bottom: .38rem !important; }
 .bf-pair-row{border-color:rgba(109,162,255,.34)!important}
 @media(max-width:760px){.bf-target-strip{gap:3px!important;margin-top:2px!important}.bf-target-role{font-size:.45rem!important;padding:2px 4px!important}.bf-letter-grade{font-size:.61rem!important;min-width:26px!important;padding:2px 4px!important}.bf-edge-note{font-size:.44rem!important}}
 
+
+
+/* BF DATA FINAL ATTACK READ CLEANUP */
+.bf-attack-callout{margin-top:12px;border:1px solid rgba(255,255,255,.12);border-radius:12px;background:#0d141d;overflow:hidden}
+.bf-attack-callout.green{border-color:rgba(53,208,127,.48);background:linear-gradient(135deg,rgba(53,208,127,.10),#0d141d 68%)}
+.bf-attack-callout.yellow{border-color:rgba(255,209,102,.48);background:linear-gradient(135deg,rgba(255,209,102,.09),#0d141d 68%)}
+.bf-attack-callout.red{border-color:rgba(255,85,85,.48);background:linear-gradient(135deg,rgba(255,85,85,.09),#0d141d 68%)}
+.bf-attack-head{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:9px 10px;border-bottom:1px solid rgba(255,255,255,.08)}
+.bf-attack-title{font-size:.58rem;font-weight:950;letter-spacing:.15em;text-transform:uppercase;color:#8fa9d8}
+.bf-attack-grade{font-size:.68rem;font-weight:950;border:1px solid currentColor;border-radius:999px;padding:3px 7px;white-space:nowrap}
+.bf-attack-verdict{font-size:.85rem;font-weight:950;padding:10px 10px 3px;color:#fff}
+.bf-attack-meter{display:flex;align-items:center;gap:8px;padding:0 10px 8px}
+.bf-attack-meter-track{height:6px;flex:1;border-radius:999px;background:#202936;overflow:hidden}
+.bf-attack-meter-fill{height:100%;border-radius:999px}
+.bf-attack-score{font-size:.72rem;font-weight:950;min-width:42px;text-align:right;color:#fff}
+.bf-attack-reasons{display:grid;grid-template-columns:1fr;gap:5px;padding:0 10px 10px}
+.bf-attack-reason{display:flex;align-items:flex-start;gap:6px;font-size:.68rem;line-height:1.25;color:#d7dfeb}
+.bf-attack-dot{width:6px;height:6px;border-radius:50%;margin-top:4px;flex:0 0 auto}
+.bf-attack-callout.green .bf-attack-grade,.bf-attack-callout.green .bf-attack-verdict{color:#35d07f}.bf-attack-callout.green .bf-attack-meter-fill,.bf-attack-callout.green .bf-attack-dot{background:#35d07f}
+.bf-attack-callout.yellow .bf-attack-grade,.bf-attack-callout.yellow .bf-attack-verdict{color:#ffd166}.bf-attack-callout.yellow .bf-attack-meter-fill,.bf-attack-callout.yellow .bf-attack-dot{background:#ffd166}
+.bf-attack-callout.red .bf-attack-grade,.bf-attack-callout.red .bf-attack-verdict{color:#ff6b6b}.bf-attack-callout.red .bf-attack-meter-fill,.bf-attack-callout.red .bf-attack-dot{background:#ff6b6b}
+@media(max-width:760px){
+ .bf-attack-callout{margin-top:8px;border-radius:9px}
+ .bf-attack-head{padding:7px 8px}
+ .bf-attack-title{font-size:.48rem}
+ .bf-attack-grade{font-size:.55rem;padding:2px 5px}
+ .bf-attack-verdict{font-size:.72rem;padding:8px 8px 2px}
+ .bf-attack-meter{padding:0 8px 6px}
+ .bf-attack-score{font-size:.60rem;min-width:36px}
+ .bf-attack-reasons{padding:0 8px 8px;gap:4px}
+ .bf-attack-reason{font-size:.58rem;line-height:1.2}
+}
+
 </style>
 <div class="bf-hero">
     <div class="bf-kicker">BF DATA PRO LAB</div>
@@ -5968,6 +6001,42 @@ def _match_card_html(row: pd.Series, rank_override=None):
     season_hr9 = safe_float(row.get("Pitcher_Season_HR9", pitch_hr9), pitch_hr9)
     recent_hr9 = safe_float(row.get("Pitcher_Recent_HR9", pitch_hr9), pitch_hr9)
     attack_label = _display_value(row.get("HR Attackability Label", "—"))
+    attack_parts = [part.strip() for part in str(attack_label).split("|") if part.strip()]
+    attack_first = attack_parts[0] if attack_parts else "No attack read available"
+    if ":" in attack_first:
+        attack_verdict, first_reason = [part.strip() for part in attack_first.split(":", 1)]
+        attack_reasons = ([first_reason] if first_reason else []) + attack_parts[1:]
+    else:
+        attack_verdict = attack_first
+        attack_reasons = attack_parts[1:]
+    attack_reasons = [reason for reason in attack_reasons if reason and reason != "—"][:4]
+    if hr_attack_pct >= 70:
+        attack_tone = "green"
+        attack_grade = "A"
+    elif hr_attack_pct >= 50:
+        attack_tone = "yellow"
+        attack_grade = "B"
+    else:
+        attack_tone = "red"
+        attack_grade = "C"
+    attack_reason_html = "".join(
+        f'<div class="bf-attack-reason"><span class="bf-attack-dot"></span><span>{escape(reason[:1].upper() + reason[1:])}</span></div>'
+        for reason in attack_reasons
+    ) or '<div class="bf-attack-reason"><span class="bf-attack-dot"></span><span>Matchup data is still limited.</span></div>'
+    attack_callout = (
+        f'<div class="bf-attack-callout {attack_tone}">'
+        '<div class="bf-attack-head">'
+        '<div class="bf-attack-title">BF ATTACK READ</div>'
+        f'<div class="bf-attack-grade">GRADE {attack_grade}</div>'
+        '</div>'
+        f'<div class="bf-attack-verdict">{escape(attack_verdict)}</div>'
+        '<div class="bf-attack-meter">'
+        f'<div class="bf-attack-meter-track"><div class="bf-attack-meter-fill" style="width:{clip(hr_attack_pct,0,100):.1f}%"></div></div>'
+        f'<div class="bf-attack-score">{hr_attack_pct:.0f}/100</div>'
+        '</div>'
+        f'<div class="bf-attack-reasons">{attack_reason_html}</div>'
+        '</div>'
+    )
 
     pitches = _parse_relevant_pitches(row)
     tiles = []
@@ -6053,7 +6122,7 @@ def _match_card_html(row: pd.Series, rank_override=None):
       <div class="bf-pitcher-stat"><span>BF Blend HR/9</span><span class="bf-pill-num {_score_color_class(pitch_hr9, 1.25, .85)}">{pitch_hr9:.2f}</span></div>
       <div class="bf-pitcher-stat"><span>Barrel Allowed</span><span class="bf-pill-num {_score_color_class(pitch_barrel, 8, 6.5)}">{pitch_barrel:.1f}%</span></div>
       <div class="bf-pitcher-stat"><span>Hard Hit Allowed</span><span class="bf-pill-num {_score_color_class(pitch_hh, 40, 36)}">{pitch_hh:.1f}%</span></div>
-      <div class="bf-pitcher-stat"><span>Attack Read</span><span class="bf-pill-num {_score_color_class(hr_attack_pct, 70, 50)}">{escape(attack_label)}</span></div>
+      {attack_callout}
     </div>
     <div>
       <div class="bf-section-title">X-ARSENAL · PITCH TYPE MATCHUP</div>
