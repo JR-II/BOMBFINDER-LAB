@@ -12,6 +12,7 @@ import time
 import tempfile
 import json
 from io import StringIO
+from concurrent.futures import ThreadPoolExecutor, as_completed
 st.set_page_config(page_title="BF Data", layout="wide")
 
 st.markdown("""
@@ -569,6 +570,10 @@ hr { margin-top: .38rem !important; margin-bottom: .38rem !important; }
 }
 
 
+
+.bf-live-hr-badge{display:inline-flex;align-items:center;margin-left:5px;padding:2px 6px;border-radius:999px;font-size:.56rem;font-weight:950;vertical-align:middle;border:1px solid rgba(255,255,255,.16);background:#111823;color:#a8adb5;white-space:nowrap}
+.bf-live-hr-badge.hit{color:#bcffd6;border-color:rgba(53,208,127,.55);background:rgba(53,208,127,.12)}
+@media(max-width:760px){.bf-live-hr-badge{font-size:.43rem!important;padding:1px 4px!important;margin-left:3px!important}}
 
 /* BF DATA DECISION DISTINCTION PATCH */
 .bf-target-strip{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:4px}
@@ -2112,7 +2117,7 @@ def fetch_weather_for_park(home_team_abbr: str):
     )
 
     try:
-        resp = requests.get(url, timeout=15)
+        resp = requests.get(url, timeout=6)
         resp.raise_for_status()
         data = resp.json()
         current = data.get("current", {}) or {}
@@ -2143,7 +2148,7 @@ def get_previous_team_game_pk(team_id: int):
             "https://statsapi.mlb.com/api/v1/schedule"
             f"?sportId=1&teamId={team_id}&startDate={start_range}&endDate={end_range}"
         )
-        resp = requests.get(url, timeout=20)
+        resp = requests.get(url, timeout=8)
         resp.raise_for_status()
         payload = resp.json()
     except Exception:
@@ -2258,7 +2263,7 @@ def fetch_schedule_payload():
         "https://statsapi.mlb.com/api/v1/schedule"
         f"?sportId=1&date={today_str()}&hydrate=probablePitcher"
     )
-    resp = requests.get(url, timeout=20)
+    resp = requests.get(url, timeout=8)
     resp.raise_for_status()
     return resp.json()
 
@@ -2267,7 +2272,7 @@ def fetch_schedule_payload():
 def get_team_probable_pitcher(team_id: int):
     url = f"https://statsapi.mlb.com/api/v1/teams/{team_id}?hydrate=probablePitcher"
     try:
-        resp = requests.get(url, timeout=20)
+        resp = requests.get(url, timeout=8)
         resp.raise_for_status()
         data = resp.json()
         teams = data.get("teams", [])
@@ -2352,18 +2357,98 @@ def get_today_schedule():
 def fetch_boxscore(game_pk: int):
     url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
     try:
-        resp = requests.get(url, timeout=20)
+        resp = requests.get(url, timeout=8)
         resp.raise_for_status()
         return resp.json()
     except Exception:
         return {}
 
 
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_official_lineup_counts(game_pk: int) -> tuple[int, int]:
+    """Return official away/home lineup counts from MLB's game boxscore.
+
+    A lineup is only marked confirmed when MLB supplies battingOrder values for
+    all nine hitters. Projected roster rows never count as confirmed.
+    """
+    try:
+        resp = requests.get(
+            f"https://statsapi.mlb.com/api/v1/game/{int(game_pk)}/boxscore",
+            timeout=6,
+        )
+        resp.raise_for_status()
+        payload = resp.json() or {}
+    except Exception:
+        return 0, 0
+
+    counts = []
+    for side in ("away", "home"):
+        players = (((payload.get("teams") or {}).get(side) or {}).get("players") or {})
+        spots = set()
+        for pdata in players.values():
+            raw = pdata.get("battingOrder")
+            if not raw:
+                continue
+            try:
+                spot = int(str(raw)) // 100
+            except Exception:
+                continue
+            if 1 <= spot <= 9:
+                spots.add(spot)
+        counts.append(len(spots))
+    return counts[0], counts[1]
+
+
+def refresh_official_lineup_status(schedule_rows: list[dict]) -> list[dict]:
+    """Lightweight official-status refresh that does not rebuild projections."""
+    rows = [dict(g) for g in (schedule_rows or [])]
+    if not rows:
+        return rows
+    with ThreadPoolExecutor(max_workers=min(8, len(rows))) as pool:
+        futures = {pool.submit(fetch_official_lineup_counts, g.get("game_pk")): i for i, g in enumerate(rows) if g.get("game_pk")}
+        for future in as_completed(futures):
+            i = futures[future]
+            try:
+                away_n, home_n = future.result()
+            except Exception:
+                away_n, home_n = 0, 0
+            # Never downgrade a confirmed count already returned by the official source.
+            rows[i]["away_confirmed_count"] = max(safe_int(rows[i].get("away_confirmed_count"), 0), safe_int(away_n, 0))
+            rows[i]["home_confirmed_count"] = max(safe_int(rows[i].get("home_confirmed_count"), 0), safe_int(home_n, 0))
+            rows[i]["away_lineup_status"] = "CONFIRMED" if safe_int(away_n, 0) >= 9 else ("PARTIAL" if safe_int(away_n, 0) > 0 else "PROJECTED")
+            rows[i]["home_lineup_status"] = "CONFIRMED" if safe_int(home_n, 0) >= 9 else ("PARTIAL" if safe_int(home_n, 0) > 0 else "PROJECTED")
+    return sort_schedule_rows(rows)
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def get_schedule_homer_maps(schedule_signature: tuple) -> dict:
+    """Fetch active/final HR maps once per game and reuse them everywhere."""
+    result = {}
+    items = [x for x in schedule_signature if len(x) >= 3 and str(x[2]) != "Preview"]
+    if not items:
+        return result
+    with ThreadPoolExecutor(max_workers=min(8, len(items))) as pool:
+        futures = {pool.submit(get_boxscore_homers, int(game_pk)): int(game_pk) for game_pk, _game_key, _state in items}
+        for future in as_completed(futures):
+            game_pk = futures[future]
+            try:
+                result[game_pk] = future.result() or {}
+            except Exception:
+                result[game_pk] = {}
+    return result
+
+
+def schedule_homer_maps(schedule_rows: list[dict]) -> dict:
+    signature = tuple((safe_int(g.get("game_pk"), -1), str(g.get("game_key", "")), str(g.get("game_state", "Preview"))) for g in (schedule_rows or []))
+    return get_schedule_homer_maps(signature)
+
+
 @st.cache_data(ttl=1800)
 def get_team_hitters(team_id: int):
     url = f"https://statsapi.mlb.com/api/v1/teams/{team_id}/roster?rosterType=active"
     try:
-        resp = requests.get(url, timeout=20)
+        resp = requests.get(url, timeout=8)
         resp.raise_for_status()
         data = resp.json()
 
@@ -4472,20 +4557,47 @@ def _save_daily_dataset_cache(df: pd.DataFrame, schedule: list[dict], deep_bbe: 
 
 def load_or_build_daily_dataset(deep_bbe: bool = False, force: bool = False):
     df_path, schedule_path = _daily_cache_paths(deep_bbe)
-    if not force and os.path.exists(df_path) and os.path.exists(schedule_path):
+
+    def _read_cache(paths):
+        dpath, spath = paths
+        if not (os.path.exists(dpath) and os.path.exists(spath)):
+            return None
         try:
-            cached_df = pd.read_pickle(df_path)
-            with open(schedule_path, "r", encoding="utf-8") as fh:
+            cached_df = pd.read_pickle(dpath)
+            with open(spath, "r", encoding="utf-8") as fh:
                 cached_schedule = json.load(fh)
-            if isinstance(cached_df, pd.DataFrame) and isinstance(cached_schedule, list):
+            if isinstance(cached_df, pd.DataFrame) and not cached_df.empty and isinstance(cached_schedule, list):
                 return cached_df, sort_schedule_rows(cached_schedule)
         except Exception:
-            pass
+            return None
+        return None
 
-    built_df, built_schedule = build_daily_dataset(deep_bbe=deep_bbe)
-    if isinstance(built_df, pd.DataFrame) and not built_df.empty:
-        _save_daily_dataset_cache(built_df, built_schedule, deep_bbe)
-    return built_df, built_schedule
+    if not force:
+        cached = _read_cache((df_path, schedule_path))
+        if cached is not None:
+            return cached
+
+    try:
+        built_df, built_schedule = build_daily_dataset(deep_bbe=deep_bbe)
+        if isinstance(built_df, pd.DataFrame) and not built_df.empty:
+            _save_daily_dataset_cache(built_df, built_schedule, deep_bbe)
+            return built_df, built_schedule
+    except Exception as exc:
+        st.session_state["bf_last_build_error"] = str(exc)
+
+    # Crash protection: keep the last valid slate on screen instead of dying.
+    cached = _read_cache((df_path, schedule_path))
+    if cached is not None:
+        st.session_state["bf_using_fallback_cache"] = True
+        return cached
+
+    snapshot = load_daily_board_snapshot(today_str())
+    if snapshot is not None and not snapshot.empty:
+        try:
+            return snapshot, sort_schedule_rows(get_today_schedule())
+        except Exception:
+            return snapshot, []
+    return pd.DataFrame(), []
 
 
 def get_research_shortlist_pool(df: pd.DataFrame) -> pd.DataFrame:
@@ -4696,7 +4808,7 @@ def get_live_feed_homers(game_pk: int):
     url = f"https://statsapi.mlb.com/api/v1.1/game/{game_pk}/feed/live"
     homer_map = {}
     try:
-        resp = requests.get(url, timeout=15)
+        resp = requests.get(url, timeout=6)
         resp.raise_for_status()
         data = resp.json()
     except Exception:
@@ -4727,7 +4839,7 @@ def get_boxscore_homers(game_pk: int):
     homer_map = {}
 
     try:
-        resp = requests.get(url, timeout=20)
+        resp = requests.get(url, timeout=8)
         resp.raise_for_status()
         data = resp.json()
     except Exception:
@@ -4771,19 +4883,20 @@ def get_player_hr_count_from_map(homer_map: dict, player_name: str) -> int:
 
 
 def add_live_homer_counts_to_board(df: pd.DataFrame, schedule: list[dict]) -> pd.DataFrame:
-    """Display-only result column. This must NEVER be used to rank or rewrite predictions."""
+    """Display-only result column. It never changes prediction ranking."""
     if df.empty:
         return df.copy()
     out = df.copy()
     out["Actual HR Today"] = 0
     if "game_pk" not in out.columns or "Player" not in out.columns:
         return out
+    homer_maps = schedule_homer_maps(schedule)
     for game in schedule:
-        game_pk = game.get("game_pk")
-        if game_pk is None:
+        game_pk = safe_int(game.get("game_pk"), -1)
+        homer_map = homer_maps.get(game_pk, {})
+        if not homer_map:
             continue
-        homer_map = get_boxscore_homers(game_pk)
-        mask = pd.to_numeric(out["game_pk"], errors="coerce") == safe_int(game_pk, -1)
+        mask = pd.to_numeric(out["game_pk"], errors="coerce") == game_pk
         if mask.any():
             out.loc[mask, "Actual HR Today"] = out.loc[mask, "Player"].apply(
                 lambda p: get_player_hr_count_from_map(homer_map, p)
@@ -4896,9 +5009,8 @@ def auto_update_tracker_results(tracker: pd.DataFrame, schedule: list[dict]):
         if not rows_mask.any():
             continue
 
-        # Always read boxscore + live play feed. Schedule states can lag, and boxscore
-        # alone can temporarily miss multi-HR totals.
-        homer_map = get_boxscore_homers(game_pk)
+        # Reuse the single active-game HR map shared by cards and trackers.
+        homer_map = schedule_homer_maps(schedule).get(safe_int(game_pk, -1), {})
 
         for idx in tracker.index[rows_mask]:
             player = tracker.at[idx, "player"]
@@ -5288,9 +5400,9 @@ def auto_update_combo_tracker_results(combo_tracker: pd.DataFrame, schedule: lis
     today_mask = combo_tracker["date"].astype(str) == date_key
     lineup_index = _confirmed_lineup_index(schedule)
 
-    homer_maps, schedule_states = {}, {}
+    homer_maps = schedule_homer_maps(schedule)
+    schedule_states = {}
     for game in schedule:
-        homer_maps[game["game_pk"]] = get_boxscore_homers(game["game_pk"])
         schedule_states[game["game_key"]] = (
             game.get("game_state", "Preview"),
             game.get("detailed_state", "Scheduled"),
@@ -5919,7 +6031,7 @@ def _match_card_html(row: pd.Series, rank_override=None):
     return f'''
 <div class="bf-match-card">
   <div class="bf-match-topline">
-    <div class="bf-cell-head"><div class="bf-head-label">PLAYER</div><div class="bf-head-main">#{escape(str(rank))} {escape(player)} <span class="bf-hand-badge">{escape(bats)}</span></div><div class="bf-quick-sub">{escape(team)} • {escape(game)}</div></div>
+    <div class="bf-cell-head"><div class="bf-head-label">PLAYER</div><div class="bf-head-main">#{escape(str(rank))} {escape(player)} <span class="bf-live-hr-badge{' hit' if actual_hr > 0 else ''}">HR {actual_hr}</span> <span class="bf-hand-badge">{escape(bats)}</span></div><div class="bf-quick-sub">{escape(team)} • {escape(game)}</div></div>
     <div class="bf-cell-head"><div class="bf-head-label">VS PITCHER</div><div class="bf-head-main">{escape(pitcher)} <span class="bf-hand-badge">{escape(throws)}</span></div></div>
     <div class="bf-score-box"><div class="lab">EDGE</div><div class="num {ovr_cls}">{overall_score:.1f}</div></div>
     <div class="bf-score-box"><div class="lab">GRADE</div><div class="num {ovr_cls}">{escape(decision_grade)}</div></div>
@@ -6051,7 +6163,7 @@ def propfinder_profile(row: pd.Series) -> tuple[bool, bool, bool]:
     return elite, super_elite, nuke
 
 
-def render_player_card(row: pd.Series, rank_override=None):
+def render_player_card(row: pd.Series, rank_override=None, allow_expand: bool = True):
     rank = rank_override if rank_override is not None else row.get("Rank", "—")
     player = _display_value(row.get("Player"))
     team = _display_value(row.get("Team"))
@@ -6066,6 +6178,8 @@ def render_player_card(row: pd.Series, rank_override=None):
     pitch_fit = clip(50 + safe_float(row.get("Pitch Matchup Score"), 0.0) * 5.5 + safe_float(row.get("Handedness Edge"), 0.0) * 4.0, 0, 99)
     actual_hr = safe_int(row.get("Actual HR Today"), 0)
     hit = f" · HR HIT {actual_hr}" if actual_hr > 0 else ""
+    hr_badge_cls = "bf-live-hr-badge hit" if actual_hr > 0 else "bf-live-hr-badge"
+    hr_badge_text = f"HR {actual_hr}"
     badges = " · ".join(bf_player_badges(row))
     pf_elite, pf_super, pf_nuke = propfinder_profile(row)
     pf_text = f"PF: {'NUKE' if pf_nuke else 'SUPER' if pf_super else 'ELITE' if pf_elite else 'NO'}"
@@ -6075,7 +6189,7 @@ def render_player_card(row: pd.Series, rank_override=None):
     quick_html = f'''
 <div class="bf-quick-row {row_cls}">
   <div>
-    <div class="bf-quick-player">#{escape(str(rank))} {escape(player)}</div>
+    <div class="bf-quick-player">#{escape(str(rank))} {escape(player)} <span class="{hr_badge_cls}">{escape(hr_badge_text)}</span></div>
     <div class="bf-target-strip"><span class="bf-target-role {role_cls}">{escape(role)}</span><span class="bf-letter-grade">{escape(decision_grade)}</span><span class="bf-edge-note">{escape(gap_text)}</span></div>
     <div class="bf-quick-sub">{escape(team)} • {escape(game)}<br>{escape(badges)}</div>
   </div>
@@ -6085,11 +6199,12 @@ def render_player_card(row: pd.Series, rank_override=None):
   <div class="bf-mini-score"><b>PITCH</b><span>{pitch_fit:.0f}</span></div>
 </div>'''
     st.markdown(quick_html, unsafe_allow_html=True)
-    with st.expander(f"Open matchup card — {player} vs {pitcher}", expanded=False):
-        st.markdown(_match_card_html(row, rank_override=rank), unsafe_allow_html=True)
+    if allow_expand:
+        with st.expander(f"Open matchup card — {player} vs {pitcher}", expanded=False):
+            st.markdown(_match_card_html(row, rank_override=rank), unsafe_allow_html=True)
 
 
-def render_card_grid(df: pd.DataFrame, max_cards: int = 24, columns: int = 3, title: str | None = None):
+def render_card_grid(df: pd.DataFrame, max_cards: int = 24, columns: int = 3, title: str | None = None, allow_expand: bool = True):
     if df is None or df.empty:
         st.caption("No cards to display.")
         return
@@ -6109,7 +6224,7 @@ def render_card_grid(df: pd.DataFrame, max_cards: int = 24, columns: int = 3, ti
     st.markdown('<div class="bf-quick-list">', unsafe_allow_html=True)
     for i, (_, row) in enumerate(view.iterrows()):
         rank = row.get("Rank", i + 1)
-        render_player_card(row, rank_override=rank)
+        render_player_card(row, rank_override=rank, allow_expand=allow_expand)
     st.markdown('</div>', unsafe_allow_html=True)
 
 
@@ -6652,9 +6767,13 @@ with c1:
 deep_bbe_mode = bool(st.session_state.get("deep_l10_bbe", DEFAULT_DEEP_L10_BBE))
 force_board_rebuild = bool(st.session_state.get("manual_refresh_trigger", False))
 live_df, schedule = load_or_build_daily_dataset(deep_bbe=deep_bbe_mode, force=force_board_rebuild)
+# Status-only refresh: fast and official. It does not rebuild rankings.
+schedule = refresh_official_lineup_status(schedule)
 locked_df_raw = ensure_daily_board_lock(live_df, schedule)
 
 lineup_mode = get_lineup_mode(schedule) if schedule else "PROJECTED"
+if st.session_state.pop("bf_using_fallback_cache", False):
+    st.warning("Live rebuild failed, so BF Data kept the last valid slate instead of crashing.")
 
 # Build and save the prediction/tracker pool BEFORE adding live results.
 # This prevents post-HR result data from rewriting the prediction board.
@@ -6697,9 +6816,10 @@ if locked_df.empty:
     st.warning("No games or hitter data loaded.")
     st.stop()
 
-base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker", "Lineup Watch", "Live Weather", "Per Game Boards"]
+base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker", "Lineup Watch", "Live Weather"]
 schedule = sort_schedule_rows(schedule)
-tabs = st.tabs(base_tabs)
+game_tabs = [f"{format_game_time_et(g.get('game_time', ''))} · {g['game_key']}" for g in schedule]
+tabs = st.tabs(base_tabs + game_tabs)
 
 with tabs[0]:
     st.subheader("JR HR Board")
@@ -7061,113 +7181,43 @@ with tabs[9]:
 
 
 
-with tabs[10]:
-    st.subheader("Per Game Boards")
-    st.caption("Every game remains visible as an individual quick tab. Only the selected board is rendered, which prevents the all-game DOM overload that caused slow loads and crashes.")
 
-    if not schedule:
-        st.info("No games are available for today's slate.")
-    else:
-        game_labels = [f"{format_game_time_et(g.get('game_time', ''))} | {g['game_key']}" for g in schedule]
-        default_label = st.session_state.get("bf_selected_game_label")
-        if default_label not in game_labels:
-            default_label = game_labels[0]
-
-        # Segmented control is a visible tab strip, not a dropdown. Fallback to
-        # horizontal radio on older Streamlit versions.
-        try:
-            selected_game_label = st.segmented_control(
-                "Game boards",
-                options=game_labels,
-                default=default_label,
-                key="bf_game_board_segment",
-                label_visibility="collapsed",
-            )
-        except Exception:
-            selected_game_label = st.radio(
-                "Game boards",
-                options=game_labels,
-                index=game_labels.index(default_label),
-                horizontal=True,
-                key="bf_game_board_radio",
-                label_visibility="collapsed",
-            )
-        if not selected_game_label:
-            selected_game_label = default_label
-        st.session_state["bf_selected_game_label"] = selected_game_label
-        selected_index = game_labels.index(selected_game_label)
-        game = schedule[selected_index]
-
+# Individual per-game boards remain ready across the tab strip. To keep startup
+# fast and prevent iPhone crashes, these tabs render compact decision cards only;
+# full arsenal cards remain available in the main slate tabs.
+for game_index, game in enumerate(schedule):
+    with tabs[10 + game_index]:
         st.subheader(f"{game['game_key']} — {format_game_time_et(game.get('game_time', ''))}")
+        away_status = "CONFIRMED" if safe_int(game.get("away_confirmed_count"), 0) >= 9 else ("PARTIAL" if safe_int(game.get("away_confirmed_count"), 0) > 0 else "PROJECTED")
+        home_status = "CONFIRMED" if safe_int(game.get("home_confirmed_count"), 0) >= 9 else ("PARTIAL" if safe_int(game.get("home_confirmed_count"), 0) > 0 else "PROJECTED")
         st.caption(
-            f"Start: {format_game_time_et(game.get('game_time', ''))}  |  "
-            f"Venue: {game['venue']}  |  "
-            f"Away starter: {game['away_pitcher']}  |  "
-            f"Home starter: {game['home_pitcher']}"
+            f"Venue: {game.get('venue', 'Unknown')}  |  Away starter: {game.get('away_pitcher', 'Pending')}  |  "
+            f"Home starter: {game.get('home_pitcher', 'Pending')}  |  Official lineups: {away_status} / {home_status}"
         )
 
-        gdf = locked_df[locked_df["Game"].astype(str) == str(game["game_key"])].copy()
-        away_team = team_abbr(game["away_team"])
-        home_team = team_abbr(game["home_team"])
-
-        # Compute each team view once. Reusing these frames prevents repeated
-        # sorting/filtering and lowers memory use on iPhone.
+        gdf = locked_df[locked_df["Game"].astype(str) == str(game["game_key"])].copy() if "Game" in locked_df.columns else pd.DataFrame()
+        away_team = team_abbr(game.get("away_team", ""))
+        home_team = team_abbr(game.get("home_team", ""))
         away_hr, away_hrr = get_team_game_view(gdf, game["game_key"], away_team)
         home_hr, home_hrr = get_team_game_view(gdf, game["game_key"], home_team)
 
         left, right = st.columns(2)
-
         with left:
-            st.markdown(f"### {away_team}")
-            away_rows = gdf[gdf["Team"].astype(str) == str(away_team)] if "Team" in gdf.columns else pd.DataFrame()
-            away_source = away_rows["Lineup Source"].iloc[0] if not away_rows.empty and "Lineup Source" in away_rows.columns else "N/A"
-            st.caption(f"Confirmed hitters: {game.get('away_confirmed_count', 0)}/9 | Pool status: {away_source}")
+            st.markdown(f"### {away_team} · {away_status}")
+            st.caption(f"Official hitters: {safe_int(game.get('away_confirmed_count'), 0)}/9")
             if not away_hr.empty:
-                st.markdown("**Best HR hitters**")
-                render_card_grid(away_hr, max_cards=4, columns=1)
-                with st.expander("Raw team HR table"):
-                    display_existing_columns(away_hr, [
-                        "Rank", "Player", "Lineup Spot", "Lineup Source", "Statcast Pass",
-                        "Strict Statcast", "Recent Form Pass", "Pitcher Attackable", "Actual HR Today", "HR Probability %",
-                        "HR Tier", "GroundBall%", "GB Rule", "GB Note", "WeatherNote", "BullpenFatigueNote", "HardHit%", "FlyBall%",
-                        "AIR%", "xSLG", "xwOBA", "Barrel%", "Ranking Reasons", "Why"
-                    ])
+                render_card_grid(away_hr, max_cards=4, columns=1, allow_expand=False)
             else:
                 st.caption("No HR-qualified bats surfaced.")
-
-            st.markdown("**Best Hits + Runs + RBIs**")
-            if not away_hrr.empty:
-                display_existing_columns(away_hrr.head(5), [
-                    "Player", "Lineup Spot", "Lineup Source", "HRR Score",
-                    "GroundBall%", "LineDrive%", "Why"
-                ])
-            else:
-                st.caption("No HRR bats surfaced.")
+            with st.expander("Hits + Runs + RBIs"):
+                display_existing_columns(away_hrr.head(5), ["Player", "Lineup Spot", "Lineup Source", "HRR Score", "GroundBall%", "LineDrive%", "Why"])
 
         with right:
-            st.markdown(f"### {home_team}")
-            home_rows = gdf[gdf["Team"].astype(str) == str(home_team)] if "Team" in gdf.columns else pd.DataFrame()
-            home_source = home_rows["Lineup Source"].iloc[0] if not home_rows.empty and "Lineup Source" in home_rows.columns else "N/A"
-            st.caption(f"Confirmed hitters: {game.get('home_confirmed_count', 0)}/9 | Pool status: {home_source}")
+            st.markdown(f"### {home_team} · {home_status}")
+            st.caption(f"Official hitters: {safe_int(game.get('home_confirmed_count'), 0)}/9")
             if not home_hr.empty:
-                st.markdown("**Best HR hitters**")
-                render_card_grid(home_hr, max_cards=4, columns=1)
-                with st.expander("Raw team HR table"):
-                    display_existing_columns(home_hr, [
-                        "Rank", "Player", "Lineup Spot", "Lineup Source", "Statcast Pass",
-                        "Strict Statcast", "Recent Form Pass", "Pitcher Attackable", "Actual HR Today", "HR Probability %",
-                        "HR Tier", "GroundBall%", "GB Rule", "GB Note", "WeatherNote", "BullpenFatigueNote", "HardHit%", "FlyBall%",
-                        "AIR%", "xSLG", "xwOBA", "Barrel%", "Ranking Reasons", "Why"
-                    ])
+                render_card_grid(home_hr, max_cards=4, columns=1, allow_expand=False)
             else:
                 st.caption("No HR-qualified bats surfaced.")
-
-            st.markdown("**Best Hits + Runs + RBIs**")
-            if not home_hrr.empty:
-                display_existing_columns(home_hrr.head(5), [
-                    "Player", "Lineup Spot", "Lineup Source", "HRR Score",
-                    "GroundBall%", "LineDrive%", "Why"
-                ])
-            else:
-                st.caption("No HRR bats surfaced.")
-
+            with st.expander("Hits + Runs + RBIs"):
+                display_existing_columns(home_hrr.head(5), ["Player", "Lineup Spot", "Lineup Source", "HRR Score", "GroundBall%", "LineDrive%", "Why"])
