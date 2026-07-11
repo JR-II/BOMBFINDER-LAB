@@ -3766,6 +3766,7 @@ def build_hitter_metrics(
     bullpen_ip_prev: float = 0.0,
     bullpen_arms_prev: int = 0,
     deep_bbe: bool = False,
+    fast_preview: bool = False,
 ):
     if opp_pitcher_id is None or (isinstance(opp_pitcher_id, float) and pd.isna(opp_pitcher_id)):
         opp_pitcher_id = lookup_mlb_person_id_by_name(opp_pitcher)
@@ -3837,20 +3838,33 @@ def build_hitter_metrics(
     weather_score_boost = weather_boost * 1.6
     bullpen_fatigue_boost = bullpen_fatigue_score * 1.8
 
-    pitch_mix_example = build_pitch_mix_profile(opp_pitcher, opp_pitcher_id)
-    arsenal_tiles = build_matchup_arsenal_tiles(opp_pitcher_id, player_id, 0.0, 0.0, include_batter=deep_bbe)
-    pitch_context = compute_relevant_pitch_matchup(
-        pitch_mix_example,
-        bats,
-        pitcher_throws,
-        barrel,
-        hard_hit,
-        air_pct,
-        launch_angle,
-        xslg,
-        xwoba,
-        ground_ball,
-    )
+    # Tomorrow Preview must be fast. The early board skips Baseball Savant
+    # pitch-by-pitch CSV calls; those are restored automatically when tomorrow
+    # becomes the official daily slate. Season/recent hitter and pitcher damage
+    # data, handedness, park and preliminary weather remain included.
+    if fast_preview:
+        pitch_mix_example = {}
+        arsenal_tiles = []
+        pitch_context = {
+            "mode": "BALANCED", "label": "Preview pending", "score": 0.0,
+            "usage": 0.0, "gap": 0.0, "handedness_edge": 0.0,
+            "reason": "Pitch arsenal loads on official board", "primary_pitch": None,
+        }
+    else:
+        pitch_mix_example = build_pitch_mix_profile(opp_pitcher, opp_pitcher_id)
+        arsenal_tiles = build_matchup_arsenal_tiles(opp_pitcher_id, player_id, 0.0, 0.0, include_batter=deep_bbe)
+        pitch_context = compute_relevant_pitch_matchup(
+            pitch_mix_example,
+            bats,
+            pitcher_throws,
+            barrel,
+            hard_hit,
+            air_pct,
+            launch_angle,
+            xslg,
+            xwoba,
+            ground_ball,
+        )
     pitch_mix_mode = pitch_context["mode"]
     relevant_pitch_mix = pitch_context["label"]
     primary_pitch = pitch_context["primary_pitch"]
@@ -4610,90 +4624,140 @@ def build_daily_dataset(deep_bbe: bool = False):
     return df, schedule
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=21600, show_spinner=False)
 def build_tomorrow_preview_dataset(target_date: str):
-    """Build a separate, untracked next-day research board.
+    """Build a fast, separate and untracked next-day research board.
 
-    This intentionally does not write locks, tracker rows, board snapshots, or
-    combo history. It is a preview only and may change with pitchers, lineups,
-    weather, roof status, or roster news.
+    The preview deliberately avoids future-game boxscores, per-team duplicate
+    stat requests, bullpen lookups and Baseball Savant pitch CSV pulls. Those
+    expensive details belong to the official slate. This keeps the first preview
+    practical while retaining real MLB rosters, season/recent stats, probable
+    pitchers, handedness, park factors and preliminary game-time weather.
     """
     schedule = get_schedule_for_date(target_date)
     if not schedule:
         return pd.DataFrame(), []
 
-    rows = []
     savant_batter_map = fetch_savant_batter_map(CURRENT_SEASON)
-    candidate_map = {}
-    all_hitter_ids, all_pitcher_ids = set(), set()
 
-    for game in schedule:
-        away_candidates, away_source = get_team_candidate_hitters(
-            game["game_pk"], game["away_team_id"], "away", savant_batter_map, deep_bbe=False
-        )
-        home_candidates, home_source = get_team_candidate_hitters(
-            game["game_pk"], game["home_team_id"], "home", savant_batter_map, deep_bbe=False
-        )
-        # Future slates are never promoted to official merely because a boxscore
-        # shell exists. Only nine official batting-order positions qualify.
-        away_source = "CONFIRMED" if len([h for h in away_candidates if h.get("confirmed")]) >= 9 else "PROJECTED"
-        home_source = "CONFIRMED" if len([h for h in home_candidates if h.get("confirmed")]) >= 9 else "PROJECTED"
-        candidate_map[(game["game_pk"], "away")] = (away_candidates, away_source)
-        candidate_map[(game["game_pk"], "home")] = (home_candidates, home_source)
-        for hitter in away_candidates + home_candidates:
-            if hitter.get("player_id") is not None:
-                all_hitter_ids.add(hitter["player_id"])
-        for pid in [game.get("away_pitcher_id"), game.get("home_pitcher_id")]:
-            if pid is not None:
-                all_pitcher_ids.add(pid)
+    # Fetch every active roster once and in parallel. The old preview requested
+    # a future boxscore and then repeated player-stat calls for every team.
+    team_ids = sorted({safe_int(g.get(k), 0) for g in schedule for k in ("away_team_id", "home_team_id") if safe_int(g.get(k), 0) > 0})
+    roster_map = {}
+    with ThreadPoolExecutor(max_workers=min(10, max(1, len(team_ids)))) as pool:
+        futures = {pool.submit(get_team_hitters, tid): tid for tid in team_ids}
+        for future in as_completed(futures):
+            tid = futures[future]
+            try:
+                roster_map[tid] = future.result() or []
+            except Exception:
+                roster_map[tid] = []
 
-    hitter_stats_map = fetch_people_stats(tuple(all_hitter_ids), "hitting")
-    pitcher_stats_map = fetch_people_stats(tuple(all_pitcher_ids), "pitching")
-    hand_map = fetch_people_hand_map(tuple(list(all_hitter_ids) + list(all_pitcher_ids)))
+    all_roster_ids = sorted({safe_int(h.get("player_id"), 0) for hitters in roster_map.values() for h in hitters if safe_int(h.get("player_id"), 0) > 0})
+    hitter_stats_map = fetch_people_stats(tuple(all_roster_ids), "hitting")
 
+    # Rank projected hitters cheaply from real recent/season results plus the
+    # already-cached Savant leaderboard. Keep six per club for the early board.
+    projected_by_team = {}
+    selected_hitter_ids = set()
+    for tid, hitters in roster_map.items():
+        scored = []
+        for h in hitters:
+            pid = safe_int(h.get("player_id"), 0)
+            if not pid:
+                continue
+            live = compute_hitter_live_metrics_from_map(pid, hitter_stats_map, use_true_bbe=False)
+            if not live or live.get("recent_pa", 0) < 8:
+                continue
+            sav = savant_batter_map.get(normalize_name(h.get("player_name", "")), {})
+            barrel = safe_float(sav.get("Savant_Barrel%"), live.get("Barrel%", 0.0))
+            hh = safe_float(sav.get("Savant_HardHit%"), live.get("HardHit%", 0.0))
+            xslg = safe_float(sav.get("Savant_xSLG"), 0.0)
+            gb = safe_float(sav.get("Savant_GB%"), live.get("GroundBall%", 50.0))
+            score = (
+                barrel * 4.8 + hh * 1.7 + xslg * 120
+                + safe_float(live.get("recent_hr"), 0) * 7
+                + safe_float(live.get("recent_xbh"), 0) * 2.2
+                + safe_float(live.get("recent_iso"), 0) * 45
+                - max(0.0, gb - 48.0) * 2.0
+            )
+            scored.append({
+                "player_id": pid,
+                "player_name": h.get("player_name", "Unknown"),
+                "lineup_spot": None,
+                "confirmed": False,
+                "preview_score": score,
+            })
+        chosen = sorted(scored, key=lambda x: x["preview_score"], reverse=True)[:6]
+        projected_by_team[tid] = chosen
+        selected_hitter_ids.update(h["player_id"] for h in chosen)
+
+    pitcher_ids = sorted({safe_int(g.get(k), 0) for g in schedule for k in ("away_pitcher_id", "home_pitcher_id") if safe_int(g.get(k), 0) > 0})
+    pitcher_stats_map = fetch_people_stats(tuple(pitcher_ids), "pitching")
+    hand_map = fetch_people_hand_map(tuple(sorted(selected_hitter_ids.union(pitcher_ids))))
+
+    # Preliminary weather is independent by game, so retrieve it concurrently.
+    weather_map = {}
+    with ThreadPoolExecutor(max_workers=min(10, max(1, len(schedule)))) as pool:
+        futures = {}
+        for g in schedule:
+            home_abbr = team_abbr(g.get("home_team", ""))
+            futures[pool.submit(fetch_game_time_weather, home_abbr, g.get("game_time", ""), g.get("venue", ""), g.get("venue_id"))] = g.get("game_pk")
+        for future in as_completed(futures):
+            game_pk = futures[future]
+            try:
+                weather_map[game_pk] = future.result() or {}
+            except Exception:
+                weather_map[game_pk] = {}
+
+    neutral_bullpen = {
+        "BullpenFatigueScore": 0.0,
+        "BullpenFatigueNote": "Tomorrow bullpen status pending",
+        "BullpenIPPrev": 0.0,
+        "BullpenArmsPrev": 0,
+    }
+    rows = []
     for game in schedule:
         away_abbr = team_abbr(game["away_team"])
         home_abbr = team_abbr(game["home_team"])
         park_factor = PARK_FACTORS.get(home_abbr, 1.00)
-        wx = fetch_game_time_weather(home_abbr, game.get("game_time", ""), game.get("venue", ""), game.get("venue_id"))
-        temp_f = safe_float(wx.get("TempF"), 72.0) if wx.get("available") else 72.0
-        wind_mph = safe_float(wx.get("WindMPH"), 7.0) if wx.get("available") else 7.0
-        weather_boost, weather_note = compute_weather_boost(temp_f, wind_mph)
-        if not wx.get("available"):
-            weather_boost, weather_note = 0.0, "forecast pending"
+        wx = weather_map.get(game.get("game_pk"), {})
+        available = bool(wx.get("available"))
+        temp_f = safe_float(wx.get("TempF"), 72.0) if available else 72.0
+        wind_mph = safe_float(wx.get("WindMPH"), 7.0) if available else 7.0
+        weather_boost, weather_note = compute_weather_boost(temp_f, wind_mph) if available else (0.0, "forecast pending")
 
-        home_bullpen = fetch_bullpen_fatigue_for_team(game["home_team_id"])
-        away_bullpen = fetch_bullpen_fatigue_for_team(game["away_team_id"])
-        away_candidates, away_source = candidate_map[(game["game_pk"], "away")]
-        home_candidates, home_source = candidate_map[(game["game_pk"], "home")]
-
-        for side, hitters, source, team, opp_pitcher, opp_pid, bullpen in [
-            ("Away", away_candidates, away_source, away_abbr, game["home_pitcher"], game.get("home_pitcher_id"), home_bullpen),
-            ("Home", home_candidates, home_source, home_abbr, game["away_pitcher"], game.get("away_pitcher_id"), away_bullpen),
-        ]:
+        sides = [
+            ("Away", projected_by_team.get(safe_int(game.get("away_team_id"), 0), []), away_abbr, game.get("home_pitcher", "Starter Pending"), game.get("home_pitcher_id")),
+            ("Home", projected_by_team.get(safe_int(game.get("home_team_id"), 0), []), home_abbr, game.get("away_pitcher", "Starter Pending"), game.get("away_pitcher_id")),
+        ]
+        for side, hitters, team, opp_pitcher, opp_pid in sides:
             for hitter in hitters:
                 metrics = build_hitter_metrics(
                     player_id=hitter["player_id"], player_name=hitter["player_name"], team=team,
                     opp_pitcher=opp_pitcher, park_factor=park_factor, opp_pitcher_id=opp_pid,
-                    lineup_spot=hitter.get("lineup_spot"), lineup_source=source,
+                    lineup_spot=None, lineup_source="PROJECTED",
                     hitter_stats_map=hitter_stats_map, pitcher_stats_map=pitcher_stats_map,
                     savant_batter_map=savant_batter_map, hand_map=hand_map,
-                    weather_boost=weather_boost, weather_note=weather_note, temp_f=temp_f, wind_mph=wind_mph,
-                    bullpen_fatigue_score=bullpen.get("BullpenFatigueScore", 0.0),
-                    bullpen_fatigue_note=bullpen.get("BullpenFatigueNote", "Neutral bullpen rest"),
-                    bullpen_ip_prev=bullpen.get("BullpenIPPrev", 0.0),
-                    bullpen_arms_prev=bullpen.get("BullpenArmsPrev", 0), deep_bbe=False,
+                    weather_boost=weather_boost, weather_note=weather_note,
+                    temp_f=temp_f, wind_mph=wind_mph,
+                    bullpen_fatigue_score=neutral_bullpen["BullpenFatigueScore"],
+                    bullpen_fatigue_note=neutral_bullpen["BullpenFatigueNote"],
+                    bullpen_ip_prev=0.0, bullpen_arms_prev=0,
+                    deep_bbe=False, fast_preview=True,
                 )
                 if metrics is None:
                     continue
                 pitcher_status = "PROBABLE" if opp_pitcher not in {"", "Starter Pending", "—"} else "PENDING"
                 rows.append({
-                    "date": target_date, "game_pk": game["game_pk"], "game_state": game["game_state"],
-                    "detailed_state": game["detailed_state"], "Game": game["game_key"], "Side": side,
+                    "date": target_date, "game_pk": game.get("game_pk"),
+                    "game_state": game.get("game_state", "Preview"),
+                    "detailed_state": game.get("detailed_state", "Scheduled"),
+                    "Game": game.get("game_key"), "Side": side,
                     "Preview Stage": "EARLY LOOK — NOT LOCKED",
                     "Pitcher Status": pitcher_status,
-                    "Lineup Status": source,
-                    "Weather Status": "PRELIMINARY" if wx.get("available") else "PENDING",
+                    "Lineup Status": "PROJECTED",
+                    "Weather Status": "PRELIMINARY" if available else "PENDING",
                     **metrics,
                 })
 
@@ -4701,8 +4765,7 @@ def build_tomorrow_preview_dataset(target_date: str):
     if df.empty:
         return pd.DataFrame(), schedule
     df["HR Tier"] = df["HR Probability %"].apply(classify_hr_tier)
-    df = sort_for_hr(df)
-    return df, schedule
+    return sort_for_hr(df), schedule
 
 
 # Fast local slate cache. Streamlit reruns on every tab/button interaction; without
@@ -7435,7 +7498,7 @@ with tabs[10]:
     if not st.session_state.get("show_tomorrow_preview", False):
         st.info("Press Generate Tomorrow Preview to load the next-day slate. It stays separate so today’s app remains fast in crunch time.")
     else:
-        with st.spinner("Building tomorrow’s early board…"):
+        with st.spinner("Loading fast tomorrow preview…"):
             tomorrow_df, tomorrow_schedule = build_tomorrow_preview_dataset(preview_date)
 
         if not tomorrow_schedule:
