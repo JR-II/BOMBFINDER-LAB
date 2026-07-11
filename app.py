@@ -584,6 +584,11 @@ hr { margin-top: .38rem !important; margin-bottom: .38rem !important; }
 .bf-pair-row{border-color:rgba(109,162,255,.34)!important}
 @media(max-width:760px){.bf-target-strip{gap:3px!important;margin-top:2px!important}.bf-target-role{font-size:.45rem!important;padding:2px 4px!important}.bf-letter-grade{font-size:.61rem!important;min-width:26px!important;padding:2px 4px!important}.bf-edge-note{font-size:.44rem!important}}
 
+/* BF DATA LIVE HR NAME BADGE + LAZY PER-GAME */
+.bf-live-hr-badge{display:inline-flex;align-items:center;margin-left:6px;padding:1px 5px;border-radius:999px;font-size:.55rem;font-weight:950;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.05);color:#aeb7c5;vertical-align:middle}
+.bf-live-hr-badge.hit{color:#35d07f;border-color:rgba(53,208,127,.55);background:rgba(53,208,127,.12)}
+@media(max-width:760px){.bf-live-hr-badge{font-size:.43rem!important;margin-left:3px!important;padding:1px 3px!important}}
+
 </style>
 <div class="bf-hero">
     <div class="bf-kicker">BF DATA PRO LAB</div>
@@ -6016,7 +6021,7 @@ def render_player_card(row: pd.Series, rank_override=None):
     quick_html = f'''
 <div class="bf-quick-row {row_cls}">
   <div>
-    <div class="bf-quick-player">#{escape(str(rank))} {escape(player)}</div>
+    <div class="bf-quick-player">#{escape(str(rank))} {escape(player)} <span class="bf-live-hr-badge {'hit' if actual_hr > 0 else ''}">HR {actual_hr}</span></div>
     <div class="bf-target-strip"><span class="bf-target-role {role_cls}">{escape(role)}</span><span class="bf-letter-grade">{escape(decision_grade)}</span><span class="bf-edge-note">{escape(gap_text)}</span></div>
     <div class="bf-quick-sub">{escape(team)} • {escape(game)}<br>{escape(badges)}</div>
   </div>
@@ -6634,10 +6639,9 @@ if locked_df.empty:
     st.warning("No games or hitter data loaded.")
     st.stop()
 
-base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker", "Lineup Watch", "Live Weather"]
+base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker", "Lineup Watch", "Live Weather", "Per Game"]
 schedule = sort_schedule_rows(schedule)
-game_tabs = [f"{format_game_time_et(g.get('game_time', ''))} | {g['game_key']}" for g in schedule]
-tabs = st.tabs(base_tabs + game_tabs)
+tabs = st.tabs(base_tabs)
 
 with tabs[0]:
     st.subheader("JR HR Board")
@@ -6646,15 +6650,11 @@ with tabs[0]:
     hr_df = get_locked_section_snapshot("CORE_BOARD", hr_df_live, schedule, limit=30)
     render_card_grid(hr_df, max_cards=30, columns=3)
     with st.expander("Raw JR HR Board Table"):
-        st.dataframe(
-            hr_df[[
+        display_existing_columns(hr_df, [
                 "Rank", "Player", "Team", "Game", "Pitcher", "Lineup Spot",
                 "Lineup Source", "Actual HR Today", "HR Probability %", "HR Tier", "GroundBall%",
                 "GB Rule", "GB Note", "Matchup Advantage", "HR Attackability Score", "WeatherNote", "BullpenFatigueNote", "HardHit%", "FlyBall%", "AIR%", "xSLG", "xwOBA", "Barrel%", "Ranking Reasons", "Why"
-            ]],
-            use_container_width=True,
-            hide_index=True
-        )
+            ])
 
 with tabs[1]:
     st.subheader("Top 12 HR Candidates")
@@ -6663,15 +6663,11 @@ with tabs[1]:
     top12 = get_locked_section_snapshot("TOP12", top12_live, schedule, limit=12)
     render_card_grid(top12, max_cards=12, columns=3)
     with st.expander("Raw Top 12 Table"):
-        st.dataframe(
-            top12[[
+        display_existing_columns(top12, [
                 "Rank", "Player", "Team", "Game", "Pitcher", "Lineup Spot",
                 "Lineup Source", "Actual HR Today", "HR Probability %", "HR Tier", "GroundBall%",
                 "GB Rule", "GB Note", "Matchup Advantage", "HR Attackability Score", "WeatherNote", "BullpenFatigueNote", "HardHit%", "FlyBall%", "AIR%", "xSLG", "xwOBA", "Barrel%", "Ranking Reasons", "Why"
-            ]],
-            use_container_width=True,
-            hide_index=True
-        )
+            ])
 
 with tabs[2]:
     st.subheader("Top HR Targets — Slate-Wide Top 25")
@@ -7006,88 +7002,66 @@ with tabs[9]:
             st.dataframe(dedupe_columns(suppressive), use_container_width=True, hide_index=True)
 
 
-for idx, game in enumerate(schedule, start=10):
-    with tabs[idx]:
-        st.subheader(f"{game['game_key']} — {format_game_time_et(game.get('game_time', ''))}")
+with tabs[10]:
+    st.subheader("Per Game Board")
+    st.caption("Choose one matchup. Only the selected game is rendered, which keeps phone and desktop loads fast.")
+
+    if not schedule:
+        st.info("No games are available.")
+    else:
+        game_labels = [f"{format_game_time_et(g.get('game_time', ''))} | {g['game_key']}" for g in schedule]
+        selected_label = st.selectbox("Select game", game_labels, key="bf_selected_per_game")
+        game = schedule[game_labels.index(selected_label)]
+
+        st.markdown(f"### {game['game_key']} — {format_game_time_et(game.get('game_time', ''))}")
         st.caption(
-            f"Start: {format_game_time_et(game.get('game_time', ''))}  |  "
-            f"Venue: {game['venue']}  |  "
-            f"Away starter: {game['away_pitcher']}  |  "
-            f"Home starter: {game['home_pitcher']}"
+            f"Venue: {game.get('venue', 'Unknown')}  |  "
+            f"Away starter: {game.get('away_pitcher', 'Starter Pending')}  |  "
+            f"Home starter: {game.get('home_pitcher', 'Starter Pending')}"
         )
 
-        gdf = locked_df[locked_df["Game"] == game["game_key"]].copy()
+        gdf = locked_df[locked_df.get("Game", pd.Series(index=locked_df.index, dtype=str)).astype(str) == str(game["game_key"])].copy()
         away_team = team_abbr(game["away_team"])
         home_team = team_abbr(game["home_team"])
 
         left, right = st.columns(2)
 
+        def _render_per_game_team(team_name: str, confirmed_count: int):
+            team_rows = gdf[gdf.get("Team", pd.Series(index=gdf.index, dtype=str)).astype(str) == str(team_name)].copy()
+            source = "PROJECTED"
+            if not team_rows.empty and "Lineup Source" in team_rows.columns:
+                vals = team_rows["Lineup Source"].dropna().astype(str)
+                if not vals.empty:
+                    source = vals.iloc[0]
+            st.markdown(f"### {team_name}")
+            st.caption(f"Confirmed hitters: {confirmed_count}/9 | Pool status: {source}")
+
+            team_hr, team_hrr = get_team_game_view(gdf, game["game_key"], team_name)
+            if not team_hr.empty:
+                st.markdown("**Best HR hitters**")
+                render_card_grid(team_hr, max_cards=4, columns=1)
+                with st.expander("Raw team HR table"):
+                    display_existing_columns(team_hr, [
+                        "Rank", "Player", "Lineup Spot", "Lineup Source", "Statcast Pass",
+                        "Strict Statcast", "Recent Form Pass", "Pitcher Attackable", "Actual HR Today",
+                        "HR Probability %", "HR Tier", "GroundBall%", "GB Rule", "GB Note",
+                        "WeatherNote", "BullpenFatigueNote", "HardHit%", "FlyBall%", "AIR%",
+                        "xSLG", "xwOBA", "Barrel%", "Ranking Reasons", "Why"
+                    ])
+            else:
+                st.caption("No HR-qualified bats surfaced.")
+
+            st.markdown("**Best Hits + Runs + RBIs**")
+            if not team_hrr.empty:
+                display_existing_columns(team_hrr.head(5), [
+                    "Player", "Lineup Spot", "Lineup Source", "HRR Score",
+                    "GroundBall%", "LineDrive%", "Why"
+                ])
+            else:
+                st.caption("No HRR bats surfaced.")
+
         with left:
-            st.markdown(f"### {away_team}")
-            away_source = gdf[gdf["Team"] == away_team]["Lineup Source"].iloc[0] if not gdf[gdf["Team"] == away_team].empty else "N/A"
-            st.caption(f"Confirmed hitters: {game.get('away_confirmed_count', 0)}/9 | Pool status: {away_source}")
-            team_hr, team_hrr = get_team_game_view(gdf, game["game_key"], away_team)
-            if not team_hr.empty:
-                st.markdown("**Best HR hitters**")
-                render_card_grid(team_hr, max_cards=4, columns=1)
-                with st.expander("Raw team HR table"):
-                    st.dataframe(
-                        team_hr[[
-                            "Rank", "Player", "Lineup Spot", "Lineup Source", "Statcast Pass",
-                            "Strict Statcast", "Recent Form Pass", "Pitcher Attackable", "Actual HR Today", "HR Probability %",
-                            "HR Tier", "GroundBall%", "GB Rule", "GB Note", "WeatherNote", "BullpenFatigueNote", "HardHit%", "FlyBall%",
-                            "AIR%", "xSLG", "xwOBA", "Barrel%", "Ranking Reasons", "Why"
-                        ]],
-                        use_container_width=True,
-                        hide_index=True
-                    )
-            else:
-                st.caption("No HR-qualified bats surfaced.")
-
-            st.markdown("**Best Hits + Runs + RBIs**")
-            if not team_hrr.empty:
-                st.dataframe(
-                    team_hrr[[
-                        "Player", "Lineup Spot", "Lineup Source", "HRR Score",
-                        "GroundBall%", "LineDrive%", "Why"
-                    ]].head(5),
-                    use_container_width=True,
-                    hide_index=True
-                )
-            else:
-                st.caption("No HRR bats surfaced.")
-
+            _render_per_game_team(away_team, game.get("away_confirmed_count", 0))
         with right:
-            st.markdown(f"### {home_team}")
-            home_source = gdf[gdf["Team"] == home_team]["Lineup Source"].iloc[0] if not gdf[gdf["Team"] == home_team].empty else "N/A"
-            st.caption(f"Confirmed hitters: {game.get('home_confirmed_count', 0)}/9 | Pool status: {home_source}")
-            team_hr, team_hrr = get_team_game_view(gdf, game["game_key"], home_team)
-            if not team_hr.empty:
-                st.markdown("**Best HR hitters**")
-                render_card_grid(team_hr, max_cards=4, columns=1)
-                with st.expander("Raw team HR table"):
-                    st.dataframe(
-                        team_hr[[
-                            "Rank", "Player", "Lineup Spot", "Lineup Source", "Statcast Pass",
-                            "Strict Statcast", "Recent Form Pass", "Pitcher Attackable", "Actual HR Today", "HR Probability %",
-                            "HR Tier", "GroundBall%", "GB Rule", "GB Note", "WeatherNote", "BullpenFatigueNote", "HardHit%", "FlyBall%",
-                            "AIR%", "xSLG", "xwOBA", "Barrel%", "Ranking Reasons", "Why"
-                        ]],
-                        use_container_width=True,
-                        hide_index=True
-                    )
-            else:
-                st.caption("No HR-qualified bats surfaced.")
+            _render_per_game_team(home_team, game.get("home_confirmed_count", 0))
 
-            st.markdown("**Best Hits + Runs + RBIs**")
-            if not team_hrr.empty:
-                st.dataframe(
-                    team_hrr[[
-                        "Player", "Lineup Spot", "Lineup Source", "HRR Score",
-                        "GroundBall%", "LineDrive%", "Why"
-                    ]].head(5),
-                    use_container_width=True,
-                    hide_index=True
-                )
-            else:
-                st.caption("No HRR bats surfaced.")
