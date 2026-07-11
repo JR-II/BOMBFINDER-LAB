@@ -584,11 +584,6 @@ hr { margin-top: .38rem !important; margin-bottom: .38rem !important; }
 .bf-pair-row{border-color:rgba(109,162,255,.34)!important}
 @media(max-width:760px){.bf-target-strip{gap:3px!important;margin-top:2px!important}.bf-target-role{font-size:.45rem!important;padding:2px 4px!important}.bf-letter-grade{font-size:.61rem!important;min-width:26px!important;padding:2px 4px!important}.bf-edge-note{font-size:.44rem!important}}
 
-/* BF DATA LIVE HR NAME BADGE + LAZY PER-GAME */
-.bf-live-hr-badge{display:inline-flex;align-items:center;margin-left:6px;padding:1px 5px;border-radius:999px;font-size:.55rem;font-weight:950;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.05);color:#aeb7c5;vertical-align:middle}
-.bf-live-hr-badge.hit{color:#35d07f;border-color:rgba(53,208,127,.55);background:rgba(53,208,127,.12)}
-@media(max-width:760px){.bf-live-hr-badge{font-size:.43rem!important;margin-left:3px!important;padding:1px 3px!important}}
-
 </style>
 <div class="bf-hero">
     <div class="bf-kicker">BF DATA PRO LAB</div>
@@ -2117,7 +2112,7 @@ def fetch_weather_for_park(home_team_abbr: str):
     )
 
     try:
-        resp = requests.get(url, timeout=6)
+        resp = requests.get(url, timeout=15)
         resp.raise_for_status()
         data = resp.json()
         current = data.get("current", {}) or {}
@@ -4303,42 +4298,7 @@ def sort_for_hr(df: pd.DataFrame) -> pd.DataFrame:
     ])
 
 
-DATASET_CACHE_DIR = "dataset_cache"
-
-def _dataset_cache_path(date_key: str | None = None) -> str:
-    os.makedirs(DATASET_CACHE_DIR, exist_ok=True)
-    return os.path.join(DATASET_CACHE_DIR, f"bf_daily_dataset_{date_key or today_str()}.pkl")
-
-def save_daily_dataset_cache(df: pd.DataFrame, schedule: list[dict]) -> None:
-    """Persist the fully built slate so normal reruns open immediately."""
-    path = _dataset_cache_path()
-    fd, tmp_path = tempfile.mkstemp(prefix="bf_dataset_", suffix=".pkl", dir=DATASET_CACHE_DIR)
-    os.close(fd)
-    try:
-        pd.to_pickle({"df": df, "schedule": schedule, "saved_at": now_et_string()}, tmp_path)
-        os.replace(tmp_path, path)
-    finally:
-        if os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
-
-def load_daily_dataset_cache() -> tuple[pd.DataFrame, list[dict]]:
-    path = _dataset_cache_path()
-    if not os.path.exists(path):
-        return pd.DataFrame(), []
-    try:
-        payload = pd.read_pickle(path)
-        if isinstance(payload, dict):
-            df = payload.get("df", pd.DataFrame())
-            schedule = payload.get("schedule", [])
-            return (df if isinstance(df, pd.DataFrame) else pd.DataFrame(), schedule if isinstance(schedule, list) else [])
-    except Exception:
-        pass
-    return pd.DataFrame(), []
-
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=900)
 def build_daily_dataset(deep_bbe: bool = False):
     schedule = sort_schedule_rows(get_today_schedule())
     rows = []
@@ -4466,8 +4426,66 @@ def build_daily_dataset(deep_bbe: bool = False):
 
     df["HR Tier"] = df["HR Probability %"].apply(classify_hr_tier)
     df = sort_for_hr(df)
-    save_daily_dataset_cache(df, schedule)
     return df, schedule
+
+
+# Fast local slate cache. Streamlit reruns on every tab/button interaction; without
+# this layer the app repeatedly rebuilds the entire MLB slate and can crash under
+# mobile memory pressure. Manual Update Board / Deep L10 Refresh still force a
+# truthful rebuild.
+DAILY_DATA_CACHE_DIR = ".bf_daily_cache"
+
+
+def _daily_cache_paths(deep_bbe: bool):
+    os.makedirs(DAILY_DATA_CACHE_DIR, exist_ok=True)
+    suffix = "deep" if deep_bbe else "fast"
+    base = os.path.join(DAILY_DATA_CACHE_DIR, f"bf_slate_{today_str()}_{suffix}")
+    return base + ".pkl", base + ".json"
+
+
+def _save_daily_dataset_cache(df: pd.DataFrame, schedule: list[dict], deep_bbe: bool):
+    df_path, schedule_path = _daily_cache_paths(deep_bbe)
+    try:
+        fd, tmp_df = tempfile.mkstemp(prefix="bf_slate_", suffix=".pkl", dir=DAILY_DATA_CACHE_DIR)
+        os.close(fd)
+        df.to_pickle(tmp_df)
+        os.replace(tmp_df, df_path)
+    except Exception:
+        try:
+            if 'tmp_df' in locals() and os.path.exists(tmp_df):
+                os.remove(tmp_df)
+        except Exception:
+            pass
+    try:
+        fd, tmp_json = tempfile.mkstemp(prefix="bf_schedule_", suffix=".json", dir=DAILY_DATA_CACHE_DIR)
+        os.close(fd)
+        with open(tmp_json, "w", encoding="utf-8") as fh:
+            json.dump(schedule, fh, default=str)
+        os.replace(tmp_json, schedule_path)
+    except Exception:
+        try:
+            if 'tmp_json' in locals() and os.path.exists(tmp_json):
+                os.remove(tmp_json)
+        except Exception:
+            pass
+
+
+def load_or_build_daily_dataset(deep_bbe: bool = False, force: bool = False):
+    df_path, schedule_path = _daily_cache_paths(deep_bbe)
+    if not force and os.path.exists(df_path) and os.path.exists(schedule_path):
+        try:
+            cached_df = pd.read_pickle(df_path)
+            with open(schedule_path, "r", encoding="utf-8") as fh:
+                cached_schedule = json.load(fh)
+            if isinstance(cached_df, pd.DataFrame) and isinstance(cached_schedule, list):
+                return cached_df, sort_schedule_rows(cached_schedule)
+        except Exception:
+            pass
+
+    built_df, built_schedule = build_daily_dataset(deep_bbe=deep_bbe)
+    if isinstance(built_df, pd.DataFrame) and not built_df.empty:
+        _save_daily_dataset_cache(built_df, built_schedule, deep_bbe)
+    return built_df, built_schedule
 
 
 def get_research_shortlist_pool(df: pd.DataFrame) -> pd.DataFrame:
@@ -4709,7 +4727,7 @@ def get_boxscore_homers(game_pk: int):
     homer_map = {}
 
     try:
-        resp = requests.get(url, timeout=6)
+        resp = requests.get(url, timeout=20)
         resp.raise_for_status()
         data = resp.json()
     except Exception:
@@ -4752,57 +4770,35 @@ def get_player_hr_count_from_map(homer_map: dict, player_name: str) -> int:
     return 0
 
 
-def collect_live_homer_maps(schedule: list[dict]) -> dict:
-    """Fetch live results once, and never call game feeds for scheduled games."""
-    maps = {}
-    for game in schedule or []:
-        state = str(game.get("game_state", "Preview"))
-        if state == "Preview":
-            maps[game.get("game_pk")] = {}
-            continue
-        game_pk = game.get("game_pk")
-        if game_pk is not None:
-            maps[game_pk] = get_boxscore_homers(game_pk)
-    return maps
-
-def build_tracker_hr_lookup(tracker: pd.DataFrame) -> dict:
-    lookup = {}
-    if tracker is None or tracker.empty:
-        return lookup
-    day = tracker[tracker["date"].astype(str) == today_str()].copy() if "date" in tracker.columns else tracker.copy()
-    for _, row in day.iterrows():
-        key = (safe_int(row.get("game_pk"), -1), normalize_name(row.get("player", "")))
-        lookup[key] = max(lookup.get(key, 0), safe_int(row.get("hr_count"), 0))
-    return lookup
-
-def add_live_homer_counts_to_board(df: pd.DataFrame, schedule: list[dict], tracker: pd.DataFrame | None = None, homer_maps: dict | None = None) -> pd.DataFrame:
-    """Display-only HR count using already-fetched tracker/live data."""
+def add_live_homer_counts_to_board(df: pd.DataFrame, schedule: list[dict]) -> pd.DataFrame:
+    """Display-only result column. This must NEVER be used to rank or rewrite predictions."""
     if df.empty:
         return df.copy()
     out = df.copy()
     out["Actual HR Today"] = 0
     if "game_pk" not in out.columns or "Player" not in out.columns:
         return out
-    tracker_lookup = build_tracker_hr_lookup(tracker) if tracker is not None else {}
-    homer_maps = homer_maps or {}
-    def _count(row):
-        game_pk = safe_int(row.get("game_pk"), -1)
-        player = row.get("Player", "")
-        from_tracker = tracker_lookup.get((game_pk, normalize_name(player)), 0)
-        from_live = get_player_hr_count_from_map(homer_maps.get(game_pk, {}), player)
-        return max(from_tracker, from_live)
-    out["Actual HR Today"] = out.apply(_count, axis=1)
+    for game in schedule:
+        game_pk = game.get("game_pk")
+        if game_pk is None:
+            continue
+        homer_map = get_boxscore_homers(game_pk)
+        mask = pd.to_numeric(out["game_pk"], errors="coerce") == safe_int(game_pk, -1)
+        if mask.any():
+            out.loc[mask, "Actual HR Today"] = out.loc[mask, "Player"].apply(
+                lambda p: get_player_hr_count_from_map(homer_map, p)
+            )
     return out
 
 
 
-def get_locked_section_snapshot(source_key: str, fallback_df: pd.DataFrame, schedule: list[dict], limit: int | None = None, tracker: pd.DataFrame | None = None, homer_maps: dict | None = None) -> pd.DataFrame:
+def get_locked_section_snapshot(source_key: str, fallback_df: pd.DataFrame, schedule: list[dict], limit: int | None = None) -> pd.DataFrame:
     """Use the saved surfaced board for display so upgrades/refreshes do not rewrite rankings."""
     snap = load_daily_board_snapshot(today_str())
     if snap is not None and not snap.empty and "Tracker Source" in snap.columns:
         section = snap[snap["Tracker Source"].astype(str).str.strip().str.upper() == str(source_key).upper()].copy()
         if not section.empty:
-            section = add_live_homer_counts_to_board(section, schedule, tracker=tracker, homer_maps=homer_maps)
+            section = add_live_homer_counts_to_board(section, schedule)
             if "Rank" in section.columns:
                 section = section.drop(columns=["Rank"])
             section = section.reset_index(drop=True)
@@ -4874,7 +4870,7 @@ def sync_tracker_with_board(tracked_df: pd.DataFrame):
     save_tracker(tracker)
     return tracker
 
-def auto_update_tracker_results(tracker: pd.DataFrame, schedule: list[dict], homer_maps: dict | None = None):
+def auto_update_tracker_results(tracker: pd.DataFrame, schedule: list[dict]):
     if tracker.empty:
         return tracker
 
@@ -4900,13 +4896,9 @@ def auto_update_tracker_results(tracker: pd.DataFrame, schedule: list[dict], hom
         if not rows_mask.any():
             continue
 
-        # Scheduled games cannot have HR results. Avoid 2 network calls per game.
-        if game_state == "Preview":
-            homer_map = {}
-        else:
-            homer_map = (homer_maps or {}).get(game_pk)
-            if homer_map is None:
-                homer_map = get_boxscore_homers(game_pk)
+        # Always read boxscore + live play feed. Schedule states can lag, and boxscore
+        # alone can temporarily miss multi-HR totals.
+        homer_map = get_boxscore_homers(game_pk)
 
         for idx in tracker.index[rows_mask]:
             player = tracker.at[idx, "player"]
@@ -5287,20 +5279,18 @@ def sync_combo_tracker_with_board(combo_df: pd.DataFrame):
     return tracker
 
 
-def auto_update_combo_tracker_results(combo_tracker: pd.DataFrame, schedule: list[dict], homer_maps: dict | None = None, lineup_index: dict | None = None):
+def auto_update_combo_tracker_results(combo_tracker: pd.DataFrame, schedule: list[dict]):
     if combo_tracker.empty:
         return combo_tracker
 
     combo_tracker = combo_tracker.copy()
     date_key = today_str()
     today_mask = combo_tracker["date"].astype(str) == date_key
-    lineup_index = lineup_index if lineup_index is not None else _confirmed_lineup_index(schedule)
+    lineup_index = _confirmed_lineup_index(schedule)
 
-    homer_maps = homer_maps or {}
-    schedule_states = {}
+    homer_maps, schedule_states = {}, {}
     for game in schedule:
-        if game.get("game_state", "Preview") != "Preview" and game.get("game_pk") not in homer_maps:
-            homer_maps[game["game_pk"]] = get_boxscore_homers(game["game_pk"])
+        homer_maps[game["game_pk"]] = get_boxscore_homers(game["game_pk"])
         schedule_states[game["game_key"]] = (
             game.get("game_state", "Preview"),
             game.get("detailed_state", "Scheduled"),
@@ -6085,7 +6075,7 @@ def render_player_card(row: pd.Series, rank_override=None):
     quick_html = f'''
 <div class="bf-quick-row {row_cls}">
   <div>
-    <div class="bf-quick-player">#{escape(str(rank))} {escape(player)} <span class="bf-live-hr-badge {'hit' if actual_hr > 0 else ''}">HR {actual_hr}</span></div>
+    <div class="bf-quick-player">#{escape(str(rank))} {escape(player)}</div>
     <div class="bf-target-strip"><span class="bf-target-role {role_cls}">{escape(role)}</span><span class="bf-letter-grade">{escape(decision_grade)}</span><span class="bf-edge-note">{escape(gap_text)}</span></div>
     <div class="bf-quick-sub">{escape(team)} • {escape(game)}<br>{escape(badges)}</div>
   </div>
@@ -6652,19 +6642,16 @@ with c1:
     if st.button("Deep L10 Refresh", use_container_width=True):
         st.session_state.manual_refresh_trigger = True
         st.session_state.deep_l10_bbe = True
-        st.cache_data.clear()
+        # Do not clear every Streamlit cache. A global clear caused expensive
+        # refetch storms and was a major source of app crashes on mobile.
+        build_daily_dataset.clear()
+        fetch_l10_bbe_profile_from_savant_csv.clear()
         st.rerun()
 
 
 deep_bbe_mode = bool(st.session_state.get("deep_l10_bbe", DEFAULT_DEEP_L10_BBE))
-force_full_rebuild = bool(st.session_state.get("manual_refresh_trigger", False)) or deep_bbe_mode
-if force_full_rebuild:
-    build_daily_dataset.clear()
-    live_df, schedule = build_daily_dataset(deep_bbe=deep_bbe_mode)
-else:
-    live_df, schedule = load_daily_dataset_cache()
-    if live_df.empty or not schedule:
-        live_df, schedule = build_daily_dataset(deep_bbe=False)
+force_board_rebuild = bool(st.session_state.get("manual_refresh_trigger", False))
+live_df, schedule = load_or_build_daily_dataset(deep_bbe=deep_bbe_mode, force=force_board_rebuild)
 locked_df_raw = ensure_daily_board_lock(live_df, schedule)
 
 lineup_mode = get_lineup_mode(schedule) if schedule else "PROJECTED"
@@ -6678,16 +6665,13 @@ tracker = sync_tracker_with_board(tracked_df)
 combo_board = build_combo_board(locked_df_raw, schedule)
 combo_tracker = sync_combo_tracker_with_board(combo_board)
 
-# Fetch live game results once. Pregame games make zero live-feed requests.
-live_homer_maps = collect_live_homer_maps(schedule)
-lineup_index = _confirmed_lineup_index(schedule)
-tracker = auto_update_tracker_results(tracker, schedule, homer_maps=live_homer_maps)
-combo_tracker = auto_update_combo_tracker_results(combo_tracker, schedule, homer_maps=live_homer_maps, lineup_index=lineup_index)
+# Always update results every run. Refresh/update should not be required for HR counts to move off zero.
+tracker = auto_update_tracker_results(tracker, schedule)
+combo_tracker = auto_update_combo_tracker_results(combo_tracker, schedule)
 st.session_state.manual_refresh_trigger = False
-st.session_state.deep_l10_bbe = False
 
-# Display-only live result column reuses tracker/live maps; no duplicate requests.
-locked_df = add_live_homer_counts_to_board(locked_df_raw, schedule, tracker=tracker, homer_maps=live_homer_maps)
+# Display-only live result column.
+locked_df = add_live_homer_counts_to_board(locked_df_raw, schedule)
 
 save_daily_tracker_snapshot(tracker, today_str())
 
@@ -6713,7 +6697,7 @@ if locked_df.empty:
     st.warning("No games or hitter data loaded.")
     st.stop()
 
-base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker", "Lineup Watch", "Live Weather", "Per Game"]
+base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker", "Lineup Watch", "Live Weather", "Per Game Boards"]
 schedule = sort_schedule_rows(schedule)
 tabs = st.tabs(base_tabs)
 
@@ -6721,27 +6705,27 @@ with tabs[0]:
     st.subheader("JR HR Board")
     st.caption("Projected teams stay live. Confirmed teams freeze once lineups lock. Actual HR Today is display-only and does not change rankings.")
     hr_df_live = get_strict_hr_pool(locked_df)
-    hr_df = get_locked_section_snapshot("CORE_BOARD", hr_df_live, schedule, limit=30, tracker=tracker, homer_maps=live_homer_maps)
+    hr_df = get_locked_section_snapshot("CORE_BOARD", hr_df_live, schedule, limit=30)
     render_card_grid(hr_df, max_cards=30, columns=3)
     with st.expander("Raw JR HR Board Table"):
         display_existing_columns(hr_df, [
-                "Rank", "Player", "Team", "Game", "Pitcher", "Lineup Spot",
-                "Lineup Source", "Actual HR Today", "HR Probability %", "HR Tier", "GroundBall%",
-                "GB Rule", "GB Note", "Matchup Advantage", "HR Attackability Score", "WeatherNote", "BullpenFatigueNote", "HardHit%", "FlyBall%", "AIR%", "xSLG", "xwOBA", "Barrel%", "Ranking Reasons", "Why"
-            ])
+            "Rank", "Player", "Team", "Game", "Pitcher", "Lineup Spot",
+            "Lineup Source", "Actual HR Today", "HR Probability %", "HR Tier", "GroundBall%",
+            "GB Rule", "GB Note", "Matchup Advantage", "HR Attackability Score", "WeatherNote", "BullpenFatigueNote", "HardHit%", "FlyBall%", "AIR%", "xSLG", "xwOBA", "Barrel%", "Ranking Reasons", "Why"
+        ])
 
 with tabs[1]:
     st.subheader("Top 12 HR Candidates")
     st.caption("Confirmed teams freeze once lineups lock. Projected teams can still update. Actual HR Today is display-only and does not change rankings.")
     top12_live = get_top12_hybrid(locked_df)
-    top12 = get_locked_section_snapshot("TOP12", top12_live, schedule, limit=12, tracker=tracker, homer_maps=live_homer_maps)
+    top12 = get_locked_section_snapshot("TOP12", top12_live, schedule, limit=12)
     render_card_grid(top12, max_cards=12, columns=3)
     with st.expander("Raw Top 12 Table"):
         display_existing_columns(top12, [
-                "Rank", "Player", "Team", "Game", "Pitcher", "Lineup Spot",
-                "Lineup Source", "Actual HR Today", "HR Probability %", "HR Tier", "GroundBall%",
-                "GB Rule", "GB Note", "Matchup Advantage", "HR Attackability Score", "WeatherNote", "BullpenFatigueNote", "HardHit%", "FlyBall%", "AIR%", "xSLG", "xwOBA", "Barrel%", "Ranking Reasons", "Why"
-            ])
+            "Rank", "Player", "Team", "Game", "Pitcher", "Lineup Spot",
+            "Lineup Source", "Actual HR Today", "HR Probability %", "HR Tier", "GroundBall%",
+            "GB Rule", "GB Note", "Matchup Advantage", "HR Attackability Score", "WeatherNote", "BullpenFatigueNote", "HardHit%", "FlyBall%", "AIR%", "xSLG", "xwOBA", "Barrel%", "Ranking Reasons", "Why"
+        ])
 
 with tabs[2]:
     st.subheader("Top HR Targets — Slate-Wide Top 25")
@@ -7076,66 +7060,114 @@ with tabs[9]:
             st.dataframe(dedupe_columns(suppressive), use_container_width=True, hide_index=True)
 
 
+
 with tabs[10]:
-    st.subheader("Per Game Board")
-    st.caption("Choose one matchup. Only the selected game is rendered, which keeps phone and desktop loads fast.")
+    st.subheader("Per Game Boards")
+    st.caption("Every game remains visible as an individual quick tab. Only the selected board is rendered, which prevents the all-game DOM overload that caused slow loads and crashes.")
 
     if not schedule:
-        st.info("No games are available.")
+        st.info("No games are available for today's slate.")
     else:
         game_labels = [f"{format_game_time_et(g.get('game_time', ''))} | {g['game_key']}" for g in schedule]
-        selected_label = st.selectbox("Select game", game_labels, key="bf_selected_per_game")
-        game = schedule[game_labels.index(selected_label)]
+        default_label = st.session_state.get("bf_selected_game_label")
+        if default_label not in game_labels:
+            default_label = game_labels[0]
 
-        st.markdown(f"### {game['game_key']} — {format_game_time_et(game.get('game_time', ''))}")
+        # Segmented control is a visible tab strip, not a dropdown. Fallback to
+        # horizontal radio on older Streamlit versions.
+        try:
+            selected_game_label = st.segmented_control(
+                "Game boards",
+                options=game_labels,
+                default=default_label,
+                key="bf_game_board_segment",
+                label_visibility="collapsed",
+            )
+        except Exception:
+            selected_game_label = st.radio(
+                "Game boards",
+                options=game_labels,
+                index=game_labels.index(default_label),
+                horizontal=True,
+                key="bf_game_board_radio",
+                label_visibility="collapsed",
+            )
+        if not selected_game_label:
+            selected_game_label = default_label
+        st.session_state["bf_selected_game_label"] = selected_game_label
+        selected_index = game_labels.index(selected_game_label)
+        game = schedule[selected_index]
+
+        st.subheader(f"{game['game_key']} — {format_game_time_et(game.get('game_time', ''))}")
         st.caption(
-            f"Venue: {game.get('venue', 'Unknown')}  |  "
-            f"Away starter: {game.get('away_pitcher', 'Starter Pending')}  |  "
-            f"Home starter: {game.get('home_pitcher', 'Starter Pending')}"
+            f"Start: {format_game_time_et(game.get('game_time', ''))}  |  "
+            f"Venue: {game['venue']}  |  "
+            f"Away starter: {game['away_pitcher']}  |  "
+            f"Home starter: {game['home_pitcher']}"
         )
 
-        gdf = locked_df[locked_df.get("Game", pd.Series(index=locked_df.index, dtype=str)).astype(str) == str(game["game_key"])].copy()
+        gdf = locked_df[locked_df["Game"].astype(str) == str(game["game_key"])].copy()
         away_team = team_abbr(game["away_team"])
         home_team = team_abbr(game["home_team"])
 
+        # Compute each team view once. Reusing these frames prevents repeated
+        # sorting/filtering and lowers memory use on iPhone.
+        away_hr, away_hrr = get_team_game_view(gdf, game["game_key"], away_team)
+        home_hr, home_hrr = get_team_game_view(gdf, game["game_key"], home_team)
+
         left, right = st.columns(2)
 
-        def _render_per_game_team(team_name: str, confirmed_count: int):
-            team_rows = gdf[gdf.get("Team", pd.Series(index=gdf.index, dtype=str)).astype(str) == str(team_name)].copy()
-            source = "PROJECTED"
-            if not team_rows.empty and "Lineup Source" in team_rows.columns:
-                vals = team_rows["Lineup Source"].dropna().astype(str)
-                if not vals.empty:
-                    source = vals.iloc[0]
-            st.markdown(f"### {team_name}")
-            st.caption(f"Confirmed hitters: {confirmed_count}/9 | Pool status: {source}")
-
-            team_hr, team_hrr = get_team_game_view(gdf, game["game_key"], team_name)
-            if not team_hr.empty:
+        with left:
+            st.markdown(f"### {away_team}")
+            away_rows = gdf[gdf["Team"].astype(str) == str(away_team)] if "Team" in gdf.columns else pd.DataFrame()
+            away_source = away_rows["Lineup Source"].iloc[0] if not away_rows.empty and "Lineup Source" in away_rows.columns else "N/A"
+            st.caption(f"Confirmed hitters: {game.get('away_confirmed_count', 0)}/9 | Pool status: {away_source}")
+            if not away_hr.empty:
                 st.markdown("**Best HR hitters**")
-                render_card_grid(team_hr, max_cards=4, columns=1)
+                render_card_grid(away_hr, max_cards=4, columns=1)
                 with st.expander("Raw team HR table"):
-                    display_existing_columns(team_hr, [
+                    display_existing_columns(away_hr, [
                         "Rank", "Player", "Lineup Spot", "Lineup Source", "Statcast Pass",
-                        "Strict Statcast", "Recent Form Pass", "Pitcher Attackable", "Actual HR Today",
-                        "HR Probability %", "HR Tier", "GroundBall%", "GB Rule", "GB Note",
-                        "WeatherNote", "BullpenFatigueNote", "HardHit%", "FlyBall%", "AIR%",
-                        "xSLG", "xwOBA", "Barrel%", "Ranking Reasons", "Why"
+                        "Strict Statcast", "Recent Form Pass", "Pitcher Attackable", "Actual HR Today", "HR Probability %",
+                        "HR Tier", "GroundBall%", "GB Rule", "GB Note", "WeatherNote", "BullpenFatigueNote", "HardHit%", "FlyBall%",
+                        "AIR%", "xSLG", "xwOBA", "Barrel%", "Ranking Reasons", "Why"
                     ])
             else:
                 st.caption("No HR-qualified bats surfaced.")
 
             st.markdown("**Best Hits + Runs + RBIs**")
-            if not team_hrr.empty:
-                display_existing_columns(team_hrr.head(5), [
+            if not away_hrr.empty:
+                display_existing_columns(away_hrr.head(5), [
                     "Player", "Lineup Spot", "Lineup Source", "HRR Score",
                     "GroundBall%", "LineDrive%", "Why"
                 ])
             else:
                 st.caption("No HRR bats surfaced.")
 
-        with left:
-            _render_per_game_team(away_team, game.get("away_confirmed_count", 0))
         with right:
-            _render_per_game_team(home_team, game.get("home_confirmed_count", 0))
+            st.markdown(f"### {home_team}")
+            home_rows = gdf[gdf["Team"].astype(str) == str(home_team)] if "Team" in gdf.columns else pd.DataFrame()
+            home_source = home_rows["Lineup Source"].iloc[0] if not home_rows.empty and "Lineup Source" in home_rows.columns else "N/A"
+            st.caption(f"Confirmed hitters: {game.get('home_confirmed_count', 0)}/9 | Pool status: {home_source}")
+            if not home_hr.empty:
+                st.markdown("**Best HR hitters**")
+                render_card_grid(home_hr, max_cards=4, columns=1)
+                with st.expander("Raw team HR table"):
+                    display_existing_columns(home_hr, [
+                        "Rank", "Player", "Lineup Spot", "Lineup Source", "Statcast Pass",
+                        "Strict Statcast", "Recent Form Pass", "Pitcher Attackable", "Actual HR Today", "HR Probability %",
+                        "HR Tier", "GroundBall%", "GB Rule", "GB Note", "WeatherNote", "BullpenFatigueNote", "HardHit%", "FlyBall%",
+                        "AIR%", "xSLG", "xwOBA", "Barrel%", "Ranking Reasons", "Why"
+                    ])
+            else:
+                st.caption("No HR-qualified bats surfaced.")
+
+            st.markdown("**Best Hits + Runs + RBIs**")
+            if not home_hrr.empty:
+                display_existing_columns(home_hrr.head(5), [
+                    "Player", "Lineup Spot", "Lineup Source", "HRR Score",
+                    "GroundBall%", "LineDrive%", "Why"
+                ])
+            else:
+                st.caption("No HRR bats surfaced.")
 
