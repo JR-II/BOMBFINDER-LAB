@@ -2117,7 +2117,7 @@ def fetch_weather_for_park(home_team_abbr: str):
     )
 
     try:
-        resp = requests.get(url, timeout=15)
+        resp = requests.get(url, timeout=6)
         resp.raise_for_status()
         data = resp.json()
         current = data.get("current", {}) or {}
@@ -4303,7 +4303,42 @@ def sort_for_hr(df: pd.DataFrame) -> pd.DataFrame:
     ])
 
 
-@st.cache_data(ttl=900)
+DATASET_CACHE_DIR = "dataset_cache"
+
+def _dataset_cache_path(date_key: str | None = None) -> str:
+    os.makedirs(DATASET_CACHE_DIR, exist_ok=True)
+    return os.path.join(DATASET_CACHE_DIR, f"bf_daily_dataset_{date_key or today_str()}.pkl")
+
+def save_daily_dataset_cache(df: pd.DataFrame, schedule: list[dict]) -> None:
+    """Persist the fully built slate so normal reruns open immediately."""
+    path = _dataset_cache_path()
+    fd, tmp_path = tempfile.mkstemp(prefix="bf_dataset_", suffix=".pkl", dir=DATASET_CACHE_DIR)
+    os.close(fd)
+    try:
+        pd.to_pickle({"df": df, "schedule": schedule, "saved_at": now_et_string()}, tmp_path)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+def load_daily_dataset_cache() -> tuple[pd.DataFrame, list[dict]]:
+    path = _dataset_cache_path()
+    if not os.path.exists(path):
+        return pd.DataFrame(), []
+    try:
+        payload = pd.read_pickle(path)
+        if isinstance(payload, dict):
+            df = payload.get("df", pd.DataFrame())
+            schedule = payload.get("schedule", [])
+            return (df if isinstance(df, pd.DataFrame) else pd.DataFrame(), schedule if isinstance(schedule, list) else [])
+    except Exception:
+        pass
+    return pd.DataFrame(), []
+
+@st.cache_data(ttl=3600)
 def build_daily_dataset(deep_bbe: bool = False):
     schedule = sort_schedule_rows(get_today_schedule())
     rows = []
@@ -4431,6 +4466,7 @@ def build_daily_dataset(deep_bbe: bool = False):
 
     df["HR Tier"] = df["HR Probability %"].apply(classify_hr_tier)
     df = sort_for_hr(df)
+    save_daily_dataset_cache(df, schedule)
     return df, schedule
 
 
@@ -4673,7 +4709,7 @@ def get_boxscore_homers(game_pk: int):
     homer_map = {}
 
     try:
-        resp = requests.get(url, timeout=20)
+        resp = requests.get(url, timeout=6)
         resp.raise_for_status()
         data = resp.json()
     except Exception:
@@ -4716,35 +4752,57 @@ def get_player_hr_count_from_map(homer_map: dict, player_name: str) -> int:
     return 0
 
 
-def add_live_homer_counts_to_board(df: pd.DataFrame, schedule: list[dict]) -> pd.DataFrame:
-    """Display-only result column. This must NEVER be used to rank or rewrite predictions."""
+def collect_live_homer_maps(schedule: list[dict]) -> dict:
+    """Fetch live results once, and never call game feeds for scheduled games."""
+    maps = {}
+    for game in schedule or []:
+        state = str(game.get("game_state", "Preview"))
+        if state == "Preview":
+            maps[game.get("game_pk")] = {}
+            continue
+        game_pk = game.get("game_pk")
+        if game_pk is not None:
+            maps[game_pk] = get_boxscore_homers(game_pk)
+    return maps
+
+def build_tracker_hr_lookup(tracker: pd.DataFrame) -> dict:
+    lookup = {}
+    if tracker is None or tracker.empty:
+        return lookup
+    day = tracker[tracker["date"].astype(str) == today_str()].copy() if "date" in tracker.columns else tracker.copy()
+    for _, row in day.iterrows():
+        key = (safe_int(row.get("game_pk"), -1), normalize_name(row.get("player", "")))
+        lookup[key] = max(lookup.get(key, 0), safe_int(row.get("hr_count"), 0))
+    return lookup
+
+def add_live_homer_counts_to_board(df: pd.DataFrame, schedule: list[dict], tracker: pd.DataFrame | None = None, homer_maps: dict | None = None) -> pd.DataFrame:
+    """Display-only HR count using already-fetched tracker/live data."""
     if df.empty:
         return df.copy()
     out = df.copy()
     out["Actual HR Today"] = 0
     if "game_pk" not in out.columns or "Player" not in out.columns:
         return out
-    for game in schedule:
-        game_pk = game.get("game_pk")
-        if game_pk is None:
-            continue
-        homer_map = get_boxscore_homers(game_pk)
-        mask = pd.to_numeric(out["game_pk"], errors="coerce") == safe_int(game_pk, -1)
-        if mask.any():
-            out.loc[mask, "Actual HR Today"] = out.loc[mask, "Player"].apply(
-                lambda p: get_player_hr_count_from_map(homer_map, p)
-            )
+    tracker_lookup = build_tracker_hr_lookup(tracker) if tracker is not None else {}
+    homer_maps = homer_maps or {}
+    def _count(row):
+        game_pk = safe_int(row.get("game_pk"), -1)
+        player = row.get("Player", "")
+        from_tracker = tracker_lookup.get((game_pk, normalize_name(player)), 0)
+        from_live = get_player_hr_count_from_map(homer_maps.get(game_pk, {}), player)
+        return max(from_tracker, from_live)
+    out["Actual HR Today"] = out.apply(_count, axis=1)
     return out
 
 
 
-def get_locked_section_snapshot(source_key: str, fallback_df: pd.DataFrame, schedule: list[dict], limit: int | None = None) -> pd.DataFrame:
+def get_locked_section_snapshot(source_key: str, fallback_df: pd.DataFrame, schedule: list[dict], limit: int | None = None, tracker: pd.DataFrame | None = None, homer_maps: dict | None = None) -> pd.DataFrame:
     """Use the saved surfaced board for display so upgrades/refreshes do not rewrite rankings."""
     snap = load_daily_board_snapshot(today_str())
     if snap is not None and not snap.empty and "Tracker Source" in snap.columns:
         section = snap[snap["Tracker Source"].astype(str).str.strip().str.upper() == str(source_key).upper()].copy()
         if not section.empty:
-            section = add_live_homer_counts_to_board(section, schedule)
+            section = add_live_homer_counts_to_board(section, schedule, tracker=tracker, homer_maps=homer_maps)
             if "Rank" in section.columns:
                 section = section.drop(columns=["Rank"])
             section = section.reset_index(drop=True)
@@ -4816,7 +4874,7 @@ def sync_tracker_with_board(tracked_df: pd.DataFrame):
     save_tracker(tracker)
     return tracker
 
-def auto_update_tracker_results(tracker: pd.DataFrame, schedule: list[dict]):
+def auto_update_tracker_results(tracker: pd.DataFrame, schedule: list[dict], homer_maps: dict | None = None):
     if tracker.empty:
         return tracker
 
@@ -4842,9 +4900,13 @@ def auto_update_tracker_results(tracker: pd.DataFrame, schedule: list[dict]):
         if not rows_mask.any():
             continue
 
-        # Always read boxscore + live play feed. Schedule states can lag, and boxscore
-        # alone can temporarily miss multi-HR totals.
-        homer_map = get_boxscore_homers(game_pk)
+        # Scheduled games cannot have HR results. Avoid 2 network calls per game.
+        if game_state == "Preview":
+            homer_map = {}
+        else:
+            homer_map = (homer_maps or {}).get(game_pk)
+            if homer_map is None:
+                homer_map = get_boxscore_homers(game_pk)
 
         for idx in tracker.index[rows_mask]:
             player = tracker.at[idx, "player"]
@@ -5225,18 +5287,20 @@ def sync_combo_tracker_with_board(combo_df: pd.DataFrame):
     return tracker
 
 
-def auto_update_combo_tracker_results(combo_tracker: pd.DataFrame, schedule: list[dict]):
+def auto_update_combo_tracker_results(combo_tracker: pd.DataFrame, schedule: list[dict], homer_maps: dict | None = None, lineup_index: dict | None = None):
     if combo_tracker.empty:
         return combo_tracker
 
     combo_tracker = combo_tracker.copy()
     date_key = today_str()
     today_mask = combo_tracker["date"].astype(str) == date_key
-    lineup_index = _confirmed_lineup_index(schedule)
+    lineup_index = lineup_index if lineup_index is not None else _confirmed_lineup_index(schedule)
 
-    homer_maps, schedule_states = {}, {}
+    homer_maps = homer_maps or {}
+    schedule_states = {}
     for game in schedule:
-        homer_maps[game["game_pk"]] = get_boxscore_homers(game["game_pk"])
+        if game.get("game_state", "Preview") != "Preview" and game.get("game_pk") not in homer_maps:
+            homer_maps[game["game_pk"]] = get_boxscore_homers(game["game_pk"])
         schedule_states[game["game_key"]] = (
             game.get("game_state", "Preview"),
             game.get("detailed_state", "Scheduled"),
@@ -6593,7 +6657,14 @@ with c1:
 
 
 deep_bbe_mode = bool(st.session_state.get("deep_l10_bbe", DEFAULT_DEEP_L10_BBE))
-live_df, schedule = build_daily_dataset(deep_bbe=deep_bbe_mode)
+force_full_rebuild = bool(st.session_state.get("manual_refresh_trigger", False)) or deep_bbe_mode
+if force_full_rebuild:
+    build_daily_dataset.clear()
+    live_df, schedule = build_daily_dataset(deep_bbe=deep_bbe_mode)
+else:
+    live_df, schedule = load_daily_dataset_cache()
+    if live_df.empty or not schedule:
+        live_df, schedule = build_daily_dataset(deep_bbe=False)
 locked_df_raw = ensure_daily_board_lock(live_df, schedule)
 
 lineup_mode = get_lineup_mode(schedule) if schedule else "PROJECTED"
@@ -6607,13 +6678,16 @@ tracker = sync_tracker_with_board(tracked_df)
 combo_board = build_combo_board(locked_df_raw, schedule)
 combo_tracker = sync_combo_tracker_with_board(combo_board)
 
-# Always update results every run. Refresh/update should not be required for HR counts to move off zero.
-tracker = auto_update_tracker_results(tracker, schedule)
-combo_tracker = auto_update_combo_tracker_results(combo_tracker, schedule)
+# Fetch live game results once. Pregame games make zero live-feed requests.
+live_homer_maps = collect_live_homer_maps(schedule)
+lineup_index = _confirmed_lineup_index(schedule)
+tracker = auto_update_tracker_results(tracker, schedule, homer_maps=live_homer_maps)
+combo_tracker = auto_update_combo_tracker_results(combo_tracker, schedule, homer_maps=live_homer_maps, lineup_index=lineup_index)
 st.session_state.manual_refresh_trigger = False
+st.session_state.deep_l10_bbe = False
 
-# Display-only live result column.
-locked_df = add_live_homer_counts_to_board(locked_df_raw, schedule)
+# Display-only live result column reuses tracker/live maps; no duplicate requests.
+locked_df = add_live_homer_counts_to_board(locked_df_raw, schedule, tracker=tracker, homer_maps=live_homer_maps)
 
 save_daily_tracker_snapshot(tracker, today_str())
 
@@ -6647,7 +6721,7 @@ with tabs[0]:
     st.subheader("JR HR Board")
     st.caption("Projected teams stay live. Confirmed teams freeze once lineups lock. Actual HR Today is display-only and does not change rankings.")
     hr_df_live = get_strict_hr_pool(locked_df)
-    hr_df = get_locked_section_snapshot("CORE_BOARD", hr_df_live, schedule, limit=30)
+    hr_df = get_locked_section_snapshot("CORE_BOARD", hr_df_live, schedule, limit=30, tracker=tracker, homer_maps=live_homer_maps)
     render_card_grid(hr_df, max_cards=30, columns=3)
     with st.expander("Raw JR HR Board Table"):
         display_existing_columns(hr_df, [
@@ -6660,7 +6734,7 @@ with tabs[1]:
     st.subheader("Top 12 HR Candidates")
     st.caption("Confirmed teams freeze once lineups lock. Projected teams can still update. Actual HR Today is display-only and does not change rankings.")
     top12_live = get_top12_hybrid(locked_df)
-    top12 = get_locked_section_snapshot("TOP12", top12_live, schedule, limit=12)
+    top12 = get_locked_section_snapshot("TOP12", top12_live, schedule, limit=12, tracker=tracker, homer_maps=live_homer_maps)
     render_card_grid(top12, max_cards=12, columns=3)
     with st.expander("Raw Top 12 Table"):
         display_existing_columns(top12, [
