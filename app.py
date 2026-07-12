@@ -2501,7 +2501,7 @@ def refresh_official_lineup_status(schedule_rows: list[dict]) -> list[dict]:
     rows = [dict(g) for g in (schedule_rows or [])]
     if not rows:
         return rows
-    with ThreadPoolExecutor(max_workers=min(8, len(rows))) as pool:
+    with ThreadPoolExecutor(max_workers=min(4, len(rows)), thread_name_prefix="bf-lineup") as pool:
         futures = {pool.submit(fetch_official_lineup_counts, g.get("game_pk")): i for i, g in enumerate(rows) if g.get("game_pk")}
         for future in as_completed(futures):
             i = futures[future]
@@ -2524,7 +2524,7 @@ def get_schedule_homer_maps(schedule_signature: tuple) -> dict:
     items = [x for x in schedule_signature if len(x) >= 3 and str(x[2]) != "Preview"]
     if not items:
         return result
-    with ThreadPoolExecutor(max_workers=min(8, len(items))) as pool:
+    with ThreadPoolExecutor(max_workers=min(4, len(items)), thread_name_prefix="bf-homers") as pool:
         futures = {pool.submit(get_boxscore_homers, int(game_pk)): int(game_pk) for game_pk, _game_key, _state in items}
         for future in as_completed(futures):
             game_pk = futures[future]
@@ -4624,15 +4624,13 @@ def build_daily_dataset(deep_bbe: bool = False):
     return df, schedule
 
 
-@st.cache_data(ttl=21600, show_spinner=False)
+@st.cache_data(ttl=21600, max_entries=2, show_spinner=False)
 def build_tomorrow_preview_dataset(target_date: str):
-    """Build a fast, separate and untracked next-day research board.
+    """Resource-safe next-day preview.
 
-    The preview deliberately avoids future-game boxscores, per-team duplicate
-    stat requests, bullpen lookups and Baseball Savant pitch CSV pulls. Those
-    expensive details belong to the official slate. This keeps the first preview
-    practical while retaining real MLB rosters, season/recent stats, probable
-    pitchers, handedness, park factors and preliminary game-time weather.
+    This version avoids loading every active hitter's full season + game log,
+    caps concurrency, limits the preview candidate pool, and returns only the
+    columns needed by the Tomorrow Preview tab. It does not touch today's board.
     """
     schedule = get_schedule_for_date(target_date)
     if not schedule:
@@ -4640,11 +4638,15 @@ def build_tomorrow_preview_dataset(target_date: str):
 
     savant_batter_map = fetch_savant_batter_map(CURRENT_SEASON)
 
-    # Fetch every active roster once and in parallel. The old preview requested
-    # a future boxscore and then repeated player-stat calls for every team.
-    team_ids = sorted({safe_int(g.get(k), 0) for g in schedule for k in ("away_team_id", "home_team_id") if safe_int(g.get(k), 0) > 0})
+    # Streamlit Community Cloud has tight RAM/thread limits. Keep the pool small.
+    team_ids = sorted({
+        safe_int(g.get(k), 0)
+        for g in schedule
+        for k in ("away_team_id", "home_team_id")
+        if safe_int(g.get(k), 0) > 0
+    })
     roster_map = {}
-    with ThreadPoolExecutor(max_workers=min(10, max(1, len(team_ids)))) as pool:
+    with ThreadPoolExecutor(max_workers=min(3, max(1, len(team_ids))), thread_name_prefix="bf-preview-roster") as pool:
         futures = {pool.submit(get_team_hitters, tid): tid for tid in team_ids}
         for future in as_completed(futures):
             tid = futures[future]
@@ -4653,23 +4655,56 @@ def build_tomorrow_preview_dataset(target_date: str):
             except Exception:
                 roster_map[tid] = []
 
-    all_roster_ids = sorted({safe_int(h.get("player_id"), 0) for hitters in roster_map.values() for h in hitters if safe_int(h.get("player_id"), 0) > 0})
-    hitter_stats_map = fetch_people_stats(tuple(all_roster_ids), "hitting")
-
-    # Rank projected hitters cheaply from real recent/season results plus the
-    # already-cached Savant leaderboard. Keep six per club for the early board.
-    projected_by_team = {}
-    selected_hitter_ids = set()
+    # PRE-FILTER BEFORE fetching full MLB game logs. This is the main memory fix.
+    # Use cached Savant season data to retain the most relevant 8 bats per team.
+    shortlist_by_team = {}
+    shortlist_ids = set()
     for tid, hitters in roster_map.items():
-        scored = []
+        ranked = []
         for h in hitters:
             pid = safe_int(h.get("player_id"), 0)
+            name = h.get("player_name", "Unknown")
             if not pid:
                 continue
+            sav = savant_batter_map.get(normalize_name(name), {}) or {}
+            barrel = safe_float(sav.get("Savant_Barrel%"), 0.0)
+            hh = safe_float(sav.get("Savant_HardHit%"), 0.0)
+            xslg = safe_float(sav.get("Savant_xSLG"), 0.0)
+            ev = safe_float(sav.get("Savant_EV"), 0.0)
+            air = safe_float(sav.get("Savant_AIR%"), 0.0)
+            gb = safe_float(sav.get("Savant_GB%"), 50.0)
+            # Missing Savant rows remain eligible, but rank behind verified power bats.
+            verified = 1 if any(v > 0 for v in (barrel, hh, xslg, ev, air)) else 0
+            score = (
+                verified * 1000
+                + barrel * 5.0 + hh * 1.8 + xslg * 130
+                + max(0.0, ev - 86.0) * 2.0 + air * 0.35
+                - max(0.0, gb - 48.0) * 1.8
+            )
+            ranked.append({
+                "player_id": pid,
+                "player_name": name,
+                "lineup_spot": None,
+                "confirmed": False,
+                "prefilter_score": score,
+            })
+        chosen = sorted(ranked, key=lambda x: x["prefilter_score"], reverse=True)[:8]
+        shortlist_by_team[tid] = chosen
+        shortlist_ids.update(x["player_id"] for x in chosen)
+
+    # Only shortlisted hitters get full season/recent-game payloads.
+    hitter_stats_map = fetch_people_stats(tuple(sorted(shortlist_ids)), "hitting")
+
+    projected_by_team = {}
+    selected_hitter_ids = set()
+    for tid, hitters in shortlist_by_team.items():
+        scored = []
+        for h in hitters:
+            pid = h["player_id"]
             live = compute_hitter_live_metrics_from_map(pid, hitter_stats_map, use_true_bbe=False)
-            if not live or live.get("recent_pa", 0) < 8:
+            if not live or live.get("recent_pa", 0) < 6:
                 continue
-            sav = savant_batter_map.get(normalize_name(h.get("player_name", "")), {})
+            sav = savant_batter_map.get(normalize_name(h.get("player_name", "")), {}) or {}
             barrel = safe_float(sav.get("Savant_Barrel%"), live.get("Barrel%", 0.0))
             hh = safe_float(sav.get("Savant_HardHit%"), live.get("HardHit%", 0.0))
             xslg = safe_float(sav.get("Savant_xSLG"), 0.0)
@@ -4681,28 +4716,33 @@ def build_tomorrow_preview_dataset(target_date: str):
                 + safe_float(live.get("recent_iso"), 0) * 45
                 - max(0.0, gb - 48.0) * 2.0
             )
-            scored.append({
-                "player_id": pid,
-                "player_name": h.get("player_name", "Unknown"),
-                "lineup_spot": None,
-                "confirmed": False,
-                "preview_score": score,
-            })
-        chosen = sorted(scored, key=lambda x: x["preview_score"], reverse=True)[:6]
+            scored.append({**h, "preview_score": score})
+        # Five per club is enough for research and keeps the dataframe small.
+        chosen = sorted(scored, key=lambda x: x["preview_score"], reverse=True)[:5]
         projected_by_team[tid] = chosen
         selected_hitter_ids.update(h["player_id"] for h in chosen)
 
-    pitcher_ids = sorted({safe_int(g.get(k), 0) for g in schedule for k in ("away_pitcher_id", "home_pitcher_id") if safe_int(g.get(k), 0) > 0})
+    pitcher_ids = sorted({
+        safe_int(g.get(k), 0)
+        for g in schedule
+        for k in ("away_pitcher_id", "home_pitcher_id")
+        if safe_int(g.get(k), 0) > 0
+    })
     pitcher_stats_map = fetch_people_stats(tuple(pitcher_ids), "pitching")
     hand_map = fetch_people_hand_map(tuple(sorted(selected_hitter_ids.union(pitcher_ids))))
 
-    # Preliminary weather is independent by game, so retrieve it concurrently.
     weather_map = {}
-    with ThreadPoolExecutor(max_workers=min(10, max(1, len(schedule)))) as pool:
+    with ThreadPoolExecutor(max_workers=min(3, max(1, len(schedule))), thread_name_prefix="bf-preview-weather") as pool:
         futures = {}
         for g in schedule:
             home_abbr = team_abbr(g.get("home_team", ""))
-            futures[pool.submit(fetch_game_time_weather, home_abbr, g.get("game_time", ""), g.get("venue", ""), g.get("venue_id"))] = g.get("game_pk")
+            futures[pool.submit(
+                fetch_game_time_weather,
+                home_abbr,
+                g.get("game_time", ""),
+                g.get("venue", ""),
+                g.get("venue_id"),
+            )] = g.get("game_pk")
         for future in as_completed(futures):
             game_pk = futures[future]
             try:
@@ -4710,12 +4750,6 @@ def build_tomorrow_preview_dataset(target_date: str):
             except Exception:
                 weather_map[game_pk] = {}
 
-    neutral_bullpen = {
-        "BullpenFatigueScore": 0.0,
-        "BullpenFatigueNote": "Tomorrow bullpen status pending",
-        "BullpenIPPrev": 0.0,
-        "BullpenArmsPrev": 0,
-    }
     rows = []
     for game in schedule:
         away_abbr = team_abbr(game["away_team"])
@@ -4741,8 +4775,8 @@ def build_tomorrow_preview_dataset(target_date: str):
                     savant_batter_map=savant_batter_map, hand_map=hand_map,
                     weather_boost=weather_boost, weather_note=weather_note,
                     temp_f=temp_f, wind_mph=wind_mph,
-                    bullpen_fatigue_score=neutral_bullpen["BullpenFatigueScore"],
-                    bullpen_fatigue_note=neutral_bullpen["BullpenFatigueNote"],
+                    bullpen_fatigue_score=0.0,
+                    bullpen_fatigue_note="Tomorrow bullpen status pending",
                     bullpen_ip_prev=0.0, bullpen_arms_prev=0,
                     deep_bbe=False, fast_preview=True,
                 )
@@ -4750,11 +4784,13 @@ def build_tomorrow_preview_dataset(target_date: str):
                     continue
                 pitcher_status = "PROBABLE" if opp_pitcher not in {"", "Starter Pending", "—"} else "PENDING"
                 rows.append({
-                    "date": target_date, "game_pk": game.get("game_pk"),
+                    "date": target_date,
+                    "game_pk": game.get("game_pk"),
                     "game_state": game.get("game_state", "Preview"),
                     "detailed_state": game.get("detailed_state", "Scheduled"),
-                    "Game": game.get("game_key"), "Side": side,
-                    "Preview Stage": "EARLY LOOK — NOT LOCKED",
+                    "Game": game.get("game_key"),
+                    "Side": side,
+                    "Preview Status": "EARLY LOOK — NOT LOCKED",
                     "Pitcher Status": pitcher_status,
                     "Lineup Status": "PROJECTED",
                     "Weather Status": "PRELIMINARY" if available else "PENDING",
@@ -4762,17 +4798,30 @@ def build_tomorrow_preview_dataset(target_date: str):
                 })
 
     df = pd.DataFrame(rows)
+    # Release large temporary mappings before Streamlit serializes the result.
+    del roster_map, shortlist_by_team, hitter_stats_map, pitcher_stats_map, hand_map, weather_map
+
     if df.empty:
         return pd.DataFrame(), schedule
+
     df["HR Tier"] = df["HR Probability %"].apply(classify_hr_tier)
-    return sort_for_hr(df), schedule
+    df = sort_for_hr(df)
 
-
-# Fast local slate cache. Streamlit reruns on every tab/button interaction; without
-# this layer the app repeatedly rebuilds the entire MLB slate and can crash under
-# mobile memory pressure. Manual Update Board / Deep L10 Refresh still force a
-# truthful rebuild.
-DAILY_DATA_CACHE_DIR = ".bf_daily_cache"
+    # Keep only fields used by the preview UI. This substantially lowers cache RAM.
+    keep = [
+        "date", "game_pk", "game_state", "detailed_state", "Game", "Side",
+        "Preview Status", "Pitcher Status", "Lineup Status", "Weather Status",
+        "Player ID", "Player", "Team", "Bats", "Pitcher", "Pitcher Throws",
+        "Lineup Spot", "Lineup Source", "HR Probability %", "HR Tier",
+        "Model Rank Score", "Matchup Advantage Score", "Matchup Advantage",
+        "HR Attackability Score", "HR Attackability Label",
+        "EV", "HardHit%", "Barrel%", "FlyBall%", "LineDrive%", "GroundBall%", "AIR%",
+        "xSLG", "xwOBA", "Recent Trend", "Pitcher_HR9_Last7",
+        "Pitcher_Barrel_Allowed", "Pitcher_HardHit_Allowed",
+        "TempF", "WindMPH", "WeatherBoost", "WeatherNote", "Why", "Ranking Reasons",
+    ]
+    df = dedupe_columns(df[[c for c in keep if c in df.columns]].copy())
+    return df.reset_index(drop=True), schedule
 
 
 def _daily_cache_paths(deep_bbe: bool):
