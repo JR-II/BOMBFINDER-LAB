@@ -651,6 +651,7 @@ LOCK_FILE = "daily_hr_board_lock.csv"
 CURRENT_SEASON = datetime.now().year
 
 SNAPSHOT_DIR = "tracker_snapshots"
+DAILY_DATA_CACHE_DIR = "daily_data_cache"
 
 
 def ensure_snapshot_folder():
