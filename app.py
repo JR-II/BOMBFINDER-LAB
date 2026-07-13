@@ -6402,9 +6402,32 @@ def _bf_v2_role(rank, quality_score: float, grade: str, early: bool = False):
 
 
 def _bf_v2_confidence(row: pd.Series, early: bool = False) -> float:
+    """Player-specific confidence, not a repeated stage label."""
     if early:
-        label = str(row.get("Research Confidence", "LOW")).upper()
-        return {"MEDIUM": 62.0, "LOW-MEDIUM": 48.0, "LOW": 34.0}.get(label, 30.0)
+        saved = row.get("Early Confidence Score")
+        if pd.notna(saved):
+            return round(clip(safe_float(saved, 0.0), 25, 84), 1)
+
+        early_score = safe_float(row.get("Early BF Score"), 0.0)
+        barrel = safe_float(row.get("Barrel%"), 0.0)
+        hard_hit = safe_float(row.get("HardHit%"), 0.0)
+        xslg = safe_float(row.get("xSLG"), 0.0)
+        gb = safe_float(row.get("GroundBall%"), 45.0)
+        pitch_hr9 = safe_float(row.get("Pitcher HR/9"), 0.0)
+        recent_hr = safe_int(row.get("Recent HR"), 0)
+
+        confidence = (
+            28.0
+            + early_score * 0.105
+            + barrel * 0.42
+            + hard_hit * 0.12
+            + xslg * 12.0
+            + pitch_hr9 * 3.2
+            + recent_hr * 1.2
+            - max(0.0, gb - 46.0) * 0.38
+        )
+        return round(clip(confidence, 28, 82), 1)
+
     quality = safe_float(row.get("Prediction Quality Score"), 0.0)
     matchup = safe_float(row.get("Matchup Advantage Score"), 0.0)
     hrp = safe_float(row.get("HR Probability %"), 0.0)
@@ -6540,16 +6563,141 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
 </div>'''
 
 
+def _early_matchup_card_html(row: pd.Series, rank) -> str:
+    player = escape(_display_value(row.get("Player")))
+    pitcher = escape(_display_value(row.get("Opponent Pitcher")))
+    team = escape(_display_value(row.get("Team")))
+    game = escape(_display_value(row.get("Game")))
+    bats = escape(_display_value(row.get("Bats", "—")))
+    confidence = _bf_v2_confidence(row, early=True)
+    early_score = safe_float(row.get("Early BF Score"), 0.0)
+    edge = clip(early_score / 3.1, 0, 99)
+    grade = _letter_grade(edge)
+    pitch_hr9 = safe_float(row.get("Pitcher HR/9"), 0.0)
+    pitch_barrel = safe_float(row.get("Pitcher Barrel Allowed"), 0.0)
+    pitch_hh = safe_float(row.get("Pitcher HardHit Allowed"), 0.0)
+    pitch_fit = clip(35 + pitch_hr9 * 35 + pitch_barrel * 1.3 + max(0, pitch_hh - 36) * .7, 0, 99)
+
+    barrel = safe_float(row.get("Barrel%"), 0.0)
+    hard_hit = safe_float(row.get("HardHit%"), 0.0)
+    air = safe_float(row.get("AIR%"), 0.0)
+    gb = safe_float(row.get("GroundBall%"), 0.0)
+    ev = safe_float(row.get("EV"), 0.0)
+    xslg = safe_float(row.get("xSLG"), 0.0)
+    recent_hr = safe_int(row.get("Recent HR"), 0)
+    season_hr = safe_int(row.get("Season HR"), 0)
+
+    attack_score = clip(
+        pitch_hr9 * 22
+        + pitch_barrel * 2.0
+        + pitch_hh * .55
+        - 18,
+        0, 100,
+    )
+    if attack_score >= 68:
+        attack_label, attack_grade, attack_color = "STRONG HR ATTACK", "GRADE B+", "#35d07f"
+    elif attack_score >= 48:
+        attack_label, attack_grade, attack_color = "MIXED / ATTACKABLE", "GRADE B", "#ffd166"
+    else:
+        attack_label, attack_grade, attack_color = "CAUTION MATCHUP", "GRADE C", "#ff6666"
+
+    reasons = _bf_v2_reason_items(row, early=True)
+    reason_items = "".join(f"<li>{escape(x)}</li>" for x in reasons)
+
+    return f'''
+<div class="bf-match-card">
+  <div class="bf-match-topline">
+    <div class="bf-cell-head">
+      <div class="bf-head-label">PLAYER</div>
+      <div class="bf-head-main">#{escape(str(rank))} {player} <span class="bf-hand-badge">{bats}</span></div>
+      <div class="bf-quick-sub">{team} · {game}</div>
+    </div>
+    <div class="bf-cell-head">
+      <div class="bf-head-label">VS PITCHER</div>
+      <div class="bf-head-main">{pitcher}</div>
+      <div class="bf-quick-sub">PROBABLE · EARLY RESEARCH</div>
+    </div>
+    <div class="bf-score-box"><div class="lab">EDGE</div><div class="num bf-num-green">{edge:.1f}</div></div>
+    <div class="bf-score-box"><div class="lab">GRADE</div><div class="num bf-num-green">{grade}</div></div>
+    <div class="bf-score-box"><div class="lab">PITCH</div><div class="num bf-num-yellow">{pitch_fit:.0f}</div></div>
+  </div>
+
+  <div class="bf-card-body">
+    <div class="bf-side-panel">
+      <div class="bf-section-title">MATCHUP SCORES</div>
+      <div class="bf-score-line"><span>BF Early Edge</span><span class="bf-pill-num bf-num-green">{edge:.1f}</span></div>
+      <div class="bf-score-line"><span>Early Confidence</span><span class="bf-pill-num bf-num-yellow">{confidence:.0f}%</span></div>
+      <div class="bf-score-line"><span>Pitch Fit</span><span class="bf-pill-num bf-num-yellow">{pitch_fit:.0f}</span></div>
+
+      <div class="bf-section-title">OPPOSING PITCHER</div>
+      <div class="bf-pitcher-stat"><span>Season/Blend HR/9</span><span class="bf-pill-num">{pitch_hr9:.2f}</span></div>
+      <div class="bf-pitcher-stat"><span>Barrel Allowed</span><span class="bf-pill-num">{pitch_barrel:.1f}%</span></div>
+      <div class="bf-pitcher-stat"><span>Hard Hit Allowed</span><span class="bf-pill-num">{pitch_hh:.1f}%</span></div>
+    </div>
+
+    <div>
+      <div class="bf-section-title">HITTER DAMAGE PROFILE</div>
+      <div class="bf-bvp-grid">
+        <div class="bf-bvp-cell"><div class="bf-bvp-label">EV</div><div class="bf-bvp-values bf-green-txt">{ev:.1f}</div></div>
+        <div class="bf-bvp-cell"><div class="bf-bvp-label">BARREL</div><div class="bf-bvp-values bf-green-txt">{barrel:.1f}%</div></div>
+        <div class="bf-bvp-cell"><div class="bf-bvp-label">HARD HIT</div><div class="bf-bvp-values bf-green-txt">{hard_hit:.1f}%</div></div>
+        <div class="bf-bvp-cell"><div class="bf-bvp-label">AIR</div><div class="bf-bvp-values">{air:.1f}%</div></div>
+        <div class="bf-bvp-cell"><div class="bf-bvp-label">GB</div><div class="bf-bvp-values">{gb:.1f}%</div></div>
+        <div class="bf-bvp-cell"><div class="bf-bvp-label">xSLG</div><div class="bf-bvp-values">{xslg:.3f}</div></div>
+        <div class="bf-bvp-cell"><div class="bf-bvp-label">SEASON HR</div><div class="bf-bvp-values">{season_hr}</div></div>
+        <div class="bf-bvp-cell"><div class="bf-bvp-label">RECENT HR</div><div class="bf-bvp-values">{recent_hr}</div></div>
+      </div>
+
+      <div style="margin-top:12px;border:1px solid {attack_color};border-radius:12px;padding:10px;background:rgba(255,255,255,.018)">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:center">
+          <div class="bf-section-title" style="margin:0">BF ATTACK READ</div>
+          <span class="bf-chip">{attack_grade}</span>
+        </div>
+        <div style="font-size:1rem;font-weight:950;color:{attack_color};margin-top:8px">{attack_label}</div>
+        <div class="bf-track" style="margin-top:7px"><div class="bf-fill" style="width:{attack_score:.0f}%;background:{attack_color}"></div></div>
+        <div style="text-align:right;font-weight:900;font-size:.72rem;margin-top:3px">{attack_score:.0f}/100</div>
+        <ul style="margin:7px 0 0 18px;padding:0;color:#b9c3d2;font-size:.72rem;line-height:1.45">{reason_items}</ul>
+      </div>
+
+      <div class="bf-bvp-title">EARLY RESEARCH STATUS</div>
+      <div class="bf-card-foot" style="padding:0">
+        Last-known/expected hitter pool · probable pitcher · not locked or tracked · lineup must still be confirmed.
+      </div>
+    </div>
+  </div>
+</div>'''
+
+
 def render_early_watchlist_cards(preview_df: pd.DataFrame, max_cards: int = 6):
     if preview_df is None or preview_df.empty:
         st.caption("No early targets are available.")
         return
-    view = preview_df.head(max_cards).reset_index(drop=True)
-    st.markdown('<div class="bf-v2-grid">', unsafe_allow_html=True)
+
+    view = preview_df.head(max_cards).reset_index(drop=True).copy()
+
+    # Confidence is player-specific: rank creates visible separation, while
+    # player power, pitcher leakage and GB risk can move the number.
+    for idx in view.index:
+        row = view.loc[idx]
+        rank = idx + 1
+        confidence = (
+            78.0
+            - (rank - 1) * 4.2
+            + (safe_float(row.get("Barrel%"), 10.0) - 10.0) * .30
+            + (safe_float(row.get("HardHit%"), 40.0) - 40.0) * .10
+            + (safe_float(row.get("Pitcher HR/9"), 1.1) - 1.1) * 3.5
+            + safe_int(row.get("Recent HR"), 0) * .8
+            - max(0.0, safe_float(row.get("GroundBall%"), 45.0) - 46.0) * .28
+        )
+        view.at[idx, "Early Confidence Score"] = round(clip(confidence, 36, 82), 1)
+
     for i, (_, row) in enumerate(view.iterrows()):
         rank = row.get("Slate Rank", i + 1)
         st.markdown(_bf_v2_card_html(row, rank, early=True), unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+        player = _display_value(row.get("Player"))
+        pitcher = _display_value(row.get("Opponent Pitcher"))
+        with st.expander(f"Open matchup card — {player} vs {pitcher}", expanded=False):
+            st.markdown(_early_matchup_card_html(row, rank), unsafe_allow_html=True)
 
 def render_player_card(row: pd.Series, rank_override=None):
     rank = rank_override if rank_override is not None else row.get("Rank", "—")
