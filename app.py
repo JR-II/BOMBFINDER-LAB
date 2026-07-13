@@ -374,12 +374,17 @@ if time.time() - st.session_state.last_refresh_time > AUTO_REFRESH_SECONDS:
     st.session_state.force_tracker_refresh = True
 else:
     st.session_state.force_tracker_refresh = False
-TRACKER_FILE = "hr_tracker.csv"
-COMBO_TRACKER_FILE = "hr_combo_tracker.csv"
-LOCK_FILE = "daily_hr_board_lock.csv"
+BF_DATA_DIR = os.environ.get("BF_DATA_DIR", ".bf_data")
+os.makedirs(BF_DATA_DIR, exist_ok=True)
+
+TRACKER_FILE = os.path.join(BF_DATA_DIR, "hr_tracker.csv")
+COMBO_TRACKER_FILE = os.path.join(BF_DATA_DIR, "hr_combo_tracker.csv")
+LOCK_FILE = os.path.join(BF_DATA_DIR, "daily_hr_board_lock.csv")
 CURRENT_SEASON = datetime.now().year
 
-SNAPSHOT_DIR = "tracker_snapshots"
+SNAPSHOT_DIR = os.path.join(BF_DATA_DIR, "tracker_snapshots")
+LEGACY_SNAPSHOT_DIR = "tracker_snapshots"
+LEGACY_TRACKER_FILE = "hr_tracker.csv"
 
 
 def ensure_snapshot_folder():
@@ -390,7 +395,12 @@ def save_daily_tracker_snapshot(tracker_df: pd.DataFrame, snapshot_date: str):
     """Persist the day's tracker state so historical results never disappear."""
     ensure_snapshot_folder()
     tracker_path = os.path.join(SNAPSHOT_DIR, f"hr_tracker_{snapshot_date}.csv")
-    tracker_df.to_csv(tracker_path, index=False)
+    existing = _read_tracker_csv(tracker_path)
+    merged = _basic_tracker_dedupe(
+        pd.concat([existing, tracker_df], ignore_index=True)
+        if not existing.empty else tracker_df
+    )
+    _atomic_write_csv(merged, tracker_path)
 
 
 def save_daily_board_snapshot(board_df: pd.DataFrame, snapshot_date: str):
@@ -451,11 +461,12 @@ def available_tracker_dates(tracker_df: pd.DataFrame) -> list[str]:
     dates = set()
     if tracker_df is not None and not tracker_df.empty and "date" in tracker_df.columns:
         dates.update(tracker_df["date"].dropna().astype(str).tolist())
-    if os.path.exists(SNAPSHOT_DIR):
-        for name in os.listdir(SNAPSHOT_DIR):
-            m = re.match(r"hr_board_(\d{4}-\d{2}-\d{2})\.csv", name)
-            if m:
-                dates.add(m.group(1))
+    for folder in _snapshot_directories():
+        if os.path.exists(folder):
+            for name in os.listdir(folder):
+                m = re.match(r"hr_board_(\d{4}-\d{2}-\d{2})\.csv", name)
+                if m:
+                    dates.add(m.group(1))
     dates.add(today_str())
     return sorted(dates, reverse=True)
 
@@ -754,23 +765,255 @@ def read_html_best_table(urls: list[str], must_have_any: list[str]) -> pd.DataFr
     return pd.DataFrame()
 
 
-def load_tracker() -> pd.DataFrame:
-    columns = [
+
+def _atomic_write_csv(df: pd.DataFrame, path: str):
+    """Write a CSV atomically so interrupted Streamlit reruns cannot zero it out."""
+    folder = os.path.dirname(path) or "."
+    os.makedirs(folder, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".bf_tmp_", suffix=".csv", dir=folder)
+    os.close(fd)
+    try:
+        df.to_csv(tmp_path, index=False)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+
+def _tracker_columns() -> list[str]:
+    return [
         "date", "player", "team", "game", "game_pk",
         "hr_probability", "hr_tier", "hr_eligible", "tracker_source",
         "result", "hr_count", "result_state", "game_state", "updated_at"
     ]
-    if os.path.exists(TRACKER_FILE):
-        try:
-            df = pd.read_csv(TRACKER_FILE)
-            for col in columns:
-                if col not in df.columns:
-                    df[col] = pd.NA
-            return df[columns]
-        except Exception:
-            pass
-    return pd.DataFrame(columns=columns)
 
+
+def _coerce_tracker_frame(df: pd.DataFrame) -> pd.DataFrame:
+    columns = _tracker_columns()
+    if df is None or df.empty:
+        return pd.DataFrame(columns=columns)
+    work = df.copy()
+    for col in columns:
+        if col not in work.columns:
+            work[col] = pd.NA
+    work["tracker_source"] = (
+        work["tracker_source"].fillna("CORE_BOARD")
+        .astype(str).str.strip().str.upper()
+    )
+    work["player"] = work["player"].fillna("").astype(str)
+    work["team"] = work["team"].fillna("").astype(str)
+    work["game"] = work["game"].fillna("").astype(str)
+    work["date"] = work["date"].fillna("").astype(str)
+    work["hr_count"] = pd.to_numeric(work["hr_count"], errors="coerce").fillna(0).astype(int)
+    return work[columns]
+
+
+def _basic_tracker_dedupe(df: pd.DataFrame) -> pd.DataFrame:
+    work = _coerce_tracker_frame(df)
+    if work.empty:
+        return work
+    work["_player_key"] = work["player"].map(normalize_name)
+    work["_game_pk_key"] = pd.to_numeric(work["game_pk"], errors="coerce").fillna(-1).astype(int)
+    work["_result_key"] = pd.to_numeric(work["result"], errors="coerce").fillna(0).astype(int)
+    work["_updated_key"] = work["updated_at"].fillna("").astype(str)
+    work = work.sort_values(
+        ["hr_count", "_result_key", "_updated_key"],
+        ascending=[False, False, False],
+    )
+    work = work.drop_duplicates(
+        subset=[
+            "date", "_player_key", "team", "game",
+            "_game_pk_key", "tracker_source"
+        ],
+        keep="first",
+    )
+    return work.drop(
+        columns=["_player_key", "_game_pk_key", "_result_key", "_updated_key"]
+    ).reset_index(drop=True)
+
+
+def _read_tracker_csv(path: str) -> pd.DataFrame:
+    if not path or not os.path.exists(path):
+        return pd.DataFrame(columns=_tracker_columns())
+    try:
+        return _coerce_tracker_frame(pd.read_csv(path))
+    except Exception:
+        return pd.DataFrame(columns=_tracker_columns())
+
+
+def _snapshot_directories() -> list[str]:
+    folders = [SNAPSHOT_DIR]
+    if LEGACY_SNAPSHOT_DIR not in folders:
+        folders.append(LEGACY_SNAPSHOT_DIR)
+    return folders
+
+
+def _load_tracker_snapshot_files() -> pd.DataFrame:
+    frames = []
+    for folder in _snapshot_directories():
+        if not os.path.isdir(folder):
+            continue
+        for name in os.listdir(folder):
+            if not re.fullmatch(r"hr_tracker_\d{4}-\d{2}-\d{2}\.csv", name):
+                continue
+            frame = _read_tracker_csv(os.path.join(folder, name))
+            if not frame.empty:
+                frames.append(frame)
+    if not frames:
+        return pd.DataFrame(columns=_tracker_columns())
+    return _basic_tracker_dedupe(pd.concat(frames, ignore_index=True))
+
+
+def _recover_tracker_rows_from_board_snapshots() -> pd.DataFrame:
+    """Recover surfaced picks from saved board snapshots after a reboot/deploy."""
+    recovered = []
+    for folder in _snapshot_directories():
+        if not os.path.isdir(folder):
+            continue
+        for name in os.listdir(folder):
+            match = re.fullmatch(r"hr_board_(\d{4}-\d{2}-\d{2})\.csv", name)
+            if not match:
+                continue
+            date_key = match.group(1)
+            try:
+                board = pd.read_csv(os.path.join(folder, name))
+            except Exception:
+                continue
+            if board.empty or "Player" not in board.columns:
+                continue
+            for _, row in board.iterrows():
+                source = str(row.get("Tracker Source", "CORE_BOARD") or "CORE_BOARD").strip().upper()
+                recovered.append({
+                    "date": date_key,
+                    "player": row.get("Player", ""),
+                    "team": row.get("Team", ""),
+                    "game": row.get("Game", ""),
+                    "game_pk": row.get("game_pk", pd.NA),
+                    "hr_probability": row.get("HR Probability %", pd.NA),
+                    "hr_tier": row.get("HR Tier", pd.NA),
+                    "hr_eligible": int(bool(row.get("HR Eligible", True))),
+                    "tracker_source": source,
+                    "result": pd.NA,
+                    "hr_count": 0,
+                    "result_state": "RECOVERED_PENDING",
+                    "game_state": row.get("game_state", pd.NA),
+                    "updated_at": now_et_string(),
+                })
+    if not recovered:
+        return pd.DataFrame(columns=_tracker_columns())
+    return _basic_tracker_dedupe(pd.DataFrame(recovered))
+
+
+@st.cache_data(ttl=86400, max_entries=500)
+def _historical_game_homer_map(game_pk: int) -> dict:
+    """Fetch final HR totals for a saved historical game."""
+    try:
+        response = requests.get(
+            f"https://statsapi.mlb.com/api/v1/game/{int(game_pk)}/boxscore",
+            timeout=15,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return {}
+
+    out = {}
+    for side in ("away", "home"):
+        players = (((payload.get("teams") or {}).get(side) or {}).get("players") or {})
+        for pdata in players.values():
+            person = pdata.get("person") or {}
+            name = person.get("fullName")
+            batting = ((pdata.get("stats") or {}).get("batting") or {})
+            if not name:
+                continue
+            count = safe_int(batting.get("homeRuns", 0), 0)
+            out[normalize_name(name)] = max(out.get(normalize_name(name), 0), count)
+    return out
+
+
+def _backfill_saved_tracker_results(df: pd.DataFrame) -> pd.DataFrame:
+    """Fill recovered historical rows from MLB boxscores without changing predictions."""
+    work = _basic_tracker_dedupe(df)
+    if work.empty:
+        return work
+
+    today_key = today_str()
+    game_pks = pd.to_numeric(work["game_pk"], errors="coerce")
+    pending_mask = (
+        work["date"].astype(str).lt(today_key)
+        & game_pks.notna()
+        & (
+            work["result"].isna()
+            | work["result_state"].astype(str).isin(["PENDING", "RECOVERED_PENDING", ""])
+        )
+    )
+    unique_pks = sorted(set(game_pks[pending_mask].dropna().astype(int).tolist()))
+    if not unique_pks:
+        return work
+
+    homer_maps = {}
+    workers = min(3, len(unique_pks))
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        futures = {executor.submit(_historical_game_homer_map, pk): pk for pk in unique_pks}
+        for future in as_completed(futures):
+            pk = futures[future]
+            try:
+                homer_maps[pk] = future.result()
+            except Exception:
+                homer_maps[pk] = {}
+
+    for idx in work.index[pending_mask]:
+        pk = safe_int(work.at[idx, "game_pk"], -1)
+        homer_map = homer_maps.get(pk, {})
+        player_key = normalize_name(work.at[idx, "player"])
+        hr_count = safe_int(homer_map.get(player_key), 0)
+        work.at[idx, "hr_count"] = hr_count
+        work.at[idx, "result"] = 1 if hr_count > 0 else 0
+        work.at[idx, "result_state"] = (
+            "HOMERED" if hr_count == 1
+            else f"HOMERED_{hr_count}X" if hr_count > 1
+            else "FINAL_NO_HR"
+        )
+        work.at[idx, "game_state"] = "Final"
+        work.at[idx, "updated_at"] = now_et_string()
+
+    return _basic_tracker_dedupe(work)
+
+
+def load_tracker() -> pd.DataFrame:
+    """Load primary tracker plus daily snapshots and recover saved board rows."""
+    frames = []
+
+    primary = _read_tracker_csv(TRACKER_FILE)
+    if not primary.empty:
+        frames.append(primary)
+
+    # Migrate the original root-level tracker automatically.
+    if LEGACY_TRACKER_FILE != TRACKER_FILE:
+        legacy = _read_tracker_csv(LEGACY_TRACKER_FILE)
+        if not legacy.empty:
+            frames.append(legacy)
+
+    snapshots = _load_tracker_snapshot_files()
+    if not snapshots.empty:
+        frames.append(snapshots)
+
+    recovered = _recover_tracker_rows_from_board_snapshots()
+    if not recovered.empty:
+        frames.append(recovered)
+
+    if not frames:
+        return pd.DataFrame(columns=_tracker_columns())
+
+    tracker = _basic_tracker_dedupe(pd.concat(frames, ignore_index=True))
+    tracker = _backfill_saved_tracker_results(tracker)
+
+    # Consolidate recovered history into the primary file.
+    _atomic_write_csv(tracker, TRACKER_FILE)
+    return tracker
 
 def dedupe_tracker_rows(df: pd.DataFrame) -> pd.DataFrame:
     """Keep one tracker row per visible section pick and preserve the best result.
@@ -812,9 +1055,23 @@ def dedupe_tracker_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def save_tracker(df: pd.DataFrame):
-    df = dedupe_tracker_rows(df)
-    df.to_csv(TRACKER_FILE, index=False)
+    tracker = _basic_tracker_dedupe(df)
+    _atomic_write_csv(tracker, TRACKER_FILE)
 
+    if tracker.empty or "date" not in tracker.columns:
+        return
+
+    ensure_snapshot_folder()
+    for date_key, date_frame in tracker.groupby(tracker["date"].astype(str)):
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(date_key)):
+            continue
+        snapshot_path = os.path.join(SNAPSHOT_DIR, f"hr_tracker_{date_key}.csv")
+        existing = _read_tracker_csv(snapshot_path)
+        merged = _basic_tracker_dedupe(
+            pd.concat([existing, date_frame], ignore_index=True)
+            if not existing.empty else date_frame
+        )
+        _atomic_write_csv(merged, snapshot_path)
 
 def load_combo_tracker() -> pd.DataFrame:
     columns = [
@@ -4892,7 +5149,7 @@ def sync_tracker_with_board(tracked_df: pd.DataFrame):
 
     new_rows = []
     for _, row in tracked_df.iterrows():
-        source = str(row.get("Tracker Source", "CORE_BOARD"))
+        source = str(row.get("Tracker Source", "CORE_BOARD") or "CORE_BOARD").strip().upper()
         player_name = str(row["Player"])
         key = (
             str(date_key),
