@@ -536,6 +536,32 @@ PARK_COORDS = {
 }
 
 
+# Ballpark geometry used by the visual weather field (LF / LCF / CF / RCF / RF, feet).
+PARK_DIMENSIONS = {
+    "ARI": (330,376,407,376,335), "ATL": (335,385,400,375,325), "BAL": (333,384,400,373,318),
+    "BOS": (310,379,390,380,302), "CHC": (355,368,400,368,353), "CWS": (330,375,400,375,335),
+    "CIN": (328,379,404,370,325), "CLE": (325,370,400,375,325), "COL": (347,390,415,375,350),
+    "DET": (345,370,420,365,330), "HOU": (315,366,409,370,326), "KC": (330,379,410,379,330),
+    "LAA": (347,390,396,370,350), "LAD": (330,375,395,375,330), "MIA": (344,386,407,392,335),
+    "MIL": (344,371,400,374,345), "MIN": (339,377,404,367,328), "NYM": (335,358,408,375,330),
+    "NYY": (318,399,408,385,314), "ATH": (330,375,400,375,325), "PHI": (329,374,401,369,330),
+    "PIT": (325,383,399,375,320), "SD": (334,390,396,391,322), "SF": (339,404,391,421,309),
+    "SEA": (331,378,401,381,326), "STL": (336,375,400,375,335), "TB": (315,370,404,370,322),
+    "TEX": (329,372,407,374,326), "TOR": (328,375,400,375,328), "WSH": (337,377,402,370,335),
+}
+PARK_TIMEZONES = {
+    "ARI":"America/Phoenix","ATL":"America/New_York","BAL":"America/New_York","BOS":"America/New_York",
+    "CHC":"America/Chicago","CWS":"America/Chicago","CIN":"America/New_York","CLE":"America/New_York",
+    "COL":"America/Denver","DET":"America/Detroit","HOU":"America/Chicago","KC":"America/Chicago",
+    "LAA":"America/Los_Angeles","LAD":"America/Los_Angeles","MIA":"America/New_York","MIL":"America/Chicago",
+    "MIN":"America/Chicago","NYM":"America/New_York","NYY":"America/New_York","ATH":"America/Los_Angeles",
+    "PHI":"America/New_York","PIT":"America/New_York","SD":"America/Los_Angeles","SF":"America/Los_Angeles",
+    "SEA":"America/Los_Angeles","STL":"America/Chicago","TB":"America/New_York","TEX":"America/Chicago",
+    "TOR":"America/Toronto","WSH":"America/New_York",
+}
+PARK_ROOFS = {"ARI":"RETRACTABLE","HOU":"RETRACTABLE","MIA":"RETRACTABLE","MIL":"RETRACTABLE","SEA":"RETRACTABLE","TEX":"RETRACTABLE","TOR":"RETRACTABLE","TB":"DOME"}
+
+
 
 def stable_float(key: str, low: float, high: float) -> float:
     digest = hashlib.md5(key.encode("utf-8")).hexdigest()
@@ -1856,6 +1882,71 @@ def fetch_weather_for_park(home_team_abbr: str):
         "WeatherBoost": boost,
         "WeatherNote": note,
     }
+
+
+WEATHER_CODE_LABELS = {0:("Clear","☀️"),1:("Mostly clear","🌤️"),2:("Partly cloudy","⛅"),3:("Overcast","☁️"),45:("Fog","🌫️"),48:("Rime fog","🌫️"),51:("Light drizzle","🌦️"),53:("Drizzle","🌦️"),55:("Heavy drizzle","🌧️"),61:("Light rain","🌦️"),63:("Rain","🌧️"),65:("Heavy rain","🌧️"),80:("Rain showers","🌦️"),81:("Rain showers","🌧️"),82:("Heavy showers","⛈️"),95:("Thunderstorms","⛈️"),96:("Storms / hail","⛈️"),99:("Severe storms","⛈️")}
+
+def _weather_label(code):
+    return WEATHER_CODE_LABELS.get(safe_int(code,-1),("Conditions unavailable","•"))
+
+def _compass_name(deg):
+    if deg is None: return "—"
+    names=["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"]
+    return names[int((safe_float(deg,0)+11.25)//22.5)%16]
+
+@st.cache_data(ttl=900, max_entries=60)
+def fetch_game_weather_timeline(home_team_abbr: str, game_time_value: str):
+    coords=PARK_COORDS.get(home_team_abbr)
+    if not coords: return {"found":False,"hours":[],"source":"Open-Meteo"}
+    tz_name=PARK_TIMEZONES.get(home_team_abbr,"America/New_York")
+    params={"latitude":coords[0],"longitude":coords[1],"timezone":tz_name,"hourly":"temperature_2m,relative_humidity_2m,precipitation_probability,pressure_msl,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m","temperature_unit":"fahrenheit","wind_speed_unit":"mph","forecast_days":14}
+    try:
+        r=requests.get("https://api.open-meteo.com/v1/forecast",params=params,timeout=15); r.raise_for_status()
+        hourly=(r.json() or {}).get("hourly",{}) or {}; times=hourly.get("time",[]) or []
+        if not times: return {"found":False,"hours":[],"source":"Open-Meteo"}
+        game_dt=parse_game_time_et(game_time_value)
+        target=(game_dt.astimezone(ZoneInfo(tz_name)) if game_dt else datetime.now(ZoneInfo(tz_name)))
+        parsed=[datetime.fromisoformat(t).replace(tzinfo=ZoneInfo(tz_name)) for t in times]
+        center=min(range(len(parsed)),key=lambda i:abs((parsed[i]-target).total_seconds())); start=max(0,center-2); end=min(len(parsed),center+4)
+        def at(name,i):
+            arr=hourly.get(name) or []
+            return arr[i] if i<len(arr) else None
+        rows=[]
+        for i in range(start,end):
+            label,icon=_weather_label(at("weather_code",i)); wd=safe_float(at("wind_direction_10m",i),None)
+            rows.append({"time":parsed[i],"label":label,"icon":icon,"temp":safe_float(at("temperature_2m",i),None),"precip":safe_float(at("precipitation_probability",i),None),"humidity":safe_float(at("relative_humidity_2m",i),None),"pressure":safe_float(at("pressure_msl",i),None),"wind":safe_float(at("wind_speed_10m",i),None),"gust":safe_float(at("wind_gusts_10m",i),None),"wind_dir":wd,"wind_compass":_compass_name(wd),"is_game_hour":i==center})
+        return {"found":bool(rows),"hours":rows,"game_hour":rows[center-start] if rows else {},"source":"Open-Meteo hourly forecast"}
+    except Exception:
+        return {"found":False,"hours":[],"source":"Open-Meteo"}
+
+def _fmt_weather(v,suffix="",digits=0):
+    return "—" if v is None else f"{safe_float(v,0):.{digits}f}{suffix}"
+
+def _stadium_svg(home_abbr,weather):
+    dims=PARK_DIMENSIONS.get(home_abbr); labels=tuple(str(x) for x in dims) if dims else ("—",)*5
+    gh=weather.get("game_hour",{}) or {}; direction=gh.get("wind_dir"); rotation=(safe_float(direction,0)+180)%360 if direction is not None else 0
+    return f'''<div class="bf-field-wrap"><svg class="bf-field-svg" viewBox="0 0 520 330" role="img" aria-label="Ballpark field and wind direction"><defs><linearGradient id="grass-{home_abbr}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#183d2b"/><stop offset="1" stop-color="#0a1612"/></linearGradient></defs><path d="M260 304 L54 98 Q260 -5 466 98 Z" fill="url(#grass-{home_abbr})" stroke="#536175" stroke-width="3"/><path d="M260 304 L174 218 L260 132 L346 218 Z" fill="#7a5a36" opacity=".8" stroke="#cfb37b"/><circle cx="260" cy="215" r="5" fill="#fff"/><rect x="255" y="294" width="10" height="10" transform="rotate(45 260 299)" fill="#fff"/><text x="42" y="108" class="dim">LF {labels[0]} ft</text><text x="125" y="54" class="dim">LCF {labels[1]} ft</text><text x="235" y="30" class="dim">CF {labels[2]} ft</text><text x="355" y="54" class="dim">RCF {labels[3]} ft</text><text x="438" y="108" class="dim">RF {labels[4]} ft</text><g transform="translate(260 154) rotate({rotation})"><line x1="0" y1="30" x2="0" y2="-38" stroke="#69a7ff" stroke-width="8" stroke-linecap="round"/><path d="M0 -58 L-15 -30 L15 -30 Z" fill="#69a7ff"/></g><text x="260" y="187" text-anchor="middle" class="windtxt">FROM {gh.get('wind_compass','—')} · {_fmt_weather(gh.get('wind'),' MPH')}</text></svg></div>'''
+
+def render_weather_game_card(game: dict, preliminary: bool=False):
+    home_abbr=team_abbr(game.get("home_team","")); weather=fetch_game_weather_timeline(home_abbr,game.get("game_time","")); gh=weather.get("game_hour",{}) or {}
+    if not weather.get("found"):
+        st.warning(f"Weather forecast is not available yet for {game.get('game_key','this game')}."); return
+    dims=PARK_DIMENSIONS.get(home_abbr); dim_text=" / ".join(str(x) for x in dims) if dims else "Not available"
+    label,icon=escape(str(gh.get("label","Conditions unavailable"))),gh.get("icon","•"); roof=PARK_ROOFS.get(home_abbr,"OPEN AIR")
+    html=f'''<div class="bf-weather-card"><div class="bf-weather-head"><div><div class="bf-weather-game">{escape(game.get('game_key',''))}</div><div class="bf-weather-venue">{escape(str(game.get('venue','TBD')))} · {format_game_time_et(game.get('game_time',''))}</div></div><div class="bf-weather-badge">{'PRELIMINARY' if preliminary else 'GAME-TIME FORECAST'}</div></div><div class="bf-weather-summary"><div><b>{icon} {label}</b><span>Condition</span></div><div><b>{_fmt_weather(gh.get('temp'),'°F')}</b><span>Temperature</span></div><div><b>{_fmt_weather(gh.get('precip'),'%')}</b><span>Precipitation</span></div><div><b>{_fmt_weather(gh.get('humidity'),'%')}</b><span>Humidity</span></div><div><b>{_fmt_weather(gh.get('wind'),' MPH')}</b><span>From {gh.get('wind_compass','—')} ({_fmt_weather(gh.get('wind_dir'),'°')})</span></div><div><b>{roof}</b><span>Roof type</span></div></div><div class="bf-weather-main">{_stadium_svg(home_abbr,weather)}<div class="bf-dim-panel"><div class="bf-dim-title">Stadium Dimensions</div><div class="bf-dim-order">LF / LCF / CF / RCF / RF</div><div class="bf-dim-values">{dim_text}</div><div class="bf-weather-source">Forecast: {weather.get('source')} · nearest hour to first pitch. Wind direction is the direction the wind comes from.</div></div></div></div>'''
+    st.markdown(html,unsafe_allow_html=True)
+    hours=weather.get("hours",[])
+    if hours:
+        cols=st.columns(len(hours))
+        for col,h in zip(cols,hours):
+            border="2px solid #69a7ff" if h.get("is_game_hour") else "1px solid rgba(255,255,255,.10)"
+            col.markdown(f'''<div class="bf-hour" style="border:{border}"><div class="bf-hour-time">{h['time'].strftime('%-I %p')}</div><div class="bf-hour-icon">{h.get('icon','•')}</div><div class="bf-hour-temp">{_fmt_weather(h.get('temp'),'°')}</div><div>{_fmt_weather(h.get('precip'),'%')} rain</div><div>{_fmt_weather(h.get('wind'),' mph')} {h.get('wind_compass','—')}</div></div>''',unsafe_allow_html=True)
+
+def render_live_weather_board(schedule_rows: list[dict], preliminary: bool=False):
+    st.markdown('''<style>.bf-weather-card{border:1px solid #293446;border-radius:16px;background:#0b1018;margin:10px 0 18px;overflow:hidden}.bf-weather-head{display:flex;justify-content:space-between;gap:12px;padding:14px 16px;background:linear-gradient(90deg,#181b22,#10141b);border-bottom:1px solid rgba(255,255,255,.09)}.bf-weather-game{font-size:1.05rem;font-weight:950}.bf-weather-venue{color:#9ca9bc;font-size:.76rem;margin-top:3px}.bf-weather-badge{align-self:center;border:1px solid #69a7ff;color:#9ac2ff;border-radius:999px;padding:4px 9px;font-size:.62rem;font-weight:900}.bf-weather-summary{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:7px;padding:12px}.bf-weather-summary>div{background:#111722;border:1px solid rgba(255,255,255,.08);border-radius:9px;padding:9px;text-align:center}.bf-weather-summary b{display:block;font-size:.88rem}.bf-weather-summary span{display:block;color:#8996aa;font-size:.56rem;text-transform:uppercase;letter-spacing:.08em;margin-top:4px}.bf-weather-main{display:grid;grid-template-columns:minmax(310px,1.4fr) minmax(220px,.6fr);gap:12px;padding:0 12px 12px}.bf-field-wrap{border:1px solid rgba(255,255,255,.08);border-radius:12px;background:#07100d;padding:5px}.bf-field-svg{width:100%;height:auto;display:block}.bf-field-svg .dim{fill:#f2f5fa;font-size:15px;font-weight:800}.bf-field-svg .windtxt{fill:#9ac2ff;font-size:14px;font-weight:900}.bf-dim-panel{background:#111722;border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:14px}.bf-dim-title{font-weight:950}.bf-dim-order,.bf-weather-source{color:#8f9bad;font-size:.68rem;margin-top:6px}.bf-dim-values{font-size:1.1rem;font-weight:950;margin-top:6px}.bf-hour{background:#0f141d;border-radius:9px;padding:8px 5px;text-align:center;font-size:.65rem;min-height:104px}.bf-hour-time,.bf-hour-temp{font-weight:900}.bf-hour-icon{font-size:1.2rem;margin:4px}.bf-hour-temp{font-size:.9rem}@media(max-width:760px){.bf-weather-summary{grid-template-columns:repeat(3,1fr)}.bf-weather-main{grid-template-columns:1fr}.bf-weather-head{padding:10px}.bf-weather-game{font-size:.9rem}.bf-hour{font-size:.55rem;padding:6px 2px;min-height:94px}.bf-field-svg .dim{font-size:12px}.bf-field-svg .windtxt{font-size:11px}}</style>''',unsafe_allow_html=True)
+    if not schedule_rows:
+        st.info("No scheduled games are available for weather display."); return
+    for game in sort_schedule_rows(schedule_rows): render_weather_game_card(game,preliminary=preliminary)
 
 
 @st.cache_data(ttl=1800)
@@ -5941,18 +6032,8 @@ def render_off_day_mode(tracker: pd.DataFrame):
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     with off_tabs[11]:
         st.subheader("Live Weather")
-        st.info("Game-time weather is preliminary until the next slate is closer. Official weather cards return on the active slate.")
-        if next_schedule:
-            weather_rows = []
-            for g in next_schedule:
-                home_abbr = team_abbr(g.get("home_team", ""))
-                weather = fetch_weather_for_park(home_abbr)
-                weather_rows.append({
-                    "Game": g.get("game_key", ""), "Venue": g.get("venue", "TBD"),
-                    "TempF": weather.get("TempF", 72.0), "WindMPH": weather.get("WindMPH", 7.0),
-                    "Weather Note": weather.get("WeatherNote", "Preliminary")
-                })
-            st.dataframe(pd.DataFrame(weather_rows), use_container_width=True, hide_index=True)
+        st.info("Next-slate weather is preliminary. Each visual card uses the forecast hour nearest scheduled first pitch.")
+        render_live_weather_board(next_schedule, preliminary=True)
 
 
 c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
@@ -6031,7 +6112,7 @@ if locked_df.empty:
     st.warning("No games or hitter data loaded.")
     st.stop()
 
-base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker"]
+base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker", "Lineup Watch", "Live Weather"]
 schedule = sort_schedule_rows(schedule)
 game_tabs = [f"{format_game_time_et(g.get('game_time', ''))} | {g['game_key']}" for g in schedule]
 tabs = st.tabs(base_tabs + game_tabs)
@@ -6265,7 +6346,25 @@ with tabs[7]:
         st.markdown("### Daily HR Prediction Accuracy History")
         st.dataframe(dedupe_columns(daily_summary), use_container_width=True, hide_index=True)
 
-for idx, game in enumerate(schedule, start=8):
+
+with tabs[8]:
+    st.subheader("Lineup Watch")
+    st.caption("CONFIRMED appears only when MLB supplies all nine official batting-order positions.")
+    lineup_rows=[]
+    for g in schedule:
+        ac=safe_int(g.get("away_confirmed_count"),0); hc=safe_int(g.get("home_confirmed_count"),0)
+        lineup_rows.extend([
+            {"Game":g.get("game_key",""),"Team":team_abbr(g.get("away_team","")),"Opposing Starter":g.get("home_pitcher","Starter Pending"),"Confirmed Spots":ac,"Status":"CONFIRMED" if ac>=9 else ("PARTIAL" if ac>0 else "PROJECTED")},
+            {"Game":g.get("game_key",""),"Team":team_abbr(g.get("home_team","")),"Opposing Starter":g.get("away_pitcher","Starter Pending"),"Confirmed Spots":hc,"Status":"CONFIRMED" if hc>=9 else ("PARTIAL" if hc>0 else "PROJECTED")},
+        ])
+    display_existing_columns(pd.DataFrame(lineup_rows),["Game","Team","Opposing Starter","Confirmed Spots","Status"])
+
+with tabs[9]:
+    st.subheader("Live Weather")
+    st.caption("Hourly game-time forecast, wind direction and speed, and stadium dimensions in a visual field layout.")
+    render_live_weather_board(schedule, preliminary=False)
+
+for idx, game in enumerate(schedule, start=10):
     with tabs[idx]:
         st.subheader(f"{game['game_key']} — {format_game_time_et(game.get('game_time', ''))}")
         st.caption(
