@@ -1995,7 +1995,7 @@ def render_weather_game_card(game: dict, preliminary: bool=False):
             col.markdown(f'''<div class="bf-hour" style="border:{border}"><div class="bf-hour-time">{h['time'].strftime('%-I %p')}</div><div class="bf-hour-icon">{h.get('icon','•')}</div><div class="bf-hour-temp">{_fmt_weather(h.get('temp'),'°')}</div><div>{_fmt_weather(h.get('precip'),'%')} rain</div><div>{_fmt_weather(h.get('wind'),' mph')} {h.get('wind_compass','—')}</div></div>''',unsafe_allow_html=True)
 
 def render_live_weather_board(schedule_rows: list[dict], preliminary: bool=False):
-    st.markdown('''<style>.bf-weather-card{border:1px solid #293446;border-radius:16px;background:#0b1018;margin:10px 0 18px;overflow:hidden}.bf-weather-head{display:flex;justify-content:space-between;gap:12px;padding:14px 16px;background:linear-gradient(90deg,#181b22,#10141b);border-bottom:1px solid rgba(255,255,255,.09)}.bf-weather-game{font-size:1.05rem;font-weight:950}.bf-weather-venue{color:#9ca9bc;font-size:.76rem;margin-top:3px}.bf-weather-badge{align-self:center;border:1px solid #69a7ff;color:#9ac2ff;border-radius:999px;padding:4px 9px;font-size:.62rem;font-weight:900}.bf-weather-summary{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:7px;padding:12px}.bf-weather-summary>div{background:#111722;border:1px solid rgba(255,255,255,.08);border-radius:9px;padding:9px;text-align:center}.bf-weather-summary b{display:block;font-size:.88rem}.bf-weather-summary span{display:block;color:#8996aa;font-size:.56rem;text-transform:uppercase;letter-spacing:.08em;margin-top:4px}.bf-weather-main{display:grid;grid-template-columns:minmax(310px,1.4fr) minmax(220px,.6fr);gap:12px;padding:0 12px 12px}.bf-field-wrap{border:1px solid rgba(255,255,255,.08);border-radius:12px;background:#07100d;padding:5px}.bf-field-svg{width:100%;height:auto;display:block}.bf-field-svg .dim{fill:#f2f5fa;font-size:15px;font-weight:800}.bf-field-svg .windtxt{fill:#9ac2ff;font-size:14px;font-weight:900}.bf-dim-panel{background:#111722;border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:14px}.bf-dim-title{font-weight:950}.bf-dim-order,.bf-weather-source{color:#8f9bad;font-size:.68rem;margin-top:6px}.bf-dim-values{font-size:1.1rem;font-weight:950;margin-top:6px}.bf-hour{background:#0f141d;border-radius:9px;padding:8px 5px;text-align:center;font-size:.65rem;min-height:104px}.bf-hour-time,.bf-hour-temp{font-weight:900}.bf-hour-icon{font-size:1.2rem;margin:4px}.bf-hour-temp{font-size:.9rem}@media(max-width:760px){.bf-weather-summary{grid-template-columns:repeat(3,1fr)}.bf-weather-main{grid-template-columns:1fr}.bf-weather-head{padding:10px}.bf-weather-game{font-size:.9rem}.bf-hour{font-size:.55rem;padding:6px 2px;min-height:94px}.bf-field-svg .dim{font-size:12px}.bf-field-svg .windtxt{font-size:11px}}</style>''',unsafe_allow_html=True)
+    st.markdown('''<style>.bf-weather-card{border:1px solid #293446;border-radius:13px;background:#0b1018;margin:8px 0 12px;overflow:hidden;max-width:1120px}.bf-weather-head{display:flex;justify-content:space-between;gap:10px;padding:9px 11px;background:linear-gradient(90deg,#181b22,#10141b);border-bottom:1px solid rgba(255,255,255,.09)}.bf-weather-game{font-size:.92rem;font-weight:950}.bf-weather-venue{color:#9ca9bc;font-size:.67rem;margin-top:2px}.bf-weather-badge{align-self:center;border:1px solid #69a7ff;color:#9ac2ff;border-radius:999px;padding:3px 7px;font-size:.54rem;font-weight:900}.bf-weather-summary{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:5px;padding:8px}.bf-weather-summary>div{background:#111722;border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:6px;text-align:center}.bf-weather-summary b{display:block;font-size:.76rem}.bf-weather-summary span{display:block;color:#8996aa;font-size:.48rem;text-transform:uppercase;letter-spacing:.07em;margin-top:3px}.bf-weather-main{display:grid;grid-template-columns:minmax(300px,1.45fr) minmax(180px,.55fr);gap:8px;padding:0 8px 8px}.bf-field-wrap{border:1px solid rgba(255,255,255,.08);border-radius:9px;background:#07100d;padding:3px;max-height:285px;overflow:hidden}.bf-field-svg{width:100%;height:275px;display:block}.bf-field-svg .dim{fill:#f2f5fa;font-size:13px;font-weight:800}.bf-field-svg .windtxt{fill:#9ac2ff;font-size:12px;font-weight:900}.bf-dim-panel{background:#111722;border:1px solid rgba(255,255,255,.08);border-radius:9px;padding:10px}.bf-dim-title{font-weight:950;font-size:.86rem}.bf-dim-order,.bf-weather-source{color:#8f9bad;font-size:.58rem;margin-top:5px}.bf-dim-values{font-size:.92rem;font-weight:950;margin-top:5px}.bf-hour{background:#0f141d;border-radius:8px;padding:5px 3px;text-align:center;font-size:.56rem;min-height:78px}.bf-hour-time,.bf-hour-temp{font-weight:900}.bf-hour-icon{font-size:1rem;margin:2px}.bf-hour-temp{font-size:.76rem}@media(max-width:760px){.bf-weather-card{max-width:100%}.bf-weather-summary{grid-template-columns:repeat(3,1fr)}.bf-weather-main{grid-template-columns:1fr}.bf-weather-head{padding:8px}.bf-weather-game{font-size:.82rem}.bf-field-wrap{max-height:235px}.bf-field-svg{height:225px}.bf-hour{font-size:.48rem;padding:4px 1px;min-height:70px}.bf-field-svg .dim{font-size:11px}.bf-field-svg .windtxt{font-size:10px}.bf-dim-panel{padding:8px}}</style>''',unsafe_allow_html=True)
     if not schedule_rows:
         st.info("No scheduled games are available for weather display."); return
     for game in sort_schedule_rows(schedule_rows): render_weather_game_card(game,preliminary=preliminary)
@@ -5951,6 +5951,127 @@ def _render_offday_snapshot_section(previous_board: pd.DataFrame, source_key: st
     )
 
 
+
+def render_full_tracker_panel(tracker: pd.DataFrame, key_prefix: str = "tracker"):
+    """Render the complete BF tracker in both active-slate and off-day modes."""
+    st.subheader("Homerun Tracker")
+    st.caption("Tracker is broken into separate sections so Core Board, Top 12, and Per-Game HR results remain distinct and reviewable by date.")
+
+    combo_tracker_local = load_combo_tracker()
+    combo_summary_local = summarize_combo_tracker(combo_tracker_local)
+    daily_summary_local = summarize_tracker_by_day(tracker)
+
+    date_options = available_tracker_dates(tracker)
+    selected_tracker_date = st.selectbox(
+        "Review slate date",
+        options=date_options,
+        index=0,
+        key=f"{key_prefix}_review_slate_date",
+    )
+
+    selected_source_summary = summarize_tracker_sources_for_date(tracker, selected_tracker_date)
+    if tracker is None or tracker.empty or "date" not in tracker.columns:
+        selected_tracker = pd.DataFrame()
+    else:
+        selected_tracker = tracker[
+            tracker["date"].astype("string").fillna("") == str(selected_tracker_date)
+        ].copy()
+    if "hr_count" not in selected_tracker.columns:
+        selected_tracker["hr_count"] = pd.to_numeric(
+            selected_tracker.get("result", 0), errors="coerce"
+        ).fillna(0).astype(int)
+
+    st.markdown(f"### {selected_tracker_date} by Section")
+    s1, s2, s3 = st.columns(3)
+    with s1:
+        st.markdown("**Core Board**")
+        st.metric("Surfaced", selected_source_summary["CORE_BOARD"]["total"])
+        st.metric("HR Hit", selected_source_summary["CORE_BOARD"]["hits"])
+        st.metric("Hit Rate %", selected_source_summary["CORE_BOARD"]["pct"])
+    with s2:
+        st.markdown("**Top 12**")
+        st.metric("Surfaced", selected_source_summary["TOP12"]["total"])
+        st.metric("HR Hit", selected_source_summary["TOP12"]["hits"])
+        st.metric("Hit Rate %", selected_source_summary["TOP12"]["pct"])
+    with s3:
+        st.markdown("**Per-Game HR**")
+        st.metric("Surfaced", selected_source_summary["GAME_HR"]["total"])
+        st.metric("HR Hit", selected_source_summary["GAME_HR"]["hits"])
+        st.metric("Hit Rate %", selected_source_summary["GAME_HR"]["pct"])
+
+    st.markdown("### Combo Section")
+    cx1, cx2, cx3 = st.columns(3)
+    cx1.metric("Today Combos", combo_summary_local["today_total"])
+    cx2.metric("Today Full Hits", combo_summary_local["today_full_hits"])
+    cx3.metric("Today Partial Hits", combo_summary_local["today_partial_hits"])
+
+    st.divider()
+    if not selected_tracker.empty:
+        st.markdown("### Selected Date Split Tracker Tables")
+        for section_name, source_key in [
+            ("Core Board", "CORE_BOARD"),
+            ("Top 12", "TOP12"),
+            ("Per-Game HR", "GAME_HR"),
+        ]:
+            section_df = selected_tracker[
+                selected_tracker["tracker_source"].astype(str).str.strip().str.upper() == source_key
+            ].copy()
+            st.markdown(f"**{section_name}**")
+            if section_df.empty:
+                st.caption("No tracked rows in this section for selected date.")
+            else:
+                section_df["hr_count"] = pd.to_numeric(
+                    section_df["hr_count"], errors="coerce"
+                ).fillna(0).astype(int)
+                cols = [
+                    "player", "team", "game", "hr_probability", "hr_tier",
+                    "tracker_source", "hr_eligible", "result", "hr_count",
+                    "result_state", "game_state", "updated_at",
+                ]
+                display_existing_columns(
+                    section_df.sort_values(
+                        by=["hr_count", "result", "hr_probability", "player"],
+                        ascending=[False, False, False, True],
+                    ),
+                    cols,
+                )
+    else:
+        st.caption("No tracker rows for selected date.")
+
+    selected_board_snapshot = load_daily_board_snapshot(selected_tracker_date)
+    if not selected_board_snapshot.empty:
+        st.divider()
+        st.markdown("### Saved Board Snapshot for Selected Date")
+        display_existing_columns(selected_board_snapshot, [
+            "Tracker Source", "Player", "Team", "Game", "Pitcher", "Lineup Spot",
+            "HR Probability %", "HR Tier", "Actual HR Today", "Matchup Advantage",
+            "HR Attackability Score", "EV", "Barrel%", "HardHit%", "AIR%",
+            "Ranking Reasons", "Why",
+        ])
+    else:
+        st.caption("No saved board snapshot found for selected date.")
+
+    if not combo_tracker_local.empty:
+        st.divider()
+        st.markdown("### Combo Tracker")
+        combo_view = combo_tracker_local[
+            combo_tracker_local["date"].astype("string").fillna("") == str(selected_tracker_date)
+        ].copy()
+        if combo_view.empty:
+            st.caption("No combos tracked for selected date.")
+        else:
+            display_existing_columns(
+                combo_view.sort_values(by=["combo_size", "combined_score"], ascending=[True, False]),
+                ["combo_label", "combo_size", "avg_leg_probability", "combined_score",
+                 "legs_hit", "total_legs", "result_state", "updated_at"],
+            )
+
+    if not daily_summary_local.empty:
+        st.divider()
+        st.markdown("### Daily HR Prediction Accuracy History")
+        st.dataframe(dedupe_columns(daily_summary_local), use_container_width=True, hide_index=True)
+
+
 def render_off_day_mode(tracker: pd.DataFrame):
     next_date_key, next_schedule = find_next_scheduled_slate(today_str(), max_days=14)
     previous_date, previous_board = _latest_previous_board(tracker)
@@ -6046,17 +6167,7 @@ def render_off_day_mode(tracker: pd.DataFrame):
         else:
             display_existing_columns(previous_board.head(40), ["Player", "Team", "Game", "Pitcher", "Barrel%", "HardHit%", "AIR%", "GroundBall%", "xSLG", "xwOBA", "Ranking Reasons"])
     with off_tabs[8]:
-        st.subheader("Homerun Tracker")
-        summary = summarize_tracker(tracker)
-        a, b, c = st.columns(3)
-        a.metric("All Predictions", summary.get("all_total", 0))
-        b.metric("Correct HR", summary.get("all_hits", 0))
-        c.metric("Hit Rate", f"{summary.get('all_pct', 0.0):.1f}%")
-        if tracker is None or tracker.empty:
-            st.info("No tracker history is available.")
-        else:
-            display_existing_columns(tracker.sort_values(["date", "updated_at"], ascending=[False, False]),
-                                     ["date", "player", "team", "game", "tracker_source", "result_state", "hr_count", "updated_at"])
+        render_full_tracker_panel(tracker, key_prefix="offday_tracker")
     with off_tabs[9]:
         st.subheader("Previous Slate Review")
         dates = [d for d in available_tracker_dates(tracker) if d != today_str()]
