@@ -561,6 +561,58 @@ PARK_TIMEZONES = {
 }
 PARK_ROOFS = {"ARI":"RETRACTABLE","HOU":"RETRACTABLE","MIA":"RETRACTABLE","MIL":"RETRACTABLE","SEA":"RETRACTABLE","TEX":"RETRACTABLE","TOR":"RETRACTABLE","TB":"DOME"}
 
+# Venue-first weather mapping for neutral-site, All-Star, Futures, and special-event games.
+# The MLB home-team abbreviation can be non-standard (for example NAT/AME),
+# so weather, dimensions, and roof data must resolve from the actual venue.
+VENUE_TO_PARK_ABBR = {
+    "Chase Field": "ARI",
+    "Truist Park": "ATL",
+    "Oriole Park at Camden Yards": "BAL",
+    "Fenway Park": "BOS",
+    "Wrigley Field": "CHC",
+    "Rate Field": "CWS",
+    "Guaranteed Rate Field": "CWS",
+    "Great American Ball Park": "CIN",
+    "Progressive Field": "CLE",
+    "Coors Field": "COL",
+    "Comerica Park": "DET",
+    "Daikin Park": "HOU",
+    "Minute Maid Park": "HOU",
+    "Kauffman Stadium": "KC",
+    "Angel Stadium": "LAA",
+    "Dodger Stadium": "LAD",
+    "loanDepot park": "MIA",
+    "American Family Field": "MIL",
+    "Target Field": "MIN",
+    "Citi Field": "NYM",
+    "Yankee Stadium": "NYY",
+    "Sutter Health Park": "ATH",
+    "Oakland Coliseum": "ATH",
+    "Citizens Bank Park": "PHI",
+    "PNC Park": "PIT",
+    "Petco Park": "SD",
+    "Oracle Park": "SF",
+    "T-Mobile Park": "SEA",
+    "Busch Stadium": "STL",
+    "George M. Steinbrenner Field": "TB",
+    "Tropicana Field": "TB",
+    "Globe Life Field": "TEX",
+    "Rogers Centre": "TOR",
+    "Nationals Park": "WSH",
+}
+
+def resolve_game_park_abbr(game: dict) -> str:
+    venue = str((game or {}).get("venue", "") or "").strip()
+    if venue in VENUE_TO_PARK_ABBR:
+        return VENUE_TO_PARK_ABBR[venue]
+    # Tolerate sponsored-name changes and minor API variations.
+    venue_norm = normalize_name(venue)
+    for known_venue, abbr in VENUE_TO_PARK_ABBR.items():
+        known_norm = normalize_name(known_venue)
+        if venue_norm and (venue_norm == known_norm or venue_norm in known_norm or known_norm in venue_norm):
+            return abbr
+    return team_abbr((game or {}).get("home_team", ""))
+
 
 
 def stable_float(key: str, low: float, high: float) -> float:
@@ -1928,9 +1980,9 @@ def _stadium_svg(home_abbr,weather):
     return f'''<div class="bf-field-wrap"><svg class="bf-field-svg" viewBox="0 0 520 330" role="img" aria-label="Ballpark field and wind direction"><defs><linearGradient id="grass-{home_abbr}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#183d2b"/><stop offset="1" stop-color="#0a1612"/></linearGradient></defs><path d="M260 304 L54 98 Q260 -5 466 98 Z" fill="url(#grass-{home_abbr})" stroke="#536175" stroke-width="3"/><path d="M260 304 L174 218 L260 132 L346 218 Z" fill="#7a5a36" opacity=".8" stroke="#cfb37b"/><circle cx="260" cy="215" r="5" fill="#fff"/><rect x="255" y="294" width="10" height="10" transform="rotate(45 260 299)" fill="#fff"/><text x="42" y="108" class="dim">LF {labels[0]} ft</text><text x="125" y="54" class="dim">LCF {labels[1]} ft</text><text x="235" y="30" class="dim">CF {labels[2]} ft</text><text x="355" y="54" class="dim">RCF {labels[3]} ft</text><text x="438" y="108" class="dim">RF {labels[4]} ft</text><g transform="translate(260 154) rotate({rotation})"><line x1="0" y1="30" x2="0" y2="-38" stroke="#69a7ff" stroke-width="8" stroke-linecap="round"/><path d="M0 -58 L-15 -30 L15 -30 Z" fill="#69a7ff"/></g><text x="260" y="187" text-anchor="middle" class="windtxt">FROM {gh.get('wind_compass','—')} · {_fmt_weather(gh.get('wind'),' MPH')}</text></svg></div>'''
 
 def render_weather_game_card(game: dict, preliminary: bool=False):
-    home_abbr=team_abbr(game.get("home_team","")); weather=fetch_game_weather_timeline(home_abbr,game.get("game_time","")); gh=weather.get("game_hour",{}) or {}
+    home_abbr=resolve_game_park_abbr(game); weather=fetch_game_weather_timeline(home_abbr,game.get("game_time","")); gh=weather.get("game_hour",{}) or {}
     if not weather.get("found"):
-        st.warning(f"Weather forecast is not available yet for {game.get('game_key','this game')}."); return
+        st.warning(f"Weather forecast is not available yet for {game.get('game_key','this game')} at {game.get('venue','the listed venue')}."); return
     dims=PARK_DIMENSIONS.get(home_abbr); dim_text=" / ".join(str(x) for x in dims) if dims else "Not available"
     label,icon=escape(str(gh.get("label","Conditions unavailable"))),gh.get("icon","•"); roof=PARK_ROOFS.get(home_abbr,"OPEN AIR")
     html=f'''<div class="bf-weather-card"><div class="bf-weather-head"><div><div class="bf-weather-game">{escape(game.get('game_key',''))}</div><div class="bf-weather-venue">{escape(str(game.get('venue','TBD')))} · {format_game_time_et(game.get('game_time',''))}</div></div><div class="bf-weather-badge">{'PRELIMINARY' if preliminary else 'GAME-TIME FORECAST'}</div></div><div class="bf-weather-summary"><div><b>{icon} {label}</b><span>Condition</span></div><div><b>{_fmt_weather(gh.get('temp'),'°F')}</b><span>Temperature</span></div><div><b>{_fmt_weather(gh.get('precip'),'%')}</b><span>Precipitation</span></div><div><b>{_fmt_weather(gh.get('humidity'),'%')}</b><span>Humidity</span></div><div><b>{_fmt_weather(gh.get('wind'),' MPH')}</b><span>From {gh.get('wind_compass','—')} ({_fmt_weather(gh.get('wind_dir'),'°')})</span></div><div><b>{roof}</b><span>Roof type</span></div></div><div class="bf-weather-main">{_stadium_svg(home_abbr,weather)}<div class="bf-dim-panel"><div class="bf-dim-title">Stadium Dimensions</div><div class="bf-dim-order">LF / LCF / CF / RCF / RF</div><div class="bf-dim-values">{dim_text}</div><div class="bf-weather-source">Forecast: {weather.get('source')} · nearest hour to first pitch. Wind direction is the direction the wind comes from.</div></div></div></div>'''
