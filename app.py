@@ -385,6 +385,8 @@ CURRENT_SEASON = datetime.now().year
 SNAPSHOT_DIR = os.path.join(BF_DATA_DIR, "tracker_snapshots")
 LEGACY_SNAPSHOT_DIR = "tracker_snapshots"
 LEGACY_TRACKER_FILE = "hr_tracker.csv"
+LEARNING_PROFILE_FILE = os.path.join(BF_DATA_DIR, "bf_learning_profile.json")
+TRACKER_AUDIT_VERSION = "2.0"
 
 
 def ensure_snapshot_folder():
@@ -784,9 +786,19 @@ def _atomic_write_csv(df: pd.DataFrame, path: str):
 
 
 def _tracker_columns() -> list[str]:
+    """Permanent prediction-time snapshot used by Tracker Audit 2.0."""
     return [
         "date", "player", "team", "game", "game_pk",
         "hr_probability", "hr_tier", "hr_eligible", "tracker_source",
+        "board_rank", "on_core_board", "on_top12", "on_per_game",
+        "quality_grade", "moonshot_score", "two_hr_score", "nuke_score",
+        "stack_score", "slate_confidence",
+        "weather_score", "park_factor", "pitcher_attackability",
+        "ev", "barrel_pct", "hardhit_pct", "flyball_pct",
+        "linedrive_pct", "groundball_pct", "air_pct", "xslg", "xwoba",
+        "lineup_spot", "lineup_source", "pitcher", "pitcher_hr9",
+        "matchup_advantage", "model_rank_score", "ranking_reasons",
+        "audit_version", "prediction_locked_at",
         "result", "hr_count", "result_state", "game_state", "updated_at"
     ]
 
@@ -896,6 +908,37 @@ def _recover_tracker_rows_from_board_snapshots() -> pd.DataFrame:
                     "hr_tier": row.get("HR Tier", pd.NA),
                     "hr_eligible": int(bool(row.get("HR Eligible", True))),
                     "tracker_source": source,
+                    "board_rank": row.get("Rank", pd.NA),
+                    "on_core_board": int(source == "CORE_BOARD"),
+                    "on_top12": int(source == "TOP12"),
+                    "on_per_game": int(source == "GAME_HR"),
+                    "quality_grade": row.get("Prediction Quality Grade", pd.NA),
+                    "moonshot_score": row.get("Moonshot Score", pd.NA),
+                    "two_hr_score": row.get("2 HR Score", pd.NA),
+                    "nuke_score": row.get("Nuke Score", pd.NA),
+                    "stack_score": row.get("Stack Score", pd.NA),
+                    "slate_confidence": row.get("Slate Confidence", pd.NA),
+                    "weather_score": row.get("WeatherBoost", pd.NA),
+                    "park_factor": row.get("Park Factor", pd.NA),
+                    "pitcher_attackability": row.get("HR Attackability Score", pd.NA),
+                    "ev": row.get("EV", pd.NA),
+                    "barrel_pct": row.get("Barrel%", pd.NA),
+                    "hardhit_pct": row.get("HardHit%", pd.NA),
+                    "flyball_pct": row.get("FlyBall%", pd.NA),
+                    "linedrive_pct": row.get("LineDrive%", pd.NA),
+                    "groundball_pct": row.get("GroundBall%", pd.NA),
+                    "air_pct": row.get("AIR%", pd.NA),
+                    "xslg": row.get("xSLG", pd.NA),
+                    "xwoba": row.get("xwOBA", pd.NA),
+                    "lineup_spot": row.get("Lineup Spot", pd.NA),
+                    "lineup_source": row.get("Lineup Source", pd.NA),
+                    "pitcher": row.get("Pitcher", pd.NA),
+                    "pitcher_hr9": row.get("Pitcher_HR9_Last7", pd.NA),
+                    "matchup_advantage": row.get("Matchup Advantage Score", pd.NA),
+                    "model_rank_score": row.get("Model Rank Score", pd.NA),
+                    "ranking_reasons": row.get("Ranking Reasons", pd.NA),
+                    "audit_version": TRACKER_AUDIT_VERSION,
+                    "prediction_locked_at": row.get("prediction_locked_at", now_et_string()),
                     "result": pd.NA,
                     "hr_count": 0,
                     "result_state": "RECOVERED_PENDING",
@@ -4254,6 +4297,27 @@ def build_hitter_metrics(
         "xSLG": xslg,
     }))
 
+    advanced_scores = compute_advanced_prediction_scores(
+        hr_probability=hr_prob,
+        ev=ev,
+        barrel=barrel,
+        hard_hit=hard_hit,
+        fly_ball=fly_ball,
+        line_drive=line_drive,
+        ground_ball=ground_ball,
+        air_pct=air_pct,
+        xslg=xslg,
+        pitch_hr9=pitch_hr9,
+        pitcher_attackability=pitcher_target_score,
+        matchup_advantage=matchup_advantage_score,
+        weather_boost=weather_boost,
+        park_factor=park_factor,
+        lineup_spot=lineup_spot,
+        recent_hr=recent_hr,
+        recent_trend=recent_trend,
+        elite_hr_flag=elite_hr_flag,
+    )
+
     return {
         "Player ID": player_id,
         "Pitcher ID": opp_pitcher_id,
@@ -4297,6 +4361,13 @@ def build_hitter_metrics(
         "Elite HR Look": "Yes" if elite_hr_flag else "No",
         "Multi Pitch Authority Score": round(multi_pitch_authority_score, 2),
         "HR Probability %": round(hr_prob, 1),
+        "Prediction Quality Score": advanced_scores["Prediction Quality Score"],
+        "Prediction Quality Grade": advanced_scores["Prediction Quality Grade"],
+        "Moonshot Score": advanced_scores["Moonshot Score"],
+        "2 HR Score": advanced_scores["2 HR Score"],
+        "Nuke Score": advanced_scores["Nuke Score"],
+        "Stack Score": advanced_scores["Stack Score"],
+        "Park Factor": round(park_factor, 3),
         "HRR Score": round(hrr_score, 1),
         "Model Rank Score": round(model_rank_score, 2),
         "TempF": round(temp_f, 1),
@@ -4320,6 +4391,285 @@ def build_hitter_metrics(
     }
 
 
+
+
+def _letter_grade(score: float) -> str:
+    score = safe_float(score, 0.0)
+    if score >= 94: return "A+"
+    if score >= 89: return "A"
+    if score >= 84: return "A-"
+    if score >= 79: return "B+"
+    if score >= 73: return "B"
+    if score >= 67: return "B-"
+    if score >= 60: return "C+"
+    if score >= 52: return "C"
+    if score >= 44: return "D"
+    return "F"
+
+
+def compute_advanced_prediction_scores(
+    hr_probability: float,
+    ev: float,
+    barrel: float,
+    hard_hit: float,
+    fly_ball: float,
+    line_drive: float,
+    ground_ball: float,
+    air_pct: float,
+    xslg: float,
+    pitch_hr9: float,
+    pitcher_attackability: float,
+    matchup_advantage: float,
+    weather_boost: float,
+    park_factor: float,
+    lineup_spot,
+    recent_hr: int,
+    recent_trend: str,
+    elite_hr_flag: bool,
+) -> dict:
+    """Transparent secondary scores. These do not replace BF's ranking engine."""
+    launch_quality = clip(
+        barrel * 2.6 + hard_hit * 0.72 + fly_ball * 0.38
+        + line_drive * 0.18 - max(0.0, ground_ball - 42.0) * 1.05,
+        0, 100,
+    )
+    environment = clip(
+        50 + weather_boost * 7.5 + (park_factor - 1.0) * 135,
+        0, 100,
+    )
+    pitcher_path = clip(
+        pitcher_attackability * 1.75 + pitch_hr9 * 13.5,
+        0, 100,
+    )
+    lineup_bonus = 0.0
+    try:
+        spot = int(lineup_spot)
+        lineup_bonus = 8.0 if spot <= 4 else 4.0 if spot <= 6 else 0.0
+    except Exception:
+        pass
+
+    quality = clip(
+        hr_probability * 1.75 + launch_quality * 0.28
+        + pitcher_path * 0.18 + matchup_advantage * 0.24
+        + max(0.0, xslg - 0.350) * 72 + lineup_bonus,
+        0, 100,
+    )
+    moonshot = clip(
+        barrel * 3.0 + hard_hit * 0.72 + air_pct * 0.32
+        + max(0.0, ev - 88) * 2.4 + max(0.0, pitch_hr9 - 0.8) * 12
+        + environment * 0.15 - max(0.0, ground_ball - 46) * 1.15,
+        0, 100,
+    )
+    two_hr = clip(
+        moonshot * 0.52 + quality * 0.25 + hr_probability * 0.75
+        + recent_hr * 4.0 + (6.0 if recent_trend == "HOT" else 2.0 if recent_trend == "LIVE" else 0.0),
+        0, 100,
+    )
+    nuke = clip(
+        quality * 0.38 + moonshot * 0.40 + matchup_advantage * 0.28
+        + pitcher_attackability * 0.28 + (8.0 if elite_hr_flag else 0.0),
+        0, 100,
+    )
+    stack = clip(
+        matchup_advantage * 0.42 + pitcher_attackability * 0.70
+        + environment * 0.25 + lineup_bonus + hard_hit * 0.15,
+        0, 100,
+    )
+    return {
+        "Prediction Quality Score": round(quality, 1),
+        "Prediction Quality Grade": _letter_grade(quality),
+        "Moonshot Score": round(moonshot, 1),
+        "2 HR Score": round(two_hr, 1),
+        "Nuke Score": round(nuke, 1),
+        "Stack Score": round(stack, 1),
+    }
+
+
+def compute_slate_confidence(df: pd.DataFrame) -> float:
+    if df is None or df.empty:
+        return 0.0
+    work = df.copy()
+    quality = safe_numeric_series(work, "Prediction Quality Score", 0.0)
+    hrp = safe_numeric_series(work, "HR Probability %", 0.0)
+    confirmed = (
+        work.get("Lineup Source", pd.Series("", index=work.index))
+        .astype(str).eq("CONFIRMED").mean() * 100
+    )
+    top_quality = quality.nlargest(min(12, len(quality))).mean() if len(quality) else 0.0
+    top_hr = hrp.nlargest(min(12, len(hrp))).mean() if len(hrp) else 0.0
+    spread = quality.std() if len(quality) > 1 else 0.0
+    return round(clip(top_quality * 0.55 + top_hr * 1.15 + confirmed * 0.18 + min(spread, 15) * 0.35, 0, 100), 1)
+
+
+def _load_learning_profile() -> dict:
+    if os.path.exists(LEARNING_PROFILE_FILE):
+        try:
+            with open(LEARNING_PROFILE_FILE, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+                return data if isinstance(data, dict) else {}
+        except Exception:
+            pass
+    return {}
+
+
+def _save_learning_profile(profile: dict):
+    folder = os.path.dirname(LEARNING_PROFILE_FILE) or "."
+    os.makedirs(folder, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".bf_learning_", suffix=".json", dir=folder)
+    os.close(fd)
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump(profile, fh, indent=2)
+        os.replace(tmp_path, LEARNING_PROFILE_FILE)
+    finally:
+        if os.path.exists(tmp_path):
+            try: os.remove(tmp_path)
+            except Exception: pass
+
+
+def build_learning_engine_report(tracker: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Learn only from finalized rows and produce bounded, auditable recommendations."""
+    if tracker is None or tracker.empty:
+        return pd.DataFrame(), pd.DataFrame(), {"final_rows": 0, "status": "COLLECTING"}
+
+    work = tracker.copy()
+    hr_count = pd.to_numeric(work.get("hr_count", 0), errors="coerce").fillna(0)
+    final_mask = work.get("result_state", pd.Series("", index=work.index)).astype(str).str.contains(
+        "HOMERED|FINAL_NO_HR", regex=True, na=False
+    )
+    final = work[final_mask].copy()
+    if final.empty:
+        return pd.DataFrame(), pd.DataFrame(), {"final_rows": 0, "status": "COLLECTING"}
+    final["hit"] = (pd.to_numeric(final.get("hr_count", 0), errors="coerce").fillna(0) > 0).astype(int)
+
+    feature_specs = [
+        ("Barrel 14%+", "barrel_pct", lambda s: s >= 14),
+        ("Barrel 12%+", "barrel_pct", lambda s: s >= 12),
+        ("FB 38%+", "flyball_pct", lambda s: s >= 38),
+        ("HardHit 45%+", "hardhit_pct", lambda s: s >= 45),
+        ("GB 50%+", "groundball_pct", lambda s: s >= 50),
+        ("Pitcher HR/9 1.6+", "pitcher_hr9", lambda s: s >= 1.6),
+        ("Attackability 24+", "pitcher_attackability", lambda s: s >= 24),
+        ("Weather +1.5+", "weather_score", lambda s: s >= 1.5),
+        ("Quality A range", "quality_grade", lambda s: s.astype(str).isin(["A+", "A", "A-"])),
+        ("Moonshot 75+", "moonshot_score", lambda s: s >= 75),
+        ("Nuke 75+", "nuke_score", lambda s: s >= 75),
+    ]
+
+    overall_rate = final["hit"].mean() * 100
+    rows = []
+    for label, col, rule in feature_specs:
+        if col not in final.columns:
+            continue
+        raw = final[col]
+        numeric = pd.to_numeric(raw, errors="coerce") if col != "quality_grade" else raw
+        try:
+            mask = rule(numeric).fillna(False)
+        except Exception:
+            continue
+        sample = final[mask]
+        if sample.empty:
+            continue
+        hit_rate = sample["hit"].mean() * 100
+        rows.append({
+            "Pattern": label,
+            "Sample": int(len(sample)),
+            "HR Hits": int(sample["hit"].sum()),
+            "Hit Rate %": round(hit_rate, 2),
+            "Vs Overall": round(hit_rate - overall_rate, 2),
+            "Confidence": "HIGH" if len(sample) >= 100 else "MED" if len(sample) >= 40 else "LOW",
+        })
+
+    patterns = pd.DataFrame(rows)
+    if not patterns.empty:
+        patterns = patterns.sort_values(["Confidence", "Vs Overall", "Sample"], ascending=[True, False, False])
+
+    # Board/source audit
+    audit_rows = []
+    for source, label in [("CORE_BOARD", "Core Board"), ("TOP12", "Top 12"), ("GAME_HR", "Per-Game")]:
+        sample = final[final.get("tracker_source", "").astype(str).eq(source)]
+        if sample.empty:
+            continue
+        audit_rows.append({
+            "Board": label,
+            "Final Picks": len(sample),
+            "HR Hits": int(sample["hit"].sum()),
+            "Hit Rate %": round(sample["hit"].mean() * 100, 2),
+            "Avg HR Probability": round(pd.to_numeric(sample.get("hr_probability", 0), errors="coerce").mean(), 2),
+            "Avg Rank": round(pd.to_numeric(sample.get("board_rank", 0), errors="coerce").replace(0, pd.NA).mean(), 2),
+        })
+    board_audit = pd.DataFrame(audit_rows)
+
+    profile = {
+        "updated_at": now_et_string(),
+        "final_rows": int(len(final)),
+        "overall_hit_rate": round(overall_rate, 2),
+        "status": "ACTIVE" if len(final) >= 300 else "CALIBRATING" if len(final) >= 100 else "COLLECTING",
+        "minimum_auto_tune_sample": 300,
+        "max_weight_change_pct": 5.0,
+        "recommendations": [],
+    }
+    if not patterns.empty:
+        for _, row in patterns.iterrows():
+            if int(row["Sample"]) < 40:
+                continue
+            lift = safe_float(row["Vs Overall"], 0.0)
+            bounded = round(clip(lift * 0.20, -5.0, 5.0), 2)
+            profile["recommendations"].append({
+                "pattern": row["Pattern"],
+                "sample": int(row["Sample"]),
+                "lift_pct_points": round(lift, 2),
+                "suggested_weight_change_pct": bounded,
+            })
+    _save_learning_profile(profile)
+    return patterns, board_audit, profile
+
+
+def render_tracker_audit_learning(tracker: pd.DataFrame, selected_tracker: pd.DataFrame):
+    st.divider()
+    st.markdown("### Tracker Audit 2.0")
+    st.caption("Every row is a permanent prediction-time snapshot. Game results update separately and never rewrite the original inputs.")
+
+    audit_cols = [
+        "player", "team", "game", "tracker_source", "board_rank",
+        "on_core_board", "on_top12", "on_per_game",
+        "hr_probability", "hr_tier", "quality_grade",
+        "moonshot_score", "two_hr_score", "nuke_score", "stack_score",
+        "slate_confidence", "weather_score", "park_factor",
+        "pitcher_attackability", "ev", "barrel_pct", "hardhit_pct",
+        "flyball_pct", "linedrive_pct", "groundball_pct", "air_pct",
+        "lineup_spot", "pitcher", "pitcher_hr9", "result", "hr_count",
+        "result_state", "prediction_locked_at",
+    ]
+    if selected_tracker is not None and not selected_tracker.empty:
+        display_existing_columns(selected_tracker, audit_cols)
+    else:
+        st.info("Tracker Audit will populate when the next official BF board is surfaced.")
+
+    st.divider()
+    st.markdown("### BF Learning Engine")
+    patterns, board_audit, profile = build_learning_engine_report(tracker)
+    p1, p2, p3, p4 = st.columns(4)
+    p1.metric("Final Audited Picks", profile.get("final_rows", 0))
+    p2.metric("Engine Status", profile.get("status", "COLLECTING"))
+    p3.metric("Overall Hit Rate", f"{safe_float(profile.get('overall_hit_rate'), 0.0):.2f}%")
+    p4.metric("Auto-Tune Limit", "±5%")
+
+    if patterns.empty:
+        st.info("The Learning Engine is collecting finalized predictions. Pattern recommendations begin at 40 samples; bounded auto-tuning becomes eligible at 300.")
+    else:
+        st.markdown("**Performance Patterns**")
+        st.dataframe(patterns, use_container_width=True, hide_index=True)
+        if not board_audit.empty:
+            st.markdown("**Board Performance Audit**")
+            st.dataframe(board_audit, use_container_width=True, hide_index=True)
+
+        recs = profile.get("recommendations", [])
+        if recs:
+            st.markdown("**Automatic Tuning Recommendations**")
+            rec_df = pd.DataFrame(recs)
+            st.dataframe(rec_df, use_container_width=True, hide_index=True)
+            st.caption("Safety lock: recommendations are evidence-based and bounded to ±5%. The current ranking engine remains unchanged until the minimum sample is reached.")
 
 def safe_numeric_series(df: pd.DataFrame, col_name: str, default=0.0) -> pd.Series:
     if col_name in df.columns:
@@ -5162,6 +5512,7 @@ def sync_tracker_with_board(tracked_df: pd.DataFrame):
         if key in existing_keys:
             continue
 
+        slate_confidence = compute_slate_confidence(tracked_df)
         new_rows.append({
             "date": date_key,
             "player": player_name,
@@ -5172,6 +5523,37 @@ def sync_tracker_with_board(tracked_df: pd.DataFrame):
             "hr_tier": row.get("HR Tier", pd.NA),
             "hr_eligible": int(bool(row.get("HR Eligible", False))),
             "tracker_source": source,
+            "board_rank": row.get("Rank", pd.NA),
+            "on_core_board": int(source == "CORE_BOARD"),
+            "on_top12": int(source == "TOP12"),
+            "on_per_game": int(source == "GAME_HR"),
+            "quality_grade": row.get("Prediction Quality Grade", pd.NA),
+            "moonshot_score": row.get("Moonshot Score", pd.NA),
+            "two_hr_score": row.get("2 HR Score", pd.NA),
+            "nuke_score": row.get("Nuke Score", pd.NA),
+            "stack_score": row.get("Stack Score", pd.NA),
+            "slate_confidence": slate_confidence,
+            "weather_score": row.get("WeatherBoost", pd.NA),
+            "park_factor": row.get("Park Factor", pd.NA),
+            "pitcher_attackability": row.get("HR Attackability Score", pd.NA),
+            "ev": row.get("EV", pd.NA),
+            "barrel_pct": row.get("Barrel%", pd.NA),
+            "hardhit_pct": row.get("HardHit%", pd.NA),
+            "flyball_pct": row.get("FlyBall%", pd.NA),
+            "linedrive_pct": row.get("LineDrive%", pd.NA),
+            "groundball_pct": row.get("GroundBall%", pd.NA),
+            "air_pct": row.get("AIR%", pd.NA),
+            "xslg": row.get("xSLG", pd.NA),
+            "xwoba": row.get("xwOBA", pd.NA),
+            "lineup_spot": row.get("Lineup Spot", pd.NA),
+            "lineup_source": row.get("Lineup Source", pd.NA),
+            "pitcher": row.get("Pitcher", pd.NA),
+            "pitcher_hr9": row.get("Pitcher_HR9_Last7", pd.NA),
+            "matchup_advantage": row.get("Matchup Advantage Score", pd.NA),
+            "model_rank_score": row.get("Model Rank Score", pd.NA),
+            "ranking_reasons": row.get("Ranking Reasons", pd.NA),
+            "audit_version": TRACKER_AUDIT_VERSION,
+            "prediction_locked_at": now_et_string(),
             "result": pd.NA,
             "hr_count": 0,
             "result_state": "PENDING",
@@ -6384,6 +6766,7 @@ def render_full_tracker_panel(tracker: pd.DataFrame, key_prefix: str = "tracker"
                 [
                     "Tracker Source", "Player", "Team", "Game", "Pitcher",
                     "Lineup Spot", "HR Probability %", "HR Tier",
+                    "Prediction Quality Grade", "Moonshot Score", "2 HR Score", "Nuke Score", "Stack Score",
                     "Actual HR Today", "Matchup Advantage",
                     "HR Attackability Score", "EV", "Barrel%", "HardHit%",
                     "AIR%", "Ranking Reasons", "Why",
@@ -6438,6 +6821,8 @@ def render_full_tracker_panel(tracker: pd.DataFrame, key_prefix: str = "tracker"
             use_container_width=True,
             hide_index=True,
         )
+
+    render_tracker_audit_learning(tracker_work, selected_tracker)
 
 
 def render_off_day_mode(tracker: pd.DataFrame):
@@ -6631,6 +7016,8 @@ with c2:
 with c3:
     st.metric("Lineup Mode", lineup_mode)
 with c4:
+    slate_confidence_value = compute_slate_confidence(tracked_df)
+    st.caption(f"BF Slate Confidence: {slate_confidence_value:.1f}/100")
     confirmed_locked = 0
     if not locked_df.empty and "lock_scope" in locked_df.columns:
         confirmed_locked = int((locked_df["lock_scope"].astype(str) == "CONFIRMED_TEAM").sum())
@@ -6658,7 +7045,7 @@ with tabs[0]:
         st.dataframe(
             hr_df[[
                 "Rank", "Player", "Team", "Game", "Pitcher", "Lineup Spot",
-                "Lineup Source", "Actual HR Today", "HR Probability %", "HR Tier", "GroundBall%",
+                "Lineup Source", "Actual HR Today", "HR Probability %", "HR Tier", "Prediction Quality Grade", "Moonshot Score", "2 HR Score", "Nuke Score", "Stack Score", "GroundBall%",
                 "GB Rule", "GB Note", "Matchup Advantage", "HR Attackability Score", "WeatherNote", "BullpenFatigueNote", "HardHit%", "FlyBall%", "AIR%", "xSLG", "xwOBA", "Barrel%", "Ranking Reasons", "Why"
             ]],
             use_container_width=True,
@@ -6675,7 +7062,7 @@ with tabs[1]:
         st.dataframe(
             top12[[
                 "Rank", "Player", "Team", "Game", "Pitcher", "Lineup Spot",
-                "Lineup Source", "Actual HR Today", "HR Probability %", "HR Tier", "GroundBall%",
+                "Lineup Source", "Actual HR Today", "HR Probability %", "HR Tier", "Prediction Quality Grade", "Moonshot Score", "2 HR Score", "Nuke Score", "Stack Score", "GroundBall%",
                 "GB Rule", "GB Note", "Matchup Advantage", "HR Attackability Score", "WeatherNote", "BullpenFatigueNote", "HardHit%", "FlyBall%", "AIR%", "xSLG", "xwOBA", "Barrel%", "Ranking Reasons", "Why"
             ]],
             use_container_width=True,
