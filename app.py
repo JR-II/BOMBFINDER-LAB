@@ -6449,55 +6449,140 @@ def find_next_scheduled_slate(start_date_key: str, max_days: int = 14):
 
 
 def _next_slate_hitter_score(player_id: int, player_name: str, stats_map: dict, savant_map: dict) -> dict | None:
+    """Score an early-slate hitter even when recent game logs are unavailable.
+
+    Priority:
+      1. Season + recent game log + Savant
+      2. Season + Savant
+      3. Savant-only watchlist row
+
+    This is research-only and never becomes an official tracked prediction.
+    """
+    data = stats_map.get(player_id, {}) or {}
+    season = data.get("season", {}) or {}
     metrics = compute_hitter_live_metrics_from_map(player_id, stats_map, use_true_bbe=False)
-    if metrics is None:
-        return None
-    season = (stats_map.get(player_id, {}) or {}).get("season", {}) or {}
+
     season_hr = safe_int(season.get("homeRuns", 0))
     season_ab = safe_int(season.get("atBats", 0))
+    season_hits = safe_int(season.get("hits", 0))
+    season_doubles = safe_int(season.get("doubles", 0))
+    season_triples = safe_int(season.get("triples", 0))
     season_slg = safe_float(season.get("sluggingPercentage", 0.0), 0.0)
+    season_avg = safe_float(season.get("avg", 0.0), 0.0)
+    if not season_avg and season_ab:
+        season_avg = season_hits / season_ab
+    if not season_slg and season_ab:
+        total_bases = (
+            max(0, season_hits - season_doubles - season_triples - season_hr)
+            + season_doubles * 2 + season_triples * 3 + season_hr * 4
+        )
+        season_slg = total_bases / season_ab
+    season_iso = max(0.0, season_slg - season_avg)
+
     sav = savant_map.get(normalize_name(player_name), {}) or {}
-    barrel = safe_float(sav.get("Savant_Barrel%"), metrics.get("Barrel%", 0.0))
-    hard_hit = safe_float(sav.get("Savant_HardHit%"), metrics.get("HardHit%", 0.0))
-    ev = safe_float(sav.get("Savant_EV"), metrics.get("EV", 0.0))
+
+    # Do not invent values. Use only available season/Savant values and clearly label confidence.
+    fallback_ev = 0.0
+    fallback_hh = 0.0
+    fallback_brl = 0.0
+    fallback_gb = 45.0
+    fallback_air = 55.0
+    recent_hr = 0
+    recent_xbh = 0
+    recent_iso = 0.0
+
+    if metrics is not None:
+        fallback_ev = safe_float(metrics.get("EV"), 0.0)
+        fallback_hh = safe_float(metrics.get("HardHit%"), 0.0)
+        fallback_brl = safe_float(metrics.get("Barrel%"), 0.0)
+        fallback_gb = safe_float(metrics.get("GroundBall%"), 45.0)
+        fallback_air = 100.0 - fallback_gb
+        recent_hr = safe_int(metrics.get("recent_hr"), 0)
+        recent_xbh = safe_int(metrics.get("recent_xbh"), 0)
+        recent_iso = safe_float(metrics.get("recent_iso"), 0.0)
+
+    barrel = safe_float(sav.get("Savant_Barrel%"), fallback_brl)
+    hard_hit = safe_float(sav.get("Savant_HardHit%"), fallback_hh)
+    ev = safe_float(sav.get("Savant_EV"), fallback_ev)
     xslg = safe_float(sav.get("Savant_xSLG"), season_slg)
-    air = safe_float(sav.get("Savant_AIR%"), 100.0 - safe_float(sav.get("Savant_GB%"), metrics.get("GroundBall%", 45.0)))
-    gb = safe_float(sav.get("Savant_GB%"), metrics.get("GroundBall%", 45.0))
+    gb = safe_float(sav.get("Savant_GB%"), fallback_gb)
+    air = safe_float(sav.get("Savant_AIR%"), max(0.0, 100.0 - gb))
+
+    has_season = season_ab >= 8
+    has_savant = any([
+        barrel > 0, hard_hit > 0, ev > 0,
+        safe_float(sav.get("Savant_xSLG"), 0.0) > 0,
+    ])
+    has_recent = metrics is not None
+
+    if not has_season and not has_savant and not has_recent:
+        return None
+
     hr_rate = (season_hr / season_ab * 100.0) if season_ab else 0.0
     score = (
-        barrel * 3.4 + hard_hit * 1.05 + max(0.0, ev - 86.0) * 2.1
-        + xslg * 80.0 + air * 0.45 + hr_rate * 4.0
-        + metrics.get("recent_hr", 0) * 6.0 + metrics.get("recent_xbh", 0) * 1.8
+        barrel * 3.4
+        + hard_hit * 1.05
+        + max(0.0, ev - 86.0) * 2.1
+        + xslg * 80.0
+        + air * 0.45
+        + hr_rate * 4.0
+        + recent_hr * 6.0
+        + recent_xbh * 1.8
+        + season_iso * 22.0
         - max(0.0, gb - 48.0) * 1.4
     )
+
+    if has_recent and has_season and has_savant:
+        data_level = "SEASON + RECENT + SAVANT"
+        confidence = "MEDIUM"
+    elif has_season and has_savant:
+        data_level = "SEASON + SAVANT"
+        confidence = "LOW-MEDIUM"
+    elif has_season:
+        data_level = "SEASON ONLY"
+        confidence = "LOW"
+    else:
+        data_level = "SAVANT WATCHLIST"
+        confidence = "LOW"
+
     return {
         "Player": player_name,
         "Player ID": player_id,
         "Early BF Score": round(score, 1),
         "Season HR": season_hr,
-        "Recent HR": metrics.get("recent_hr", 0),
-        "Recent ISO": round(metrics.get("recent_iso", 0.0), 3),
-        "EV": round(ev, 1),
-        "Barrel%": round(barrel, 1),
-        "HardHit%": round(hard_hit, 1),
+        "Season ISO": round(season_iso, 3),
+        "Recent HR": recent_hr,
+        "Recent ISO": round(recent_iso, 3),
+        "EV": round(ev, 1) if ev else pd.NA,
+        "Barrel%": round(barrel, 1) if barrel else pd.NA,
+        "HardHit%": round(hard_hit, 1) if hard_hit else pd.NA,
         "AIR%": round(air, 1),
         "GroundBall%": round(gb, 1),
-        "xSLG": round(xslg, 3),
+        "xSLG": round(xslg, 3) if xslg else pd.NA,
+        "Data Level": data_level,
+        "Research Confidence": confidence,
     }
 
 
 @st.cache_data(ttl=3600, max_entries=2)
 def build_next_slate_preview(next_date_key: str, schedule_tuple: tuple) -> pd.DataFrame:
-    """Resource-safe projected next-slate board. It is never locked or tracked."""
+    """Build a staged, resource-safe early watchlist.
+
+    Stage 1 uses probable pitchers plus any available game roster, active roster,
+    season stats, recent form, and Savant data. It never locks or tracks.
+    """
     schedule_rows = [dict(x) for x in schedule_tuple]
+    if not schedule_rows:
+        return pd.DataFrame()
+
     team_ids = sorted({
         safe_int(g.get(side), 0)
         for g in schedule_rows
         for side in ("away_team_id", "home_team_id")
         if safe_int(g.get(side), 0) > 0
     })
+
     roster_map = {}
-    # Keep concurrency intentionally small for Streamlit Community Cloud.
     with ThreadPoolExecutor(max_workers=3) as executor:
         future_map = {executor.submit(get_team_hitters, tid): tid for tid in team_ids}
         for future in as_completed(future_map):
@@ -6507,22 +6592,68 @@ def build_next_slate_preview(next_date_key: str, schedule_tuple: tuple) -> pd.Da
             except Exception:
                 roster_map[tid] = []
 
+    # Future special events can expose players in the game boxscore before a normal
+    # team roster exists. Prefer those names when available.
+    game_pool_map = {}
+    for game in schedule_rows:
+        game_pk = safe_int(game.get("game_pk"), 0)
+        if game_pk <= 0:
+            continue
+        try:
+            game_pool_map[(game_pk, "away")] = extract_boxscore_team_hitters(game_pk, "away") or []
+            game_pool_map[(game_pk, "home")] = extract_boxscore_team_hitters(game_pk, "home") or []
+        except Exception:
+            game_pool_map[(game_pk, "away")] = []
+            game_pool_map[(game_pk, "home")] = []
+
     all_ids = []
     for hitters in roster_map.values():
-        all_ids.extend([h.get("player_id") for h in hitters[:14] if h.get("player_id")])
-    stats_map = fetch_people_stats(tuple(dict.fromkeys(all_ids)), "hitting")
+        all_ids.extend([h.get("player_id") for h in hitters[:18] if h.get("player_id")])
+    for hitters in game_pool_map.values():
+        all_ids.extend([h.get("player_id") for h in hitters if h.get("player_id")])
+
+    unique_ids = tuple(dict.fromkeys(all_ids))
+    stats_map = fetch_people_stats(unique_ids, "hitting") if unique_ids else {}
     savant_map = fetch_savant_batter_map(CURRENT_SEASON)
+
+    # Pitcher profiles are available before lineups and should always be shown.
+    pitcher_ids = []
+    for g in schedule_rows:
+        for key in ("away_pitcher_id", "home_pitcher_id"):
+            pid = g.get(key)
+            if pid:
+                pitcher_ids.append(pid)
+    pitcher_stats_map = fetch_people_stats(tuple(dict.fromkeys(pitcher_ids)), "pitching") if pitcher_ids else {}
 
     rows = []
     for game in schedule_rows:
-        for side, team_id_key, team_name_key, opp_pitcher_key in [
-            ("Away", "away_team_id", "away_team", "home_pitcher"),
-            ("Home", "home_team_id", "home_team", "away_pitcher"),
+        game_pk = safe_int(game.get("game_pk"), 0)
+        for side_label, side_key, team_id_key, team_name_key, opp_pitcher_key, opp_pitcher_id_key in [
+            ("Away", "away", "away_team_id", "away_team", "home_pitcher", "home_pitcher_id"),
+            ("Home", "home", "home_team_id", "home_team", "away_pitcher", "away_pitcher_id"),
         ]:
             tid = safe_int(game.get(team_id_key), 0)
             team_name = game.get(team_name_key, "")
+            opp_pitcher = game.get(opp_pitcher_key, "Starter Pending")
+            opp_pitcher_id = game.get(opp_pitcher_id_key)
+
+            game_hitters = game_pool_map.get((game_pk, side_key), [])
+            candidate_pool = game_hitters if game_hitters else roster_map.get(tid, [])
+
+            # Deduplicate and cap before detailed scoring.
+            dedup = {}
+            for h in candidate_pool:
+                pid = h.get("player_id")
+                if pid:
+                    dedup[int(pid)] = {
+                        "player_id": int(pid),
+                        "player_name": h.get("player_name", ""),
+                        "lineup_spot": h.get("lineup_spot"),
+                    }
+            candidate_pool = list(dedup.values())[:18]
+
             scored = []
-            for hitter in roster_map.get(tid, [])[:14]:
+            for hitter in candidate_pool:
                 row = _next_slate_hitter_score(
                     safe_int(hitter.get("player_id"), 0),
                     hitter.get("player_name", ""),
@@ -6530,29 +6661,59 @@ def build_next_slate_preview(next_date_key: str, schedule_tuple: tuple) -> pd.Da
                     savant_map,
                 )
                 if row:
+                    row["Projected Lineup Spot"] = hitter.get("lineup_spot") or "—"
                     scored.append(row)
-            scored = sorted(scored, key=lambda r: r["Early BF Score"], reverse=True)[:5]
+
+            scored = sorted(scored, key=lambda r: r["Early BF Score"], reverse=True)[:6]
+
+            pitcher_profile = compute_pitcher_live_metrics_from_map(
+                opp_pitcher_id,
+                opp_pitcher,
+                pitcher_stats_map,
+            )
+            pitcher_hr9 = (
+                safe_float(pitcher_profile.get("Pitcher_HR9_Last7"), 0.0)
+                if pitcher_profile else pd.NA
+            )
+            pitcher_barrel = (
+                safe_float(pitcher_profile.get("Pitcher_Barrel_Allowed"), 0.0)
+                if pitcher_profile else pd.NA
+            )
+            pitcher_hh = (
+                safe_float(pitcher_profile.get("Pitcher_HardHit_Allowed"), 0.0)
+                if pitcher_profile else pd.NA
+            )
+
             for rank, row in enumerate(scored, 1):
                 rows.append({
                     "Date": next_date_key,
+                    "Research Stage": "STAGE 1 · EARLY WATCHLIST",
+                    "Official Tracking": "NO",
                     "Game": game.get("game_key", ""),
                     "Game Time": format_game_time_et(game.get("game_time", "")),
                     "Venue": game.get("venue", "TBD"),
                     "Team": team_abbr(team_name),
-                    "Side": side,
-                    "Opponent Pitcher": game.get(opp_pitcher_key, "Starter Pending"),
-                    "Pitcher Status": "PROBABLE" if game.get(opp_pitcher_key) not in {"", None, "Starter Pending"} else "PENDING",
-                    "Lineup Status": "PROJECTED",
+                    "Side": side_label,
+                    "Opponent Pitcher": opp_pitcher,
+                    "Pitcher Status": "PROBABLE" if opp_pitcher not in {"", None, "Starter Pending"} else "PENDING",
+                    "Pitcher HR/9": round(pitcher_hr9, 2) if pd.notna(pitcher_hr9) else pd.NA,
+                    "Pitcher Barrel Allowed": round(pitcher_barrel, 1) if pd.notna(pitcher_barrel) else pd.NA,
+                    "Pitcher HardHit Allowed": round(pitcher_hh, 1) if pd.notna(pitcher_hh) else pd.NA,
+                    "Lineup Status": "LAST KNOWN / EXPECTED",
                     "Team Rank": rank,
                     **row,
                 })
+
     if not rows:
         return pd.DataFrame()
+
     out = pd.DataFrame(rows)
-    out = out.sort_values(["Early BF Score", "Game", "Team Rank"], ascending=[False, True, True]).reset_index(drop=True)
+    out = out.sort_values(
+        ["Early BF Score", "Game", "Team Rank"],
+        ascending=[False, True, True],
+    ).reset_index(drop=True)
     out.insert(0, "Slate Rank", range(1, len(out) + 1))
     return out
-
 
 
 
@@ -6855,7 +7016,7 @@ def render_off_day_mode(tracker: pd.DataFrame):
             except Exception:
                 date_label = next_dt.strftime("%A, %B %d").replace(" 0", " ")
             st.subheader(f"Next Slate Preview — {date_label}")
-            st.caption("Early research only • projected lineups • probable pitchers may change • never locked or tracked.")
+            st.caption("Stage 1 Early Watchlist • probable pitchers + last-known/expected hitters • low confidence • never locked or tracked. The board upgrades automatically when projected and confirmed lineups arrive.")
             m1, m2, m3 = st.columns(3)
             m1.metric("Next Slate Games", len(next_schedule))
             m2.metric("Days Away", (next_dt.date() - datetime.now(ZoneInfo("America/New_York")).date()).days)
@@ -6878,7 +7039,20 @@ def render_off_day_mode(tracker: pd.DataFrame):
                 with st.spinner("Building resource-safe next-slate predictions..."):
                     preview_df = build_next_slate_preview(next_date_key, tuple(tuple(sorted(g.items())) for g in next_schedule))
                 if preview_df.empty:
-                    st.info("The next slate is scheduled, but there is not enough projected hitter data yet.")
+                    st.warning(
+                        "Probable pitchers are available, but no usable hitter pool was returned yet. "
+                        "BF Data checked the future-game roster and active rosters without inventing player names. "
+                        "The preview will populate automatically as MLB publishes the event roster or expected hitters."
+                    )
+                    pitcher_only = pd.DataFrame([{
+                        "Game": g.get("game_key", ""),
+                        "Venue": g.get("venue", "TBD"),
+                        "Away Starter": g.get("away_pitcher", "Starter Pending"),
+                        "Home Starter": g.get("home_pitcher", "Starter Pending"),
+                        "Research Stage": "PITCHER-ONLY EARLY SCOUT",
+                    } for g in next_schedule])
+                    st.markdown("### Pitcher-Only Early Scout")
+                    st.dataframe(pitcher_only, use_container_width=True, hide_index=True)
                 else:
                     st.markdown("### Early BF Targets")
                     display_existing_columns(
