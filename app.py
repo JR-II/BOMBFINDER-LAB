@@ -5955,13 +5955,76 @@ def _render_offday_snapshot_section(previous_board: pd.DataFrame, source_key: st
 def render_full_tracker_panel(tracker: pd.DataFrame, key_prefix: str = "tracker"):
     """Render the complete BF tracker in both active-slate and off-day modes."""
     st.subheader("Homerun Tracker")
-    st.caption("Tracker is broken into separate sections so Core Board, Top 12, and Per-Game HR results remain distinct and reviewable by date.")
+    st.caption(
+        "Season totals, selected-slate results, Core Board, Top 12, Per-Game HR, "
+        "saved board snapshots, combos, and daily accuracy history remain separate."
+    )
 
+    tracker = dedupe_tracker_rows(tracker.copy()) if tracker is not None else pd.DataFrame()
     combo_tracker_local = load_combo_tracker()
-    combo_summary_local = summarize_combo_tracker(combo_tracker_local)
     daily_summary_local = summarize_tracker_by_day(tracker)
 
-    date_options = available_tracker_dates(tracker)
+    def _tracker_stats(frame: pd.DataFrame) -> dict:
+        if frame is None or frame.empty:
+            return {"picks": 0, "hits": 0, "hr_total": 0, "pct": 0.0}
+        work = frame.copy()
+        hr_counts = pd.to_numeric(
+            work["hr_count"] if "hr_count" in work.columns else
+            work["result"] if "result" in work.columns else pd.Series(0, index=work.index),
+            errors="coerce",
+        ).fillna(0).astype(int)
+        picks = int(len(work))
+        hits = int((hr_counts > 0).sum())
+        hr_total = int(hr_counts.sum())
+        return {
+            "picks": picks,
+            "hits": hits,
+            "hr_total": hr_total,
+            "pct": round((hits / picks) * 100, 2) if picks else 0.0,
+        }
+
+    if tracker.empty:
+        tracker_work = pd.DataFrame(columns=["tracker_source"])
+    else:
+        tracker_work = tracker.copy()
+        if "tracker_source" not in tracker_work.columns:
+            tracker_work["tracker_source"] = "CORE_BOARD"
+        tracker_work["tracker_source"] = (
+            tracker_work["tracker_source"].fillna("CORE_BOARD")
+            .astype(str).str.strip().str.upper()
+        )
+
+    season_all = _tracker_stats(tracker_work)
+    season_core = _tracker_stats(
+        tracker_work[tracker_work["tracker_source"].eq("CORE_BOARD")]
+        if not tracker_work.empty else tracker_work
+    )
+    season_top12 = _tracker_stats(
+        tracker_work[tracker_work["tracker_source"].eq("TOP12")]
+        if not tracker_work.empty else tracker_work
+    )
+    season_game = _tracker_stats(
+        tracker_work[tracker_work["tracker_source"].eq("GAME_HR")]
+        if not tracker_work.empty else tracker_work
+    )
+
+    st.markdown("### Season Overview")
+    season_cols = st.columns(4)
+    season_blocks = [
+        ("All Predictions", season_all),
+        ("Core Board", season_core),
+        ("Top 12", season_top12),
+        ("Per-Game HR", season_game),
+    ]
+    for col, (label, stats) in zip(season_cols, season_blocks):
+        with col:
+            st.markdown(f"**{label}**")
+            st.metric("Season Picks", stats["picks"])
+            st.metric("Winning Picks", stats["hits"])
+            st.metric("Total HR Recorded", stats["hr_total"])
+            st.metric("Hit Rate", f'{stats["pct"]:.2f}%')
+
+    date_options = available_tracker_dates(tracker_work)
     selected_tracker_date = st.selectbox(
         "Review slate date",
         options=date_options,
@@ -5969,44 +6032,56 @@ def render_full_tracker_panel(tracker: pd.DataFrame, key_prefix: str = "tracker"
         key=f"{key_prefix}_review_slate_date",
     )
 
-    selected_source_summary = summarize_tracker_sources_for_date(tracker, selected_tracker_date)
-    if tracker is None or tracker.empty or "date" not in tracker.columns:
+    selected_source_summary = summarize_tracker_sources_for_date(
+        tracker_work, selected_tracker_date
+    )
+    if tracker_work.empty or "date" not in tracker_work.columns:
         selected_tracker = pd.DataFrame()
     else:
-        selected_tracker = tracker[
-            tracker["date"].astype("string").fillna("") == str(selected_tracker_date)
+        selected_tracker = tracker_work[
+            tracker_work["date"].astype("string").fillna("") == str(selected_tracker_date)
         ].copy()
+
     if "hr_count" not in selected_tracker.columns:
         selected_tracker["hr_count"] = pd.to_numeric(
-            selected_tracker["result"] if "result" in selected_tracker.columns else pd.Series(0, index=selected_tracker.index), errors="coerce"
+            selected_tracker["result"]
+            if "result" in selected_tracker.columns
+            else pd.Series(0, index=selected_tracker.index),
+            errors="coerce",
         ).fillna(0).astype(int)
 
-    st.markdown(f"### {selected_tracker_date} by Section")
-    s1, s2, s3 = st.columns(3)
-    with s1:
-        st.markdown("**Core Board**")
-        st.metric("Surfaced", selected_source_summary["CORE_BOARD"]["total"])
-        st.metric("HR Hit", selected_source_summary["CORE_BOARD"]["hits"])
-        st.metric("Hit Rate %", selected_source_summary["CORE_BOARD"]["pct"])
-    with s2:
-        st.markdown("**Top 12**")
-        st.metric("Surfaced", selected_source_summary["TOP12"]["total"])
-        st.metric("HR Hit", selected_source_summary["TOP12"]["hits"])
-        st.metric("Hit Rate %", selected_source_summary["TOP12"]["pct"])
-    with s3:
-        st.markdown("**Per-Game HR**")
-        st.metric("Surfaced", selected_source_summary["GAME_HR"]["total"])
-        st.metric("HR Hit", selected_source_summary["GAME_HR"]["hits"])
-        st.metric("Hit Rate %", selected_source_summary["GAME_HR"]["pct"])
+    selected_all = _tracker_stats(selected_tracker)
+    st.markdown(f"### Selected Slate — {selected_tracker_date}")
+    a1, a2, a3, a4 = st.columns(4)
+    a1.metric("All Surfaced", selected_all["picks"])
+    a2.metric("Winning Picks", selected_all["hits"])
+    a3.metric("Total HR Recorded", selected_all["hr_total"])
+    a4.metric("Overall Hit Rate", f'{selected_all["pct"]:.2f}%')
 
-    st.markdown("### Combo Section")
-    cx1, cx2, cx3 = st.columns(3)
-    cx1.metric("Today Combos", combo_summary_local["today_total"])
-    cx2.metric("Today Full Hits", combo_summary_local["today_full_hits"])
-    cx3.metric("Today Partial Hits", combo_summary_local["today_partial_hits"])
+    section_cols = st.columns(3)
+    for col, section_name, source_key in [
+        (section_cols[0], "Core Board", "CORE_BOARD"),
+        (section_cols[1], "Top 12", "TOP12"),
+        (section_cols[2], "Per-Game HR", "GAME_HR"),
+    ]:
+        summary_row = selected_source_summary.get(
+            source_key, {"total": 0, "hits": 0, "pct": 0.0}
+        )
+        section_frame = (
+            selected_tracker[selected_tracker["tracker_source"].eq(source_key)]
+            if not selected_tracker.empty and "tracker_source" in selected_tracker.columns
+            else pd.DataFrame()
+        )
+        section_hr_total = _tracker_stats(section_frame)["hr_total"]
+        with col:
+            st.markdown(f"**{section_name}**")
+            st.metric("Surfaced", summary_row.get("total", 0))
+            st.metric("Winning Picks", summary_row.get("hits", 0))
+            st.metric("Total HR", section_hr_total)
+            st.metric("Hit Rate", f'{safe_float(summary_row.get("pct"), 0.0):.2f}%')
 
-    st.divider()
     if not selected_tracker.empty:
+        st.divider()
         st.markdown("### Selected Date Split Tracker Tables")
         for section_name, source_key in [
             ("Core Board", "CORE_BOARD"),
@@ -6014,62 +6089,98 @@ def render_full_tracker_panel(tracker: pd.DataFrame, key_prefix: str = "tracker"
             ("Per-Game HR", "GAME_HR"),
         ]:
             section_df = selected_tracker[
-                selected_tracker["tracker_source"].astype(str).str.strip().str.upper() == source_key
+                selected_tracker["tracker_source"].eq(source_key)
             ].copy()
-            st.markdown(f"**{section_name}**")
-            if section_df.empty:
-                st.caption("No tracked rows in this section for selected date.")
-            else:
-                section_df["hr_count"] = pd.to_numeric(
-                    section_df["hr_count"], errors="coerce"
-                ).fillna(0).astype(int)
-                cols = [
-                    "player", "team", "game", "hr_probability", "hr_tier",
-                    "tracker_source", "hr_eligible", "result", "hr_count",
-                    "result_state", "game_state", "updated_at",
-                ]
-                display_existing_columns(
-                    section_df.sort_values(
-                        by=["hr_count", "result", "hr_probability", "player"],
-                        ascending=[False, False, False, True],
-                    ),
-                    cols,
-                )
+            with st.expander(
+                f"{section_name} — {len(section_df)} tracked picks",
+                expanded=(source_key == "CORE_BOARD"),
+            ):
+                if section_df.empty:
+                    st.caption("No tracked rows in this section for the selected date.")
+                else:
+                    section_df["hr_count"] = pd.to_numeric(
+                        section_df["hr_count"], errors="coerce"
+                    ).fillna(0).astype(int)
+                    section_df["result"] = pd.to_numeric(
+                        section_df.get("result", 0), errors="coerce"
+                    ).fillna(0).astype(int)
+                    display_existing_columns(
+                        section_df.sort_values(
+                            by=["hr_count", "result", "hr_probability", "player"],
+                            ascending=[False, False, False, True],
+                        ),
+                        [
+                            "player", "team", "game", "hr_probability", "hr_tier",
+                            "tracker_source", "hr_eligible", "result", "hr_count",
+                            "result_state", "game_state", "updated_at",
+                        ],
+                    )
     else:
-        st.caption("No tracker rows for selected date.")
+        st.info("No tracker rows are saved for the selected date.")
 
     selected_board_snapshot = load_daily_board_snapshot(selected_tracker_date)
     if not selected_board_snapshot.empty:
         st.divider()
-        st.markdown("### Saved Board Snapshot for Selected Date")
-        display_existing_columns(selected_board_snapshot, [
-            "Tracker Source", "Player", "Team", "Game", "Pitcher", "Lineup Spot",
-            "HR Probability %", "HR Tier", "Actual HR Today", "Matchup Advantage",
-            "HR Attackability Score", "EV", "Barrel%", "HardHit%", "AIR%",
-            "Ranking Reasons", "Why",
-        ])
-    else:
-        st.caption("No saved board snapshot found for selected date.")
+        with st.expander("Saved Board Snapshot for Selected Date", expanded=False):
+            display_existing_columns(
+                selected_board_snapshot,
+                [
+                    "Tracker Source", "Player", "Team", "Game", "Pitcher",
+                    "Lineup Spot", "HR Probability %", "HR Tier",
+                    "Actual HR Today", "Matchup Advantage",
+                    "HR Attackability Score", "EV", "Barrel%", "HardHit%",
+                    "AIR%", "Ranking Reasons", "Why",
+                ],
+            )
 
-    if not combo_tracker_local.empty:
-        st.divider()
-        st.markdown("### Combo Tracker")
+    st.divider()
+    st.markdown("### Combo Results")
+    if combo_tracker_local is None or combo_tracker_local.empty:
+        st.caption("No combo history is available.")
+    else:
         combo_view = combo_tracker_local[
-            combo_tracker_local["date"].astype("string").fillna("") == str(selected_tracker_date)
+            combo_tracker_local["date"].astype("string").fillna("")
+            == str(selected_tracker_date)
         ].copy()
         if combo_view.empty:
-            st.caption("No combos tracked for selected date.")
+            st.caption("No combos were tracked for the selected date.")
         else:
+            full_hits = int(
+                pd.to_numeric(combo_view.get("result", 0), errors="coerce")
+                .fillna(0).astype(int).sum()
+            )
+            partial_hits = int(
+                (
+                    pd.to_numeric(combo_view.get("legs_hit", 0), errors="coerce").fillna(0)
+                    > 0
+                ).sum()
+                - full_hits
+            )
+            partial_hits = max(0, partial_hits)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Tracked Combos", len(combo_view))
+            c2.metric("Full Hits", full_hits)
+            c3.metric("Partial Hits", partial_hits)
             display_existing_columns(
-                combo_view.sort_values(by=["combo_size", "combined_score"], ascending=[True, False]),
-                ["combo_label", "combo_size", "avg_leg_probability", "combined_score",
-                 "legs_hit", "total_legs", "result_state", "updated_at"],
+                combo_view.sort_values(
+                    by=["combo_size", "combined_score"],
+                    ascending=[True, False],
+                ),
+                [
+                    "combo_label", "combo_size", "avg_leg_probability",
+                    "combined_score", "legs_hit", "total_legs",
+                    "result_state", "updated_at",
+                ],
             )
 
     if not daily_summary_local.empty:
         st.divider()
         st.markdown("### Daily HR Prediction Accuracy History")
-        st.dataframe(dedupe_columns(daily_summary_local), use_container_width=True, hide_index=True)
+        st.dataframe(
+            dedupe_columns(daily_summary_local),
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
 def render_off_day_mode(tracker: pd.DataFrame):
@@ -6407,108 +6518,7 @@ with tabs[6]:
     )
 
 with tabs[7]:
-    st.subheader("Homerun Tracker")
-    st.caption("Tracker is broken into separate sections. Newly surfaced per-game picks are now added instead of being blocked after the first tracker write.")
-
-    date_options = available_tracker_dates(tracker)
-    selected_tracker_date = st.selectbox("Review slate date", options=date_options, index=0)
-
-    selected_source_summary = summarize_tracker_sources_for_date(tracker, selected_tracker_date)
-    selected_tracker = tracker[
-        tracker["date"].astype("string").fillna("") == str(selected_tracker_date)
-    ].copy()
-    if "hr_count" not in selected_tracker.columns:
-        selected_tracker["hr_count"] = pd.to_numeric(selected_tracker["result"] if "result" in selected_tracker.columns else pd.Series(0, index=selected_tracker.index), errors="coerce").fillna(0).astype(int)
-
-    st.markdown(f"### {selected_tracker_date} by Section")
-    s1, s2, s3 = st.columns(3)
-    with s1:
-        st.markdown("**Core Board**")
-        st.metric("Surfaced", selected_source_summary["CORE_BOARD"]["total"])
-        st.metric("HR Hit", selected_source_summary["CORE_BOARD"]["hits"])
-        st.metric("Hit Rate %", selected_source_summary["CORE_BOARD"]["pct"])
-    with s2:
-        st.markdown("**Top 12**")
-        st.metric("Surfaced", selected_source_summary["TOP12"]["total"])
-        st.metric("HR Hit", selected_source_summary["TOP12"]["hits"])
-        st.metric("Hit Rate %", selected_source_summary["TOP12"]["pct"])
-    with s3:
-        st.markdown("**Per-Game HR**")
-        st.metric("Surfaced", selected_source_summary["GAME_HR"]["total"])
-        st.metric("HR Hit", selected_source_summary["GAME_HR"]["hits"])
-        st.metric("Hit Rate %", selected_source_summary["GAME_HR"]["pct"])
-
-    st.markdown("### Today Combo Section")
-    cx1, cx2, cx3 = st.columns(3)
-    cx1.metric("Today Combos", combo_summary["today_total"])
-    cx2.metric("Today Full Hits", combo_summary["today_full_hits"])
-    cx3.metric("Today Partial Hits", combo_summary["today_partial_hits"])
-
-    st.divider()
-
-    if not selected_tracker.empty:
-        st.markdown("### Selected Date Split Tracker Tables")
-        for section_name, source_key in [("Core Board", "CORE_BOARD"), ("Top 12", "TOP12"), ("Per-Game HR", "GAME_HR")]:
-            section_df = selected_tracker[selected_tracker["tracker_source"].astype(str).str.strip().str.upper() == source_key].copy()
-            st.markdown(f"**{section_name}**")
-            if section_df.empty:
-                st.caption("No tracked rows in this section for selected date.")
-            else:
-                section_df["hr_count"] = pd.to_numeric(section_df["hr_count"], errors="coerce").fillna(0).astype(int)
-                st.dataframe(
-                    dedupe_columns(section_df.sort_values(
-                        by=["hr_count", "result", "hr_probability", "player"],
-                        ascending=[False, False, False, True]
-                    )[[
-                        "player", "team", "game", "hr_probability", "hr_tier",
-                        "tracker_source", "hr_eligible", "result", "hr_count",
-                        "result_state", "game_state", "updated_at"
-                    ]]),
-                    use_container_width=True,
-                    hide_index=True
-                )
-    else:
-        st.caption("No tracker rows for selected date.")
-
-    selected_board_snapshot = load_daily_board_snapshot(selected_tracker_date)
-    if not selected_board_snapshot.empty:
-        st.divider()
-        st.markdown("### Saved Board Snapshot for Selected Date")
-        snapshot_cols = [
-            "Tracker Source", "Player", "Team", "Game", "Pitcher", "Lineup Spot",
-            "HR Probability %", "HR Tier", "Actual HR Today", "Matchup Advantage",
-            "HR Attackability Score", "EV", "Barrel%", "HardHit%", "AIR%",
-            "Ranking Reasons", "Why"
-        ]
-        display_existing_columns(selected_board_snapshot, snapshot_cols)
-    else:
-        st.caption("No saved board snapshot found for selected date.")
-
-    if not combo_tracker.empty:
-        st.divider()
-        st.markdown("### Combo Tracker")
-        combo_view = combo_tracker[combo_tracker["date"].astype("string").fillna("") == str(selected_tracker_date)].copy()
-        if combo_view.empty:
-            st.caption("No combos tracked for selected date.")
-        else:
-            st.dataframe(
-                dedupe_columns(combo_view.sort_values(
-                    by=["combo_size", "combined_score"],
-                    ascending=[True, False]
-                )[[
-                    "combo_label", "combo_size", "avg_leg_probability",
-                    "combined_score", "legs_hit", "total_legs",
-                    "result_state", "updated_at"
-                ]]),
-                use_container_width=True,
-                hide_index=True
-            )
-
-    if not daily_summary.empty:
-        st.divider()
-        st.markdown("### Daily HR Prediction Accuracy History")
-        st.dataframe(dedupe_columns(daily_summary), use_container_width=True, hide_index=True)
-
+    render_full_tracker_panel(tracker, key_prefix="active_tracker")
 
 with tabs[8]:
     st.subheader("Lineup Watch")
