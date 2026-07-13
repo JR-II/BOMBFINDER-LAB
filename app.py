@@ -4045,11 +4045,6 @@ def build_daily_dataset(deep_bbe: bool = False):
     schedule = sort_schedule_rows(get_today_schedule())
     rows = []
 
-    # OFF-DAY FAST EXIT: do not load Savant, rosters, pitcher arsenals, weather,
-    # bullpens, or hitter stats when MLB has no games scheduled today.
-    if not schedule:
-        return pd.DataFrame(), []
-
     savant_batter_map = fetch_savant_batter_map(CURRENT_SEASON)
 
     candidate_map = {}
@@ -5777,18 +5772,60 @@ def build_next_slate_preview(next_date_key: str, schedule_tuple: tuple) -> pd.Da
     return out
 
 
+
+
+def _latest_previous_board(tracker: pd.DataFrame):
+    dates = [d for d in available_tracker_dates(tracker) if d != today_str()]
+    for d in dates:
+        board = load_daily_board_snapshot(d)
+        if board is not None and not board.empty:
+            return d, board
+    return None, pd.DataFrame()
+
+
+def _render_offday_snapshot_section(previous_board: pd.DataFrame, source_key: str | None, title: str, limit: int | None = None):
+    st.subheader(title)
+    if previous_board is None or previous_board.empty:
+        st.info("No saved previous-slate board is available yet.")
+        return
+    view = previous_board.copy()
+    if source_key and "Tracker Source" in view.columns:
+        view = view[view["Tracker Source"].astype(str).str.strip().str.upper().eq(source_key.upper())].copy()
+    if view.empty:
+        st.info("That section was not saved in the latest previous-slate snapshot.")
+        return
+    if "Rank" not in view.columns:
+        view = view.reset_index(drop=True)
+        view.insert(0, "Rank", range(1, len(view) + 1))
+    if limit is not None:
+        view = view.head(limit)
+    display_existing_columns(
+        view,
+        ["Rank", "Tracker Source", "Player", "Team", "Game", "Pitcher", "Lineup Spot",
+         "Lineup Source", "HR Probability %", "HR Tier", "Matchup Advantage",
+         "HR Attackability Score", "Barrel%", "HardHit%", "AIR%", "GroundBall%",
+         "xSLG", "Ranking Reasons", "Why"],
+    )
+
+
 def render_off_day_mode(tracker: pd.DataFrame):
     next_date_key, next_schedule = find_next_scheduled_slate(today_str(), max_days=14)
+    previous_date, previous_board = _latest_previous_board(tracker)
+
     st.markdown("""
     <div style="border:1px solid rgba(255,209,102,.45);background:rgba(255,209,102,.08);
                 border-radius:14px;padding:14px 16px;margin:8px 0 12px 0;">
-      <div style="font-size:.72rem;font-weight:900;letter-spacing:.12em;color:#ffd166;">MLB OFF-DAY MODE · NEXT-SLATE ENABLED · BUILD 3</div>
+      <div style="font-size:.72rem;font-weight:900;letter-spacing:.12em;color:#ffd166;">MLB OFF-DAY MODE · FULL BOARD ACCESS</div>
       <div style="font-size:1.25rem;font-weight:950;margin-top:4px;">No official MLB games are scheduled today.</div>
-      <div style="color:#b9bec8;margin-top:5px;">BF Data remains available and automatically points to the next scheduled MLB slate.</div>
+      <div style="color:#b9bec8;margin-top:5px;">All BF Data sections remain available. Next-slate research is separate from official locks and tracking.</div>
     </div>
     """, unsafe_allow_html=True)
 
-    tab_names = ["Next Slate Preview", "Previous Slate Review", "Homerun Tracker", "HR Combo History", "Lineup Watch"]
+    tab_names = [
+        "Next Slate Preview", "JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack",
+        "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker",
+        "Previous Slate Review", "Lineup Watch", "Live Weather"
+    ]
     off_tabs = st.tabs(tab_names)
 
     with off_tabs[0]:
@@ -5796,7 +5833,11 @@ def render_off_day_mode(tracker: pd.DataFrame):
             st.warning("No MLB slate was found within the next 14 days.")
         else:
             next_dt = datetime.strptime(next_date_key, "%Y-%m-%d")
-            st.subheader(f"Next Slate Preview — {next_dt.strftime('%A, %B %-d')}")
+            try:
+                date_label = next_dt.strftime("%A, %B %-d")
+            except Exception:
+                date_label = next_dt.strftime("%A, %B %d").replace(" 0", " ")
+            st.subheader(f"Next Slate Preview — {date_label}")
             st.caption("Early research only • projected lineups • probable pitchers may change • never locked or tracked.")
             m1, m2, m3 = st.columns(3)
             m1.metric("Next Slate Games", len(next_schedule))
@@ -5806,7 +5847,6 @@ def render_off_day_mode(tracker: pd.DataFrame):
                 for g in next_schedule
             )
             m3.metric("Probable Pitchers Posted", f"{probable_count}/{len(next_schedule)*2}")
-
             schedule_view = pd.DataFrame([{
                 "Time": format_game_time_et(g.get("game_time", "")),
                 "Game": g.get("game_key", ""),
@@ -5815,8 +5855,7 @@ def render_off_day_mode(tracker: pd.DataFrame):
                 "Home Starter": g.get("home_pitcher", "Starter Pending"),
             } for g in next_schedule])
             st.dataframe(schedule_view, use_container_width=True, hide_index=True)
-
-            if st.button("Generate Next Slate Predictions", type="primary", use_container_width=True):
+            if st.button("Generate Next Slate Predictions", type="primary", use_container_width=True, key="offday_generate_next_slate"):
                 st.session_state["build_next_slate_preview"] = next_date_key
             if st.session_state.get("build_next_slate_preview") == next_date_key:
                 with st.spinner("Building resource-safe next-slate predictions..."):
@@ -5825,7 +5864,6 @@ def render_off_day_mode(tracker: pd.DataFrame):
                     st.info("The next slate is scheduled, but there is not enough projected hitter data yet.")
                 else:
                     st.markdown("### Early BF Targets")
-                    st.caption("Use this as a watchlist. Finalize only after starters, lineups, weather, and roof status are official.")
                     display_existing_columns(
                         preview_df.head(30),
                         ["Slate Rank", "Player", "Team", "Game", "Game Time", "Opponent Pitcher",
@@ -5834,23 +5872,37 @@ def render_off_day_mode(tracker: pd.DataFrame):
                     )
 
     with off_tabs[1]:
-        st.subheader("Previous Slate Review")
-        dates = [d for d in available_tracker_dates(tracker) if d != today_str()]
-        if not dates:
-            st.info("No previous board snapshots are available yet.")
-        else:
-            selected_date = st.selectbox("Select previous slate", dates, key="offday_previous_slate")
-            previous_board = load_daily_board_snapshot(selected_date)
-            if previous_board.empty:
-                st.info("No saved prediction board exists for that date.")
-            else:
-                display_existing_columns(
-                    previous_board,
-                    ["Tracker Source", "Player", "Team", "Game", "Pitcher", "HR Probability %",
-                     "HR Tier", "Lineup Source", "Matchup Advantage", "Ranking Reasons"],
-                )
-
+        _render_offday_snapshot_section(previous_board, "CORE_BOARD", f"JR HR Board — Previous Slate {previous_date or ''}", 30)
     with off_tabs[2]:
+        _render_offday_snapshot_section(previous_board, "TOP12", f"Top 12 — Previous Slate {previous_date or ''}", 12)
+    with off_tabs[3]:
+        _render_offday_snapshot_section(previous_board, None, f"Top HR Targets — Previous Slate {previous_date or ''}", 25)
+    with off_tabs[4]:
+        st.subheader("Pitchers to Attack")
+        st.info("There is no official pitcher-attack board on an MLB off-day. Use Next Slate Preview for probable starters; the official attack board returns when the slate becomes active.")
+        if next_schedule:
+            display_existing_columns(pd.DataFrame([{
+                "Game": g.get("game_key", ""), "Away Starter": g.get("away_pitcher", "Starter Pending"),
+                "Home Starter": g.get("home_pitcher", "Starter Pending"), "Venue": g.get("venue", "TBD")
+            } for g in next_schedule]), ["Game", "Away Starter", "Home Starter", "Venue"])
+    with off_tabs[5]:
+        st.subheader("HR Combos")
+        combo_history = load_combo_tracker()
+        if combo_history.empty:
+            st.info("No combo history is available. New official combos generate only on active slates.")
+        else:
+            display_existing_columns(combo_history.sort_values(["date", "updated_at"], ascending=[False, False]),
+                                     ["date", "combo_label", "combo_size", "games", "result_state", "legs_hit", "total_legs", "updated_at"])
+    with off_tabs[6]:
+        st.subheader("Hits + Runs + RBIs")
+        st.info("No official H+R+RBI slate is generated on an off-day. This tab remains visible and will repopulate automatically on the next active slate.")
+    with off_tabs[7]:
+        st.subheader("Batter Breakdown")
+        if previous_board is None or previous_board.empty:
+            st.info("No previous batter snapshot is available.")
+        else:
+            display_existing_columns(previous_board.head(40), ["Player", "Team", "Game", "Pitcher", "Barrel%", "HardHit%", "AIR%", "GroundBall%", "xSLG", "xwOBA", "Ranking Reasons"])
+    with off_tabs[8]:
         st.subheader("Homerun Tracker")
         summary = summarize_tracker(tracker)
         a, b, c = st.columns(3)
@@ -5860,36 +5912,47 @@ def render_off_day_mode(tracker: pd.DataFrame):
         if tracker is None or tracker.empty:
             st.info("No tracker history is available.")
         else:
-            display_existing_columns(
-                tracker.sort_values(["date", "updated_at"], ascending=[False, False]),
-                ["date", "player", "team", "game", "tracker_source", "result_state", "hr_count", "updated_at"],
-            )
-
-    with off_tabs[3]:
-        st.subheader("HR Combo History")
-        combo_history = load_combo_tracker()
-        if combo_history.empty:
-            st.info("No combo history is available.")
+            display_existing_columns(tracker.sort_values(["date", "updated_at"], ascending=[False, False]),
+                                     ["date", "player", "team", "game", "tracker_source", "result_state", "hr_count", "updated_at"])
+    with off_tabs[9]:
+        st.subheader("Previous Slate Review")
+        dates = [d for d in available_tracker_dates(tracker) if d != today_str()]
+        if not dates:
+            st.info("No previous board snapshots are available yet.")
         else:
-            display_existing_columns(
-                combo_history.sort_values(["date", "updated_at"], ascending=[False, False]),
-                ["date", "combo_label", "combo_size", "games", "result_state", "legs_hit", "total_legs", "updated_at"],
-            )
-
-    with off_tabs[4]:
+            selected_date = st.selectbox("Select previous slate", dates, key="offday_previous_slate")
+            board = load_daily_board_snapshot(selected_date)
+            if board.empty:
+                st.info("No saved prediction board exists for that date.")
+            else:
+                display_existing_columns(board, ["Tracker Source", "Player", "Team", "Game", "Pitcher", "HR Probability %", "HR Tier", "Lineup Source", "Matchup Advantage", "Ranking Reasons"])
+    with off_tabs[10]:
         st.subheader("Lineup Watch")
         if not next_schedule:
             st.info("No upcoming slate is available.")
         else:
-            st.info("Official lineups are not posted yet. BF Data will only label a lineup CONFIRMED when MLB supplies all nine batting-order positions.")
-            lineup_rows = []
+            st.info("Lineups remain PROJECTED until MLB officially supplies all nine batting-order positions.")
+            rows = []
             for g in next_schedule:
-                lineup_rows.extend([
-                    {"Game": g["game_key"], "Team": team_abbr(g["away_team"]), "Starter": g["home_pitcher"], "Lineup": "PROJECTED"},
-                    {"Game": g["game_key"], "Team": team_abbr(g["home_team"]), "Starter": g["away_pitcher"], "Lineup": "PROJECTED"},
+                rows.extend([
+                    {"Game": g["game_key"], "Team": team_abbr(g["away_team"]), "Opposing Starter": g["home_pitcher"], "Lineup": "PROJECTED"},
+                    {"Game": g["game_key"], "Team": team_abbr(g["home_team"]), "Opposing Starter": g["away_pitcher"], "Lineup": "PROJECTED"},
                 ])
-            st.dataframe(pd.DataFrame(lineup_rows), use_container_width=True, hide_index=True)
-
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    with off_tabs[11]:
+        st.subheader("Live Weather")
+        st.info("Game-time weather is preliminary until the next slate is closer. Official weather cards return on the active slate.")
+        if next_schedule:
+            weather_rows = []
+            for g in next_schedule:
+                home_abbr = team_abbr(g.get("home_team", ""))
+                weather = fetch_weather_for_park(home_abbr)
+                weather_rows.append({
+                    "Game": g.get("game_key", ""), "Venue": g.get("venue", "TBD"),
+                    "TempF": weather.get("TempF", 72.0), "WindMPH": weather.get("WindMPH", 7.0),
+                    "Weather Note": weather.get("WeatherNote", "Preliminary")
+                })
+            st.dataframe(pd.DataFrame(weather_rows), use_container_width=True, hide_index=True)
 
 
 c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
@@ -5908,36 +5971,23 @@ with c1:
 deep_bbe_mode = bool(st.session_state.get("deep_l10_bbe", DEFAULT_DEEP_L10_BBE))
 live_df, schedule = build_daily_dataset(deep_bbe=deep_bbe_mode)
 schedule = sort_schedule_rows(schedule)
-lineup_mode = get_lineup_mode(schedule) if schedule else "OFF-DAY"
 
-# Header metrics must remain visible even when today's slate is empty.
-with c2:
-    st.metric("Games On Slate", len(schedule))
-with c3:
-    st.metric("Lineup Mode", lineup_mode)
-with c4:
-    if not schedule:
-        st.caption("MLB off-day detected • BF Data is switching to the next scheduled slate")
-    else:
-        st.caption(f"Projected teams live • update rebuilds pregame confirmed locks • last refresh: {datetime.now().strftime('%Y-%m-%d %I:%M %p')}")
-
-# IMPORTANT: handle a league off-day before locks, tracker sync, combos, or live
-# result calls. This guarantees the tabs remain visible even when today has zero
-# games and prevents the old empty-board warning from taking over the page.
+# Off-day mode must branch before locks, combos, tracker syncing, or empty-board stop logic.
+# This preserves every major BF Data tab while keeping future research separate from official tracking.
 if not schedule:
-    tracker = load_tracker()
-    render_off_day_mode(tracker)
+    with c2:
+        st.metric("Games On Slate", 0)
+    with c3:
+        st.metric("Lineup Mode", "OFF-DAY")
+    with c4:
+        st.caption("MLB off-day detected • all BF Data sections remain available • next scheduled slate enabled")
+    st.session_state.manual_refresh_trigger = False
+    render_off_day_mode(load_tracker())
     st.stop()
 
 locked_df_raw = ensure_daily_board_lock(live_df, schedule)
 
-# A schedule can exist before enough hitter data is available. Keep the app
-# usable and show next-slate/review tools instead of collapsing the interface.
-if locked_df_raw is None or locked_df_raw.empty:
-    tracker = load_tracker()
-    st.warning("Today's games are scheduled, but hitter data is not ready yet. BF Data remains available below.")
-    render_off_day_mode(tracker)
-    st.stop()
+lineup_mode = get_lineup_mode(schedule) if schedule else "PROJECTED"
 
 # Build and save the prediction/tracker pool BEFORE adding live results.
 # This prevents post-HR result data from rewriting the prediction board.
@@ -5964,13 +6014,22 @@ source_summary = summarize_tracker_sources(tracker)
 daily_summary = summarize_tracker_by_day(tracker)
 combo_summary = summarize_combo_tracker(combo_tracker)
 
-# Replace the generic caption with confirmed-lock detail once a real slate exists.
+with c2:
+    st.metric("Games On Slate", len(schedule))
+with c3:
+    st.metric("Lineup Mode", lineup_mode)
 with c4:
     confirmed_locked = 0
     if not locked_df.empty and "lock_scope" in locked_df.columns:
         confirmed_locked = int((locked_df["lock_scope"].astype(str) == "CONFIRMED_TEAM").sum())
     if confirmed_locked > 0:
-        st.caption(f"Confirmed teams pregame-rebuild on update • locked confirmed rows: {confirmed_locked}")
+        st.caption(f"Projected teams stay live • confirmed teams pregame-rebuild on update • locked confirmed rows: {confirmed_locked}")
+    else:
+        st.caption(f"Projected teams live • update rebuilds pregame confirmed locks • last refresh: {datetime.now().strftime('%Y-%m-%d %I:%M %p')}")
+
+if locked_df.empty:
+    st.warning("No games or hitter data loaded.")
+    st.stop()
 
 base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker"]
 schedule = sort_schedule_rows(schedule)
