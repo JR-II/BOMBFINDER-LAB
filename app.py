@@ -5230,7 +5230,7 @@ def summarize_tracker_sources_for_date(df: pd.DataFrame, date_key: str) -> dict:
     if "tracker_source" not in work.columns:
         work["tracker_source"] = "CORE_BOARD"
     if "hr_count" not in work.columns:
-        work["hr_count"] = pd.to_numeric(work.get("result", 0), errors="coerce").fillna(0)
+        work["hr_count"] = pd.to_numeric(work["result"] if "result" in work.columns else pd.Series(0, index=work.index), errors="coerce").fillna(0)
     work["tracker_source"] = work["tracker_source"].fillna("CORE_BOARD").astype(str).str.strip().str.upper()
     work["result_num"] = pd.to_numeric(work["result"], errors="coerce").fillna(0).astype(int)
     work["hr_count_num"] = pd.to_numeric(work["hr_count"], errors="coerce").fillna(0).astype(int)
@@ -5978,7 +5978,7 @@ def render_full_tracker_panel(tracker: pd.DataFrame, key_prefix: str = "tracker"
         ].copy()
     if "hr_count" not in selected_tracker.columns:
         selected_tracker["hr_count"] = pd.to_numeric(
-            selected_tracker.get("result", 0), errors="coerce"
+            selected_tracker["result"] if "result" in selected_tracker.columns else pd.Series(0, index=selected_tracker.index), errors="coerce"
         ).fillna(0).astype(int)
 
     st.markdown(f"### {selected_tracker_date} by Section")
@@ -6418,7 +6418,7 @@ with tabs[7]:
         tracker["date"].astype("string").fillna("") == str(selected_tracker_date)
     ].copy()
     if "hr_count" not in selected_tracker.columns:
-        selected_tracker["hr_count"] = pd.to_numeric(selected_tracker.get("result", 0), errors="coerce").fillna(0).astype(int)
+        selected_tracker["hr_count"] = pd.to_numeric(selected_tracker["result"] if "result" in selected_tracker.columns else pd.Series(0, index=selected_tracker.index), errors="coerce").fillna(0).astype(int)
 
     st.markdown(f"### {selected_tracker_date} by Section")
     s1, s2, s3 = st.columns(3)
