@@ -6563,6 +6563,13 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
 </div>'''
 
 
+def _render_bf_html(html_text: str):
+    """Render generated BF HTML without Markdown treating indented tags as code."""
+    compact = re.sub(r">\s+<", "><", str(html_text).strip())
+    compact = "\n".join(line.strip() for line in compact.splitlines())
+    st.markdown(compact, unsafe_allow_html=True)
+
+
 def _early_matchup_card_html(row: pd.Series, rank) -> str:
     player = escape(_display_value(row.get("Player")))
     pitcher = escape(_display_value(row.get("Opponent Pitcher")))
@@ -6697,14 +6704,14 @@ def render_early_watchlist_cards(preview_df: pd.DataFrame, max_cards: int = 6):
         player = _display_value(row.get("Player"))
         pitcher = _display_value(row.get("Opponent Pitcher"))
         with st.expander(f"Open matchup card — {player} vs {pitcher}", expanded=False):
-            st.markdown(_early_matchup_card_html(row, rank), unsafe_allow_html=True)
+            _render_bf_html(_early_matchup_card_html(row, rank))
 
 def render_player_card(row: pd.Series, rank_override=None):
     rank = rank_override if rank_override is not None else row.get("Rank", "—")
     player = _display_value(row.get("Player"))
     pitcher = _display_value(row.get("Pitcher"))
 
-    st.markdown(_bf_v2_card_html(row, rank, early=False), unsafe_allow_html=True)
+    _render_bf_html(_bf_v2_card_html(row, rank, early=False))
 
     with st.expander(f"Open matchup card — {player} vs {pitcher}", expanded=False):
         st.markdown(_match_card_html(row, rank_override=rank), unsafe_allow_html=True)
