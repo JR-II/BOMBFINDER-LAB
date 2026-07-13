@@ -351,6 +351,50 @@ hr { margin-top: .38rem !important; margin-bottom: .38rem !important; }
 .bf-bvp-grid{grid-template-columns:repeat(auto-fit,minmax(82px,1fr)) !important;}
 @media(max-width:640px){.bf-bvp-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}.bf-pitch-note{font-size:.46rem !important;}}
 
+
+/* BF DATA V2 DECISION CARDS */
+.bf-v2-card{border:1px solid rgba(255,255,255,.12);border-radius:14px;background:#0c1119;padding:10px 11px;margin:7px 0 8px}
+.bf-v2-card.primary{border-color:rgba(53,208,127,.72)}
+.bf-v2-card.strong{border-color:rgba(74,135,255,.62)}
+.bf-v2-card.sleeper{border-color:rgba(195,107,255,.60)}
+.bf-v2-card.early{border-color:rgba(255,209,102,.58);background:linear-gradient(90deg,#11151d,#0c1119)}
+.bf-v2-head{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:start}
+.bf-v2-name{font-weight:950;font-size:.98rem;line-height:1.08;color:#f7f9ff}
+.bf-v2-meta{font-size:.68rem;color:#97a2b5;margin-top:3px}
+.bf-v2-role-row{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-top:7px}
+.bf-v2-role{display:inline-flex;align-items:center;border-radius:999px;padding:3px 8px;font-size:.61rem;font-weight:950;letter-spacing:.08em}
+.bf-v2-role.primary{color:#61f1a3;border:1px solid #2bd17f;background:rgba(43,209,127,.10)}
+.bf-v2-role.strong{color:#79a9ff;border:1px solid #4d85e6;background:rgba(77,133,230,.10)}
+.bf-v2-role.alt{color:#d3d6dd;border:1px solid #747b88;background:rgba(116,123,136,.10)}
+.bf-v2-role.sleeper{color:#d995ff;border:1px solid #9c57c6;background:rgba(156,87,198,.11)}
+.bf-v2-role.early{color:#ffe08a;border:1px solid #d7a92c;background:rgba(215,169,44,.10)}
+.bf-v2-grade{display:inline-flex;align-items:center;border-radius:7px;padding:3px 7px;font-weight:950;font-size:.76rem;background:#151b25;border:1px solid rgba(255,255,255,.13)}
+.bf-v2-delta{font-size:.60rem;color:#929caf;font-weight:850}
+.bf-v2-scores{display:grid;grid-template-columns:repeat(3,58px);gap:5px}
+.bf-v2-score{background:#111824;border:1px solid rgba(255,255,255,.10);border-radius:9px;text-align:center;padding:4px}
+.bf-v2-score b{display:block;color:#6d9cff;font-size:.50rem;letter-spacing:.10em}
+.bf-v2-score span{display:block;font-size:.88rem;font-weight:950;margin-top:2px}
+.bf-v2-badges{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px;color:#aeb8c8;font-size:.61rem;font-weight:800}
+.bf-v2-why{margin-top:7px;padding-top:6px;border-top:1px solid rgba(255,255,255,.07);font-size:.64rem;color:#b8c1cf;line-height:1.3}
+.bf-v2-why b{color:#75a6ff;letter-spacing:.07em;font-size:.56rem}
+.bf-v2-advanced{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:5px;margin-top:7px}
+.bf-v2-advanced>div{background:#101722;border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:5px;text-align:center}
+.bf-v2-advanced small{display:block;color:#8090a8;font-size:.47rem;letter-spacing:.08em;font-weight:900}
+.bf-v2-advanced strong{display:block;color:#f4f7fb;font-size:.74rem;margin-top:2px}
+.bf-v2-confidence{margin-top:7px}
+.bf-v2-confidence-head{display:flex;justify-content:space-between;font-size:.56rem;font-weight:900;color:#aeb8c8;margin-bottom:3px}
+.bf-v2-confidence-track{height:5px;border-radius:999px;background:#202938;overflow:hidden}
+.bf-v2-confidence-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#4f83ff,#35d07f)}
+.bf-v2-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.bf-v2-expand-summary{margin:5px 0 8px;padding:7px 8px;border:1px solid rgba(255,255,255,.09);border-radius:9px;background:#0e141e}
+@media(max-width:900px){.bf-v2-grid{grid-template-columns:1fr}}
+@media(max-width:640px){
+.bf-v2-card{padding:8px 9px;margin:6px 0}.bf-v2-name{font-size:.86rem}.bf-v2-meta{font-size:.59rem}
+.bf-v2-scores{grid-template-columns:repeat(3,48px)}.bf-v2-score span{font-size:.76rem}.bf-v2-score b{font-size:.43rem}
+.bf-v2-role{font-size:.52rem;padding:2px 6px}.bf-v2-grade{font-size:.66rem;padding:2px 6px}
+.bf-v2-badges{font-size:.53rem}.bf-v2-why{font-size:.56rem}.bf-v2-advanced{gap:3px}
+.bf-v2-advanced small{font-size:.39rem}.bf-v2-advanced strong{font-size:.62rem}}
+
 </style>
 <div class="bf-hero">
     <div class="bf-kicker">BF DATA PRO LAB</div>
@@ -6340,36 +6384,182 @@ def _compact_reason_breakdown(row: pd.Series) -> str:
     )
 
 
-def render_player_card(row: pd.Series, rank_override=None):
-    rank = rank_override if rank_override is not None else row.get("Rank", "—")
+
+def _bf_v2_role(rank, quality_score: float, grade: str, early: bool = False):
+    if early:
+        return "EARLY WATCHLIST", "early"
+    try:
+        rank_num = int(rank)
+    except Exception:
+        rank_num = 99
+    if rank_num == 1:
+        return "PRIMARY TARGET", "primary"
+    if rank_num == 2 or quality_score >= 88:
+        return "STRONG PAIR", "strong"
+    if rank_num <= 4 or str(grade).startswith("A"):
+        return "ALTERNATE", "alt"
+    return "SLEEPER", "sleeper"
+
+
+def _bf_v2_confidence(row: pd.Series, early: bool = False) -> float:
+    if early:
+        label = str(row.get("Research Confidence", "LOW")).upper()
+        return {"MEDIUM": 62.0, "LOW-MEDIUM": 48.0, "LOW": 34.0}.get(label, 30.0)
+    quality = safe_float(row.get("Prediction Quality Score"), 0.0)
+    matchup = safe_float(row.get("Matchup Advantage Score"), 0.0)
+    hrp = safe_float(row.get("HR Probability %"), 0.0)
+    confirmed = str(row.get("Lineup Source", "")).upper() == "CONFIRMED"
+    return round(clip(quality * .56 + matchup * .25 + hrp * .55 + (8 if confirmed else 0), 0, 99), 1)
+
+
+def _bf_v2_reason_items(row: pd.Series, early: bool = False) -> list[str]:
+    reasons = []
+    barrel = safe_float(row.get("Barrel%"), 0.0)
+    hard_hit = safe_float(row.get("HardHit%"), 0.0)
+    air = safe_float(row.get("AIR%"), 0.0)
+    gb = safe_float(row.get("GroundBall%"), 0.0)
+    ev = safe_float(row.get("EV"), 0.0)
+    xslg = safe_float(row.get("xSLG"), 0.0)
+    pitch_hr9 = safe_float(row.get("Pitcher_HR9_Last7", row.get("Pitcher HR/9")), 0.0)
+    attack = safe_float(row.get("HR Attackability Score"), 0.0)
+    weather = safe_float(row.get("WeatherBoost"), 0.0)
+    recent_hr = safe_int(row.get("Recent HR", row.get("recent_hr")), 0)
+
+    if barrel >= 14:
+        reasons.append("Elite barrel profile")
+    elif barrel >= 10:
+        reasons.append("Strong barrel profile")
+    if hard_hit >= 45:
+        reasons.append("High hard-contact rate")
+    if air >= 58 and gb < 48:
+        reasons.append("Favorable air-ball shape")
+    elif gb >= 50:
+        reasons.append("Ground-ball risk")
+    if ev >= 92:
+        reasons.append("Elite exit velocity")
+    if xslg >= .500:
+        reasons.append("Strong expected slugging")
+    if pitch_hr9 >= 1.5:
+        reasons.append("Attackable pitcher HR/9")
+    elif attack >= 24:
+        reasons.append("Attackable pitcher profile")
+    if weather >= 1.5:
+        reasons.append("Carry-weather boost")
+    if recent_hr >= 2:
+        reasons.append("Recent HR form")
+    if early:
+        reasons.append("Lineup remains unconfirmed")
+    if not reasons:
+        raw = str(row.get("Ranking Reasons", row.get("Why", "Blended BF matchup profile")))
+        reasons = [x.strip() for x in raw.split("|") if x.strip()][:4]
+    return reasons[:5]
+
+
+def _bf_v2_badges(row: pd.Series, early: bool = False) -> list[str]:
+    badges = []
+    if early:
+        badges.extend(["🟡 EARLY", "📋 EXPECTED LINEUP"])
+    else:
+        if str(row.get("Lineup Source", "")).upper() == "CONFIRMED":
+            badges.append("✅ CONFIRMED")
+        if str(row.get("Elite HR Look", "")).upper() == "YES":
+            badges.append("🔥 CORE")
+    if safe_float(row.get("Barrel%"), 0.0) >= 12:
+        badges.append("⚡ BARREL GOD")
+    if safe_float(row.get("HR Attackability Score"), 0.0) >= 24:
+        badges.append("🟢 ATTACK PITCHER")
+    if safe_float(row.get("WeatherBoost"), 0.0) >= 1.5:
+        badges.append("🌬 CARRY")
+    if str(row.get("Recent Trend", "")).upper() in {"HOT", "LIVE"} or safe_int(row.get("Recent HR"), 0) >= 2:
+        badges.append("📈 HOT")
+    return badges[:5]
+
+
+def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
     player = _display_value(row.get("Player"))
     team = _display_value(row.get("Team"))
     game = _display_value(row.get("Game"))
-    pitcher = _display_value(row.get("Pitcher"))
-    hr_prob = safe_float(row.get("HR Probability %"), 0.0)
-    matchup_score = safe_float(row.get("Matchup Advantage Score"), 0.0)
-    hr_attack_pct = safe_float(row.get("HR Attackability %", _attackability_pct(row.get("HR Attackability Score", 0))), 0.0)
-    authority_score = safe_float(row.get("Statcast Authority Score"), 0.0)
-    l10_bbe_quality = safe_float(row.get("L10 BBE Quality"), 0.0)
-    overall_score = clip((matchup_score * 1.25) + (hr_attack_pct * .18) + (hr_prob * .65), 0, 99)
-    hr_score = clip(max(hr_prob * 3.55, authority_score * 2.1, l10_bbe_quality), 0, 99)
-    k_score = clip(100 - max(0, safe_float(row.get("GroundBall%"), 0) - 35) * 1.3 + max(0, safe_float(row.get("AIR%"), 0) - 50) * .35, 0, 99)
-    actual_hr = safe_int(row.get("Actual HR Today"), 0)
-    hit = f" · HR HIT {actual_hr}" if actual_hr > 0 else ""
+    pitcher = _display_value(row.get("Opponent Pitcher" if early else "Pitcher"))
 
-    quick_html = f'''
-<div class="bf-quick-row">
-  <div><div class="bf-quick-player">#{escape(str(rank))} {escape(player)}</div><div class="bf-quick-sub">{escape(team)} • {escape(game)}</div></div>
-  <div><div class="bf-quick-player">vs {escape(pitcher)}</div><div class="bf-quick-sub">HR {hr_prob:.1f}%{escape(hit)}</div></div>
-  <div class="bf-mini-score"><b>OVR</b><span>{overall_score:.0f}</span></div>
-  <div class="bf-mini-score"><b>HR</b><span>{hr_score:.0f}</span></div>
-  <div class="bf-mini-score"><b>K</b><span>{k_score:.0f}</span></div>
-  {_compact_reason_breakdown(row)}
+    early_score = safe_float(row.get("Early BF Score"), 0.0)
+    grade = str(row.get("Prediction Quality Grade", _letter_grade(early_score / 3.0) if early else "—"))
+    quality = safe_float(row.get("Prediction Quality Score"), clip(early_score / 3.0, 0, 99) if early else 0.0)
+    edge = safe_float(row.get("Matchup Advantage Score"), clip(early_score / 3.1, 0, 99) if early else 0.0)
+    pitch_fit = safe_float(row.get("Pitch Matchup Score"), safe_float(row.get("Pitcher HR/9"), 0.0) * 35 + 35 if early else 0.0)
+    pitch_fit = clip(pitch_fit if early else pitch_fit * 10 + 40, 0, 99)
+
+    role_text, role_class = _bf_v2_role(rank, quality, grade, early=early)
+    confidence = _bf_v2_confidence(row, early=early)
+    badges = _bf_v2_badges(row, early=early)
+    reasons = _bf_v2_reason_items(row, early=early)
+
+    moon = safe_float(row.get("Moonshot Score"), clip(safe_float(row.get("Barrel%"), 0) * 3.2 + safe_float(row.get("HardHit%"), 0) * .65, 0, 99))
+    two_hr = safe_float(row.get("2 HR Score"), clip(moon * .58 + safe_int(row.get("Recent HR"), 0) * 5, 0, 99))
+    nuke = safe_float(row.get("Nuke Score"), clip((quality + moon + edge) / 3, 0, 99))
+    stack = safe_float(row.get("Stack Score"), clip(edge * .55 + pitch_fit * .45, 0, 99))
+    actual_hr = safe_int(row.get("Actual HR Today"), 0)
+
+    hit_badge = f" · HR {actual_hr}" if actual_hr > 0 else ""
+    data_level = str(row.get("Data Level", "")).strip()
+    meta_extra = f" · {escape(data_level)}" if early and data_level else ""
+    card_class = "early" if early else role_class
+    badge_html = "".join(f"<span>{escape(str(x))}</span>" for x in badges)
+    reason_html = " · ".join(escape(str(x)) for x in reasons)
+
+    return f'''
+<div class="bf-v2-card {card_class}">
+  <div class="bf-v2-head">
+    <div>
+      <div class="bf-v2-name">#{escape(str(rank))} {escape(player)}{escape(hit_badge)}</div>
+      <div class="bf-v2-role-row">
+        <span class="bf-v2-role {role_class}">{escape(role_text)}</span>
+        <span class="bf-v2-grade">{escape(grade)}</span>
+        <span class="bf-v2-delta">CONF {confidence:.0f}{meta_extra}</span>
+      </div>
+      <div class="bf-v2-meta">{escape(team)} · {escape(game)} · vs {escape(pitcher)}</div>
+    </div>
+    <div class="bf-v2-scores">
+      <div class="bf-v2-score"><b>EDGE</b><span>{edge:.1f}</span></div>
+      <div class="bf-v2-score"><b>GRADE</b><span>{escape(grade)}</span></div>
+      <div class="bf-v2-score"><b>PITCH</b><span>{pitch_fit:.0f}</span></div>
+    </div>
+  </div>
+  <div class="bf-v2-badges">{badge_html}</div>
+  <div class="bf-v2-advanced">
+    <div><small>QUALITY</small><strong>{quality:.0f}</strong></div>
+    <div><small>MOONSHOT</small><strong>{moon:.0f}</strong></div>
+    <div><small>2-HR</small><strong>{two_hr:.0f}</strong></div>
+    <div><small>NUKE</small><strong>{nuke:.0f}</strong></div>
+    <div><small>STACK</small><strong>{stack:.0f}</strong></div>
+  </div>
+  <div class="bf-v2-confidence">
+    <div class="bf-v2-confidence-head"><span>BF CONFIDENCE</span><span>{confidence:.0f}%</span></div>
+    <div class="bf-v2-confidence-track"><div class="bf-v2-confidence-fill" style="width:{confidence:.0f}%"></div></div>
+  </div>
+  <div class="bf-v2-why"><b>WHY HE'S RANKED HERE</b><br>{reason_html}</div>
 </div>'''
-    st.markdown(quick_html, unsafe_allow_html=True)
+
+
+def render_early_watchlist_cards(preview_df: pd.DataFrame, max_cards: int = 6):
+    if preview_df is None or preview_df.empty:
+        st.caption("No early targets are available.")
+        return
+    view = preview_df.head(max_cards).reset_index(drop=True)
+    st.markdown('<div class="bf-v2-grid">', unsafe_allow_html=True)
+    for i, (_, row) in enumerate(view.iterrows()):
+        rank = row.get("Slate Rank", i + 1)
+        st.markdown(_bf_v2_card_html(row, rank, early=True), unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+def render_player_card(row: pd.Series, rank_override=None):
+    rank = rank_override if rank_override is not None else row.get("Rank", "—")
+    player = _display_value(row.get("Player"))
+    pitcher = _display_value(row.get("Pitcher"))
+
+    st.markdown(_bf_v2_card_html(row, rank, early=False), unsafe_allow_html=True)
+
     with st.expander(f"Open matchup card — {player} vs {pitcher}", expanded=False):
         st.markdown(_match_card_html(row, rank_override=rank), unsafe_allow_html=True)
-
 
 def render_card_grid(df: pd.DataFrame, max_cards: int = 24, columns: int = 3, title: str | None = None):
     if df is None or df.empty:
@@ -7055,12 +7245,22 @@ def render_off_day_mode(tracker: pd.DataFrame):
                     st.dataframe(pitcher_only, use_container_width=True, hide_index=True)
                 else:
                     st.markdown("### Early BF Targets")
-                    display_existing_columns(
-                        preview_df.head(30),
-                        ["Slate Rank", "Player", "Team", "Game", "Game Time", "Opponent Pitcher",
-                         "Pitcher Status", "Lineup Status", "Early BF Score", "Season HR", "Recent HR",
-                         "EV", "Barrel%", "HardHit%", "AIR%", "GroundBall%", "xSLG"],
+                    st.caption(
+                        "Top six early targets are shown as BF decision cards. "
+                        "These remain research-only until lineups become projected or confirmed."
                     )
+                    render_early_watchlist_cards(preview_df, max_cards=6)
+
+                    with st.expander("Open Early Watchlist Data Table", expanded=False):
+                        display_existing_columns(
+                            preview_df.head(30),
+                            ["Slate Rank", "Player", "Team", "Game", "Game Time", "Opponent Pitcher",
+                             "Pitcher Status", "Pitcher HR/9", "Pitcher Barrel Allowed",
+                             "Pitcher HardHit Allowed", "Lineup Status", "Research Confidence",
+                             "Data Level", "Early BF Score", "Season HR", "Season ISO",
+                             "Recent HR", "Recent ISO", "EV", "Barrel%", "HardHit%",
+                             "AIR%", "GroundBall%", "xSLG"],
+                        )
 
     with off_tabs[1]:
         _render_offday_snapshot_section(previous_board, "CORE_BOARD", f"JR HR Board — Previous Slate {previous_date or ''}", 30)
