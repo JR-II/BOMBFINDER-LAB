@@ -7895,6 +7895,9 @@ def render_off_day_mode(tracker: pd.DataFrame):
         st.info("Next-slate weather is preliminary. Each visual card uses the forecast hour nearest scheduled first pitch.")
         render_live_weather_board(next_schedule, preliminary=True)
 
+    with off_tabs[12]:
+        render_bf_knowledge_center()
+
 
 c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
 with c1:
@@ -7908,9 +7911,6 @@ with c1:
         st.cache_data.clear()
         st.rerun()
 
-
-    with off_tabs[12]:
-        render_bf_knowledge_center()
 
 deep_bbe_mode = bool(st.session_state.get("deep_l10_bbe", DEFAULT_DEEP_L10_BBE))
 live_df, schedule = build_daily_dataset(deep_bbe=deep_bbe_mode)
