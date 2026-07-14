@@ -446,6 +446,27 @@ hr { margin-top: .38rem !important; margin-bottom: .38rem !important; }
     .bf-v2-verdict span{font-size:.52rem}
 }
 
+
+/* BF DATA GUIDE */
+.bf-guide-quick{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin:7px 0 10px}
+.bf-guide-quick>div,.bf-guide-card{border:1px solid rgba(255,255,255,.09);border-radius:9px;background:#0e141d;padding:7px 8px}
+.bf-guide-quick small{display:block;color:#759de8;font-size:.49rem;font-weight:950;letter-spacing:.09em}
+.bf-guide-quick strong{display:block;color:#f4f7fb;font-size:.77rem;margin-top:3px}
+.bf-guide-quick span{display:block;color:#9ca8ba;font-size:.55rem;line-height:1.2;margin-top:3px}
+.bf-guide-panel{border:1px solid rgba(105,167,255,.32);background:linear-gradient(135deg,#101722,#0a0f17);border-radius:13px;padding:11px 12px;margin:8px 0 11px}
+.bf-guide-title{color:#75a6ff;font-size:.65rem;font-weight:950;letter-spacing:.14em}
+.bf-guide-sub{color:#aab4c4;font-size:.69rem;line-height:1.35;margin-top:5px}
+.bf-guide-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:9px}
+.bf-guide-card h4{margin:0 0 5px;font-size:.77rem;color:#f5f7fb}.bf-guide-card p{margin:0;color:#aab4c4;font-size:.63rem;line-height:1.35}
+.bf-color-key{display:flex;flex-wrap:wrap;gap:6px;margin:7px 0}.bf-color-key span{border:1px solid rgba(255,255,255,.11);border-radius:999px;padding:4px 8px;font-size:.61rem;font-weight:900}
+.bf-guide-table{display:grid;grid-template-columns:180px 1fr;border:1px solid rgba(255,255,255,.09);border-radius:10px;overflow:hidden}
+.bf-guide-table>div{padding:7px 9px;border-bottom:1px solid rgba(255,255,255,.07);color:#aeb8c8;font-size:.65rem;line-height:1.3}
+.bf-guide-table>div:nth-child(odd){color:#f2f5fa;font-weight:900;background:#101722}.bf-guide-table>div:nth-last-child(-n+2){border-bottom:0}
+.bf-onboard{border:1px solid rgba(255,209,102,.45);border-radius:12px;background:rgba(255,209,102,.07);padding:10px 11px;margin:7px 0 10px}
+.bf-onboard strong{color:#ffd166}.bf-onboard p{margin:4px 0 0;color:#b8c1cf;font-size:.68rem;line-height:1.35}
+@media(max-width:900px){.bf-guide-quick{grid-template-columns:repeat(2,minmax(0,1fr))}.bf-guide-grid{grid-template-columns:1fr}}
+@media(max-width:640px){.bf-guide-table{grid-template-columns:115px 1fr}.bf-guide-table>div{padding:6px;font-size:.57rem}}
+
 </style>
 <div class="bf-hero">
     <div class="bf-kicker">BF DATA PRO LAB</div>
@@ -7563,6 +7584,168 @@ def render_full_tracker_panel(tracker: pd.DataFrame, key_prefix: str = "tracker"
     render_tracker_audit_learning(tracker_work, selected_tracker)
 
 
+
+def render_bf_quick_key():
+    st.markdown("""
+    <div class="bf-guide-quick">
+      <div><small>BF EDGE</small><strong>Overall matchup</strong><span>Hitter, pitcher, lineup, park, weather and form.</span></div>
+      <div><small>BF CONFIDENCE</small><strong>Model agreement</strong><span>How strongly independent signals support the rank.</span></div>
+      <div><small>PITCH FIT</small><strong>Arsenal matchup</strong><span>How the hitter fits the pitcher's true pitch mix.</span></div>
+      <div><small>HR%</small><strong>Estimated HR chance</strong><span>Modeled probability, not guaranteed outcome.</span></div>
+      <div><small>GRADE</small><strong>A+ through F</strong><span>Plain-language projection quality.</span></div>
+    </div>""", unsafe_allow_html=True)
+
+
+def render_bf_context_key():
+    with st.expander("ⓘ BF Key — scores, badges, colors and roles", expanded=False):
+        render_bf_quick_key()
+        st.markdown("""
+        <div class="bf-color-key">
+          <span style="color:#35d07f;border-color:#35d07f">🟢 Elite / favorable</span>
+          <span style="color:#69a7ff;border-color:#69a7ff">🔵 Strong</span>
+          <span style="color:#ffd166;border-color:#ffd166">🟡 Playable / caution</span>
+          <span style="color:#ff9966;border-color:#ff9966">🟠 Risky</span>
+          <span style="color:#ff6666;border-color:#ff6666">🔴 Fade / suppressive</span>
+        </div>
+        <div class="bf-guide-table">
+          <div>🎯 Primary Target</div><div>Highest-rated hitter for that team or board group.</div>
+          <div>🤝 Strong Pair</div><div>Preferred complementary hitter.</div>
+          <div>Alternate</div><div>Qualified backup with fewer aligned signals.</div>
+          <div>💤 Sleeper</div><div>Higher-variance upside with more risk.</div>
+          <div>🔥 Core</div><div>Passed BF's main HR qualification rules.</div>
+          <div>⚡ Barrel God</div><div>Elite or near-elite barrel quality.</div>
+          <div>🟢 Attack Pitcher</div><div>Pitcher has meaningful HR or contact vulnerability.</div>
+          <div>📈 Hot</div><div>Recent damage form supports the projection.</div>
+          <div>💣 Nuke</div><div>High-ceiling power and matchup blend.</div>
+          <div>🚀 Moonshot</div><div>Long-distance HR profile.</div>
+        </div>""", unsafe_allow_html=True)
+
+
+def render_bf_knowledge_center():
+    st.subheader("BF Data Knowledge Center")
+    st.caption("Plain-language explanations for BF scores, badges, colors and recommendations.")
+
+    st.markdown("""
+    <div class="bf-guide-panel">
+      <div class="bf-guide-title">HOW TO READ BF DATA IN 10 SECONDS</div>
+      <div class="bf-guide-sub">Start with the target role. Then compare Edge, HR%, Confidence and Pitch Fit. Open the matchup analysis for pitcher, arsenal and Statcast details.</div>
+      <div class="bf-guide-grid">
+        <div class="bf-guide-card"><h4>1. Choose the role</h4><p>Primary Target is the top play. Strong Pair is the preferred partner. Alternate and Sleeper carry more risk.</p></div>
+        <div class="bf-guide-card"><h4>2. Check agreement</h4><p>Look for strong Edge, Grade and HR%, with no major Pitch Fit or ground-ball warning.</p></div>
+        <div class="bf-guide-card"><h4>3. Confirm the slate</h4><p>Projected cards may move. Confirmed cards use official lineups and locked tracking.</p></div>
+      </div>
+    </div>""", unsafe_allow_html=True)
+
+    render_bf_context_key()
+
+    sections = {
+        "📊 Grades and proprietary scores": [
+            ("BF Edge","Overall matchup strength combining hitter, pitcher, arsenal, lineup, park, weather and form."),
+            ("BF Confidence","How strongly independent model components agree. It is not HR probability."),
+            ("Decision Grade","A+ through F summary of projection quality."),
+            ("HR%","Estimated chance of at least one home run."),
+            ("Pitch Fit","How well the hitter matches the pitcher's actual arsenal and usage."),
+            ("Quality Score","Overall strength and reliability of the prediction inputs."),
+            ("Moonshot Score","Long-distance HR ceiling from EV, barrels, launch shape and environment."),
+            ("2-HR Score","Relative multi-HR ceiling; not a literal probability."),
+            ("Nuke Score","High-end ceiling combining power and matchup."),
+            ("Stack Score","Suitability for a correlated team stack."),
+            ("Attackability","Pitcher HR vulnerability; higher is better for hitters."),
+            ("Slate Confidence","Overall readiness and strength of the day's board."),
+        ],
+        "🔥 Badges and target roles": [
+            ("Primary Target","Highest-priority hitter in the team or group."),
+            ("Strong Pair","Preferred complementary hitter."),
+            ("Alternate","Qualified backup behind the top recommendations."),
+            ("Sleeper","Higher-variance player with legitimate upside."),
+            ("Core","Passed BF's primary HR rules."),
+            ("Barrel God","Outstanding barrel profile."),
+            ("Attack Pitcher","Opponent meets BF vulnerability thresholds."),
+            ("Hot","Recent damage form is supportive."),
+            ("Moonshot","Exceptional long-HR profile."),
+            ("Nuke","Elite ceiling across power and matchup."),
+            ("Value","Strong BF profile that may be less obvious publicly."),
+            ("Fade","Major suppressive signal or weak model agreement."),
+            ("Watchlist","Close to qualifying but not an official locked play."),
+        ],
+        "🌤 Weather and ballpark guide": [
+            ("Wind","Wind out can help carry; wind in can suppress it."),
+            ("Temperature","Warm air generally helps carry; cold dense air can reduce distance."),
+            ("Park Factor","Above 1.00 is more HR friendly; below 1.00 is more suppressive."),
+            ("Dimensions","LF, LCF, CF, RCF and RF distances explain pull-side paths."),
+            ("Roof","Weather impact is reduced in a dome or closed-roof setting."),
+            ("Preliminary","Future-slate weather can change before first pitch."),
+        ],
+        "⚾ Statcast and pitcher metrics": [
+            ("EV","Exit velocity."),
+            ("Barrel%","Rate of ideal exit-velocity and launch-angle contact."),
+            ("HardHit%","Rate of balls hit 95 mph or harder."),
+            ("FB%","Fly-ball percentage."),
+            ("LD%","Line-drive percentage."),
+            ("GB%","Ground-ball percentage; high values reduce HR opportunity."),
+            ("AIR%","BF productive air-contact measure."),
+            ("Launch Angle","Average vertical angle of contact."),
+            ("xSLG","Expected slugging based on contact quality."),
+            ("xwOBA","Expected overall offensive quality."),
+            ("Pitcher HR/9","Home runs allowed per nine innings."),
+            ("Barrel Allowed","Pitcher's rate of allowing barrel-quality contact."),
+            ("Hard Hit Allowed","Pitcher's rate of allowing 95+ mph contact."),
+        ],
+    }
+
+    for title, rows in sections.items():
+        with st.expander(title, expanded=(title.startswith("📊"))):
+            html = '<div class="bf-guide-table">' + ''.join(
+                f"<div>{escape(k)}</div><div>{escape(v)}</div>" for k, v in rows
+            ) + "</div>"
+            st.markdown(html, unsafe_allow_html=True)
+
+    with st.expander("🎨 Color guide"):
+        st.markdown("""
+        <div class="bf-color-key">
+          <span style="color:#35d07f;border-color:#35d07f">🟢 Green — elite or favorable</span>
+          <span style="color:#69a7ff;border-color:#69a7ff">🔵 Blue — strong</span>
+          <span style="color:#ffd166;border-color:#ffd166">🟡 Yellow — playable or caution</span>
+          <span style="color:#ff9966;border-color:#ff9966">🟠 Orange — elevated risk</span>
+          <span style="color:#ff6666;border-color:#ff6666">🔴 Red — fade or suppressive</span>
+        </div>""", unsafe_allow_html=True)
+
+    with st.expander("🤖 How BF creates a recommendation"):
+        st.markdown("""
+        1. Load official or projected hitters and probable pitchers.  
+        2. Evaluate season and recent hitter damage.  
+        3. Measure pitcher HR, barrel and hard-contact vulnerability.  
+        4. Compare the hitter with the pitcher's true arsenal.  
+        5. Apply lineup, park, weather, bullpen and ground-ball adjustments.  
+        6. Generate HR%, Edge, Pitch Fit, grades and ceiling scores.  
+        7. Rank hitters and assign target roles.  
+        8. Lock official predictions after lineups confirm.
+        """)
+
+    with st.expander("⚠️ Important interpretation notes"):
+        st.markdown("""
+        - High BF scores do not guarantee a home run.
+        - BF Confidence is model agreement, not HR probability.
+        - Moonshot, 2-HR, Nuke and Stack are relative scores, not literal probabilities.
+        - Projected and Early Watchlist cards can change.
+        - Confirmed cards are the official locked research board.
+        - Use BF Data as decision support rather than relying on one metric alone.
+        """)
+
+
+def render_first_time_guide():
+    if "bf_guide_dismissed" not in st.session_state:
+        st.session_state.bf_guide_dismissed = False
+    if not st.session_state.bf_guide_dismissed:
+        st.markdown("""
+        <div class="bf-onboard"><strong>👋 New to BF Data?</strong>
+        <p>Start with the target role, then compare Edge, Grade, HR%, Confidence and Pitch Fit. The BF Guide explains every score and badge.</p></div>
+        """, unsafe_allow_html=True)
+        if st.button("Got it — hide this guide", key="dismiss_bf_guide"):
+            st.session_state.bf_guide_dismissed = True
+            st.rerun()
+
+
 def render_off_day_mode(tracker: pd.DataFrame):
     next_date_key, next_schedule = find_next_scheduled_slate(today_str(), max_days=14)
     previous_date, previous_board = _latest_previous_board(tracker)
@@ -7579,7 +7762,7 @@ def render_off_day_mode(tracker: pd.DataFrame):
     tab_names = [
         "Next Slate Preview", "JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack",
         "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker",
-        "Previous Slate Review", "Lineup Watch", "Live Weather"
+        "Previous Slate Review", "Lineup Watch", "Live Weather", "BF Guide"
     ]
     off_tabs = st.tabs(tab_names)
 
@@ -7726,6 +7909,9 @@ with c1:
         st.rerun()
 
 
+    with off_tabs[12]:
+        render_bf_knowledge_center()
+
 deep_bbe_mode = bool(st.session_state.get("deep_l10_bbe", DEFAULT_DEEP_L10_BBE))
 live_df, schedule = build_daily_dataset(deep_bbe=deep_bbe_mode)
 schedule = sort_schedule_rows(schedule)
@@ -7791,7 +7977,7 @@ if locked_df.empty:
     st.warning("No games or hitter data loaded.")
     st.stop()
 
-base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker", "Lineup Watch", "Live Weather"]
+base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker", "Lineup Watch", "Live Weather", "BF Guide"]
 schedule = sort_schedule_rows(schedule)
 game_tabs = [f"{format_game_time_et(g.get('game_time', ''))} | {g['game_key']}" for g in schedule]
 tabs = st.tabs(base_tabs + game_tabs)
@@ -7799,6 +7985,8 @@ tabs = st.tabs(base_tabs + game_tabs)
 with tabs[0]:
     st.subheader("JR HR Board")
     st.caption("Projected teams stay live. Confirmed teams freeze once lineups lock. Actual HR Today is display-only and does not change rankings.")
+    render_first_time_guide()
+    render_bf_context_key()
     hr_df_live = get_strict_hr_pool(locked_df)
     hr_df = get_locked_section_snapshot("CORE_BOARD", hr_df_live, schedule, limit=30)
     render_card_grid(hr_df, max_cards=30, columns=3)
@@ -7942,7 +8130,11 @@ with tabs[9]:
     st.caption("Hourly game-time forecast, wind direction and speed, and stadium dimensions in a visual field layout.")
     render_live_weather_board(schedule, preliminary=False)
 
-for idx, game in enumerate(schedule, start=10):
+with tabs[10]:
+    render_bf_knowledge_center()
+
+
+for idx, game in enumerate(schedule, start=11):
     with tabs[idx]:
         st.subheader(f"{game['game_key']} — {format_game_time_et(game.get('game_time', ''))}")
         st.caption(
