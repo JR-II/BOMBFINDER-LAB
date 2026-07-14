@@ -395,6 +395,26 @@ hr { margin-top: .38rem !important; margin-bottom: .38rem !important; }
 .bf-v2-badges{font-size:.53rem}.bf-v2-why{font-size:.56rem}.bf-v2-advanced{gap:3px}
 .bf-v2-advanced small{font-size:.39rem}.bf-v2-advanced strong{font-size:.62rem}}
 
+
+/* BF DATA 10/10 LAB POLISH */
+.bf-scout-panel{border:1px solid rgba(105,167,255,.45);border-radius:13px;background:linear-gradient(135deg,#101826,#0b1018);padding:10px 11px;margin:8px 0 12px}
+.bf-scout-title{color:#75a6ff;font-size:.62rem;font-weight:950;letter-spacing:.14em}
+.bf-scout-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:8px}
+.bf-scout-grid>div{background:#0d131d;border:1px solid rgba(255,255,255,.08);border-radius:9px;padding:8px}
+.bf-scout-grid small{display:block;color:#8190a7;font-size:.48rem;font-weight:950;letter-spacing:.09em}
+.bf-scout-grid strong{display:block;color:#f4f7fb;font-size:.82rem;margin-top:4px}
+.bf-scout-grid span{display:block;color:#aeb8c8;font-size:.58rem;margin-top:3px}
+.bf-scout-note{color:#8290a4;font-size:.55rem;margin-top:7px}
+.bf-v2-card{transition:border-color .15s ease,transform .15s ease}
+.bf-v2-card:hover{transform:translateY(-1px);border-color:rgba(105,167,255,.55)}
+.bf-v2-why{min-height:31px}
+@media(max-width:760px){
+  .bf-scout-grid{grid-template-columns:1fr}
+  .bf-scout-panel{padding:8px}
+  .bf-v2-advanced{grid-template-columns:repeat(5,minmax(42px,1fr))}
+  .bf-v2-card{border-radius:11px}
+}
+
 </style>
 <div class="bf-hero">
     <div class="bf-kicker">BF DATA PRO LAB</div>
@@ -6402,11 +6422,11 @@ def _bf_v2_role(rank, quality_score: float, grade: str, early: bool = False):
 
 
 def _bf_v2_confidence(row: pd.Series, early: bool = False) -> float:
-    """Player-specific confidence, not a repeated stage label."""
+    """Calibrated, player-specific confidence with visible separation."""
     if early:
         saved = row.get("Early Confidence Score")
         if pd.notna(saved):
-            return round(clip(safe_float(saved, 0.0), 25, 84), 1)
+            return round(clip(safe_float(saved, 0.0), 28, 86), 1)
 
         early_score = safe_float(row.get("Early BF Score"), 0.0)
         barrel = safe_float(row.get("Barrel%"), 0.0)
@@ -6414,26 +6434,41 @@ def _bf_v2_confidence(row: pd.Series, early: bool = False) -> float:
         xslg = safe_float(row.get("xSLG"), 0.0)
         gb = safe_float(row.get("GroundBall%"), 45.0)
         pitch_hr9 = safe_float(row.get("Pitcher HR/9"), 0.0)
+        pitch_barrel = safe_float(row.get("Pitcher Barrel Allowed"), 0.0)
         recent_hr = safe_int(row.get("Recent HR"), 0)
 
-        confidence = (
-            28.0
-            + early_score * 0.105
-            + barrel * 0.42
-            + hard_hit * 0.12
-            + xslg * 12.0
-            + pitch_hr9 * 3.2
-            + recent_hr * 1.2
-            - max(0.0, gb - 46.0) * 0.38
+        hitter_signal = clip(
+            (early_score / 3.2) * 0.42
+            + barrel * 1.05
+            + hard_hit * 0.22
+            + xslg * 20
+            + recent_hr * 1.5,
+            0, 100,
         )
-        return round(clip(confidence, 28, 82), 1)
+        matchup_signal = clip(
+            22 + pitch_hr9 * 22 + pitch_barrel * 1.6 - max(0.0, gb - 47) * 0.7,
+            0, 100,
+        )
+        return round(clip(26 + hitter_signal * 0.42 + matchup_signal * 0.24, 28, 86), 1)
 
     quality = safe_float(row.get("Prediction Quality Score"), 0.0)
     matchup = safe_float(row.get("Matchup Advantage Score"), 0.0)
+    attack = safe_float(row.get("HR Attackability Score"), 0.0)
     hrp = safe_float(row.get("HR Probability %"), 0.0)
+    barrel = safe_float(row.get("Barrel%"), 0.0)
+    gb = safe_float(row.get("GroundBall%"), 45.0)
     confirmed = str(row.get("Lineup Source", "")).upper() == "CONFIRMED"
-    return round(clip(quality * .56 + matchup * .25 + hrp * .55 + (8 if confirmed else 0), 0, 99), 1)
 
+    confidence = (
+        quality * 0.38
+        + matchup * 0.28
+        + attack * 0.36
+        + hrp * 0.52
+        + barrel * 0.22
+        + (6.0 if confirmed else 0.0)
+        - max(0.0, gb - 48.0) * 0.45
+    )
+    return round(clip(confidence, 18, 99), 1)
 
 def _bf_v2_reason_items(row: pd.Series, early: bool = False) -> list[str]:
     reasons = []
@@ -6564,10 +6599,72 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
 
 
 def _render_bf_html(html_text: str):
-    """Render generated BF HTML without Markdown treating indented tags as code."""
-    compact = re.sub(r">\s+<", "><", str(html_text).strip())
-    compact = "\n".join(line.strip() for line in compact.splitlines())
+    """Render generated BF HTML safely without exposing raw tags."""
+    compact = re.sub(r"\s+", " ", str(html_text).strip())
+    compact = re.sub(r">\s+<", "><", compact)
     st.markdown(compact, unsafe_allow_html=True)
+
+
+def _early_decision_read(row: pd.Series) -> tuple[str, str, str]:
+    """Separate hitter quality from matchup quality for early research."""
+    early_score = safe_float(row.get("Early BF Score"), 0.0)
+    barrel = safe_float(row.get("Barrel%"), 0.0)
+    hard_hit = safe_float(row.get("HardHit%"), 0.0)
+    gb = safe_float(row.get("GroundBall%"), 45.0)
+    pitch_hr9 = safe_float(row.get("Pitcher HR/9"), 0.0)
+    pitch_barrel = safe_float(row.get("Pitcher Barrel Allowed"), 0.0)
+    pitch_hh = safe_float(row.get("Pitcher HardHit Allowed"), 0.0)
+
+    hitter_quality = clip(
+        early_score / 3.1
+        + max(0.0, barrel - 10) * 0.7
+        + max(0.0, hard_hit - 42) * 0.25
+        - max(0.0, gb - 48) * 0.45,
+        0, 99,
+    )
+    pitcher_attack = clip(
+        pitch_hr9 * 24 + pitch_barrel * 2.0 + pitch_hh * 0.55 - 16,
+        0, 99,
+    )
+
+    if hitter_quality >= 88 and pitcher_attack >= 55:
+        return "EARLY PRIMARY TARGET", "Elite hitter profile with an attackable pitcher path.", "#35d07f"
+    if hitter_quality >= 88 and pitcher_attack < 35:
+        return "ELITE HITTER · MATCHUP CAUTION", "The hitter is elite, but the probable pitcher currently suppresses HR damage.", "#ffd166"
+    if hitter_quality >= 78 and pitcher_attack >= 45:
+        return "STRONG EARLY LOOK", "Good hitter quality and a playable pitcher matchup.", "#69a7ff"
+    if gb >= 52:
+        return "WATCHLIST ONLY", "Power exists, but the ground-ball profile lowers early confidence.", "#ff8c66"
+    return "SECONDARY EARLY LOOK", "Useful research profile; wait for projected lineup and updated matchup data.", "#b6a0ff"
+
+
+def render_early_scout_summary(preview_df: pd.DataFrame):
+    if preview_df is None or preview_df.empty:
+        return
+    view = preview_df.copy().head(12)
+    view["_conf"] = view.apply(lambda r: _bf_v2_confidence(r, early=True), axis=1)
+    view["_pitch_attack"] = (
+        pd.to_numeric(view.get("Pitcher HR/9"), errors="coerce").fillna(0) * 24
+        + pd.to_numeric(view.get("Pitcher Barrel Allowed"), errors="coerce").fillna(0) * 2
+        + pd.to_numeric(view.get("Pitcher HardHit Allowed"), errors="coerce").fillna(0) * .55
+    )
+    best = view.sort_values(["_conf", "Early BF Score"], ascending=False).iloc[0]
+    best_matchup = view.sort_values(["_pitch_attack", "Early BF Score"], ascending=False).iloc[0]
+    caution_pool = view.sort_values(["Early BF Score", "_pitch_attack"], ascending=[False, True])
+    caution = caution_pool.iloc[0]
+
+    html = f"""
+    <div class="bf-scout-panel">
+      <div class="bf-scout-title">BF AI SCOUT · EARLY SLATE READ</div>
+      <div class="bf-scout-grid">
+        <div><small>BEST EARLY TARGET</small><strong>{escape(str(best.get('Player','—')))}</strong><span>{best['_conf']:.0f}% early confidence</span></div>
+        <div><small>BEST PITCHER PATH</small><strong>{escape(str(best_matchup.get('Player','—')))}</strong><span>vs {escape(str(best_matchup.get('Opponent Pitcher','—')))}</span></div>
+        <div><small>BIGGEST CAUTION</small><strong>{escape(str(caution.get('Player','—')))}</strong><span>Strong hitter score, tougher pitcher path</span></div>
+      </div>
+      <div class="bf-scout-note">Research only · probable pitchers and expected hitters can change · no official tracking until the slate locks.</div>
+    </div>
+    """
+    _render_bf_html(html)
 
 
 def _early_matchup_card_html(row: pd.Series, rank) -> str:
@@ -6601,6 +6698,7 @@ def _early_matchup_card_html(row: pd.Series, rank) -> str:
         - 18,
         0, 100,
     )
+    decision_label, decision_note, decision_color = _early_decision_read(row)
     if attack_score >= 68:
         attack_label, attack_grade, attack_color = "STRONG HR ATTACK", "GRADE B+", "#35d07f"
     elif attack_score >= 48:
@@ -6643,6 +6741,11 @@ def _early_matchup_card_html(row: pd.Series, rank) -> str:
     </div>
 
     <div>
+      <div style="border:1px solid {decision_color};border-radius:10px;padding:8px 10px;margin-bottom:10px;background:rgba(255,255,255,.018)">
+        <div style="font-size:.58rem;letter-spacing:.12em;font-weight:950;color:#8fa9d8">BF EARLY DECISION</div>
+        <div style="font-size:.92rem;font-weight:950;color:{decision_color};margin-top:4px">{decision_label}</div>
+        <div style="font-size:.68rem;color:#b9c3d2;margin-top:3px">{decision_note}</div>
+      </div>
       <div class="bf-section-title">HITTER DAMAGE PROFILE</div>
       <div class="bf-bvp-grid">
         <div class="bf-bvp-cell"><div class="bf-bvp-label">EV</div><div class="bf-bvp-values bf-green-txt">{ev:.1f}</div></div>
@@ -6681,26 +6784,42 @@ def render_early_watchlist_cards(preview_df: pd.DataFrame, max_cards: int = 6):
         return
 
     view = preview_df.head(max_cards).reset_index(drop=True).copy()
+    raw_scores = []
 
-    # Confidence is player-specific: rank creates visible separation, while
-    # player power, pitcher leakage and GB risk can move the number.
-    for idx in view.index:
-        row = view.loc[idx]
-        rank = idx + 1
-        confidence = (
-            78.0
-            - (rank - 1) * 4.2
-            + (safe_float(row.get("Barrel%"), 10.0) - 10.0) * .30
-            + (safe_float(row.get("HardHit%"), 40.0) - 40.0) * .10
-            + (safe_float(row.get("Pitcher HR/9"), 1.1) - 1.1) * 3.5
-            + safe_int(row.get("Recent HR"), 0) * .8
-            - max(0.0, safe_float(row.get("GroundBall%"), 45.0) - 46.0) * .28
+    for _, row in view.iterrows():
+        early_score = safe_float(row.get("Early BF Score"), 0.0)
+        barrel = safe_float(row.get("Barrel%"), 0.0)
+        hard_hit = safe_float(row.get("HardHit%"), 0.0)
+        xslg = safe_float(row.get("xSLG"), 0.0)
+        pitch_hr9 = safe_float(row.get("Pitcher HR/9"), 0.0)
+        pitch_barrel = safe_float(row.get("Pitcher Barrel Allowed"), 0.0)
+        recent_hr = safe_int(row.get("Recent HR"), 0)
+        gb = safe_float(row.get("GroundBall%"), 45.0)
+
+        raw_scores.append(
+            early_score * 0.18
+            + barrel * 1.35
+            + hard_hit * 0.28
+            + xslg * 22
+            + pitch_hr9 * 8
+            + pitch_barrel * 0.55
+            + recent_hr * 1.6
+            - max(0.0, gb - 47) * 0.65
         )
-        view.at[idx, "Early Confidence Score"] = round(clip(confidence, 36, 82), 1)
+
+    if raw_scores:
+        lo, hi = min(raw_scores), max(raw_scores)
+        spread = max(hi - lo, 1.0)
+        for idx, raw in enumerate(raw_scores):
+            # 48–84 keeps early confidence honest while clearly separating players.
+            normalized = 48 + ((raw - lo) / spread) * 36
+            view.at[idx, "Early Confidence Score"] = round(normalized, 1)
+
+    render_early_scout_summary(view)
 
     for i, (_, row) in enumerate(view.iterrows()):
         rank = row.get("Slate Rank", i + 1)
-        st.markdown(_bf_v2_card_html(row, rank, early=True), unsafe_allow_html=True)
+        _render_bf_html(_bf_v2_card_html(row, rank, early=True))
         player = _display_value(row.get("Player"))
         pitcher = _display_value(row.get("Opponent Pitcher"))
         with st.expander(f"Open matchup card — {player} vs {pitcher}", expanded=False):
@@ -6714,7 +6833,7 @@ def render_player_card(row: pd.Series, rank_override=None):
     _render_bf_html(_bf_v2_card_html(row, rank, early=False))
 
     with st.expander(f"Open matchup card — {player} vs {pitcher}", expanded=False):
-        st.markdown(_match_card_html(row, rank_override=rank), unsafe_allow_html=True)
+        _render_bf_html(_match_card_html(row, rank_override=rank))
 
 def render_card_grid(df: pd.DataFrame, max_cards: int = 24, columns: int = 3, title: str | None = None):
     if df is None or df.empty:
