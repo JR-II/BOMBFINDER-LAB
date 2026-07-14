@@ -415,6 +415,37 @@ hr { margin-top: .38rem !important; margin-bottom: .38rem !important; }
   .bf-v2-card{border-radius:11px}
 }
 
+
+/* BF DATA FIRST-BOARD CALIBRATION + READABILITY */
+.bf-v2-verdict{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    margin-top:7px;
+    padding:6px 8px;
+    border:1px solid;
+    border-radius:8px;
+    background:rgba(255,255,255,.018);
+}
+.bf-v2-verdict strong{
+    font-size:.57rem;
+    letter-spacing:.08em;
+    white-space:nowrap;
+}
+.bf-v2-verdict span{
+    color:#aeb8c8;
+    font-size:.58rem;
+    line-height:1.2;
+}
+.bf-v2-card .bf-v2-advanced strong{font-size:.78rem}
+.bf-v2-card .bf-v2-confidence{margin-top:6px}
+.bf-v2-card .bf-v2-why{min-height:0}
+@media(max-width:640px){
+    .bf-v2-verdict{display:block;padding:6px}
+    .bf-v2-verdict strong{display:block;margin-bottom:3px}
+    .bf-v2-verdict span{font-size:.52rem}
+}
+
 </style>
 <div class="bf-hero">
     <div class="bf-kicker">BF DATA PRO LAB</div>
@@ -4491,54 +4522,91 @@ def compute_advanced_prediction_scores(
     recent_trend: str,
     elite_hr_flag: bool,
 ) -> dict:
-    """Transparent secondary scores. These do not replace BF's ranking engine."""
+    """Calibrated secondary scores used for explanation, not board ranking.
+
+    The prior formulas saturated too many elite hitters at 99–100. These scores
+    retain the same inputs but compress extremes so differences remain visible.
+    """
     launch_quality = clip(
-        barrel * 2.6 + hard_hit * 0.72 + fly_ball * 0.38
-        + line_drive * 0.18 - max(0.0, ground_ball - 42.0) * 1.05,
-        0, 100,
+        18
+        + max(0.0, barrel - 5.0) * 2.25
+        + max(0.0, hard_hit - 32.0) * 0.72
+        + max(0.0, air_pct - 42.0) * 0.30
+        + max(0.0, ev - 87.0) * 1.15
+        + max(0.0, xslg - 0.390) * 42
+        - max(0.0, ground_ball - 47.0) * 0.90,
+        0, 96,
     )
+
     environment = clip(
-        50 + weather_boost * 7.5 + (park_factor - 1.0) * 135,
-        0, 100,
+        50 + weather_boost * 5.5 + (park_factor - 1.0) * 95,
+        28, 82,
     )
+
     pitcher_path = clip(
-        pitcher_attackability * 1.75 + pitch_hr9 * 13.5,
-        0, 100,
+        20
+        + pitcher_attackability * 1.10
+        + max(0.0, pitch_hr9 - 0.70) * 14,
+        10, 92,
     )
+
     lineup_bonus = 0.0
     try:
         spot = int(lineup_spot)
-        lineup_bonus = 8.0 if spot <= 4 else 4.0 if spot <= 6 else 0.0
+        lineup_bonus = 5.0 if spot <= 4 else 2.5 if spot <= 6 else 0.0
     except Exception:
         pass
 
     quality = clip(
-        hr_probability * 1.75 + launch_quality * 0.28
-        + pitcher_path * 0.18 + matchup_advantage * 0.24
-        + max(0.0, xslg - 0.350) * 72 + lineup_bonus,
-        0, 100,
+        16
+        + hr_probability * 1.05
+        + launch_quality * 0.34
+        + pitcher_path * 0.14
+        + matchup_advantage * 0.20
+        + lineup_bonus,
+        18, 97,
     )
+
     moonshot = clip(
-        barrel * 3.0 + hard_hit * 0.72 + air_pct * 0.32
-        + max(0.0, ev - 88) * 2.4 + max(0.0, pitch_hr9 - 0.8) * 12
-        + environment * 0.15 - max(0.0, ground_ball - 46) * 1.15,
-        0, 100,
+        10
+        + launch_quality * 0.52
+        + max(0.0, barrel - 8.0) * 1.20
+        + max(0.0, ev - 89.0) * 1.15
+        + max(0.0, pitch_hr9 - 0.90) * 5.5
+        + environment * 0.10,
+        12, 98,
     )
+
     two_hr = clip(
-        moonshot * 0.52 + quality * 0.25 + hr_probability * 0.75
-        + recent_hr * 4.0 + (6.0 if recent_trend == "HOT" else 2.0 if recent_trend == "LIVE" else 0.0),
-        0, 100,
+        7
+        + moonshot * 0.42
+        + quality * 0.17
+        + hr_probability * 0.45
+        + recent_hr * 2.8
+        + (3.5 if recent_trend == "HOT" else 1.5 if recent_trend == "LIVE" else 0.0),
+        8, 91,
     )
+
     nuke = clip(
-        quality * 0.38 + moonshot * 0.40 + matchup_advantage * 0.28
-        + pitcher_attackability * 0.28 + (8.0 if elite_hr_flag else 0.0),
-        0, 100,
+        8
+        + quality * 0.30
+        + moonshot * 0.31
+        + matchup_advantage * 0.16
+        + pitcher_path * 0.10
+        + (3.5 if elite_hr_flag else 0.0),
+        10, 98,
     )
+
     stack = clip(
-        matchup_advantage * 0.42 + pitcher_attackability * 0.70
-        + environment * 0.25 + lineup_bonus + hard_hit * 0.15,
-        0, 100,
+        12
+        + matchup_advantage * 0.28
+        + pitcher_path * 0.27
+        + environment * 0.13
+        + lineup_bonus
+        + max(0.0, hard_hit - 36.0) * 0.18,
+        12, 94,
     )
+
     return {
         "Prediction Quality Score": round(quality, 1),
         "Prediction Quality Grade": _letter_grade(quality),
@@ -4548,22 +4616,37 @@ def compute_advanced_prediction_scores(
         "Stack Score": round(stack, 1),
     }
 
-
 def compute_slate_confidence(df: pd.DataFrame) -> float:
+    """Slate-level readiness and quality score with honest headroom."""
     if df is None or df.empty:
         return 0.0
+
     work = df.copy()
     quality = safe_numeric_series(work, "Prediction Quality Score", 0.0)
     hrp = safe_numeric_series(work, "HR Probability %", 0.0)
-    confirmed = (
-        work.get("Lineup Source", pd.Series("", index=work.index))
-        .astype(str).eq("CONFIRMED").mean() * 100
-    )
-    top_quality = quality.nlargest(min(12, len(quality))).mean() if len(quality) else 0.0
-    top_hr = hrp.nlargest(min(12, len(hrp))).mean() if len(hrp) else 0.0
-    spread = quality.std() if len(quality) > 1 else 0.0
-    return round(clip(top_quality * 0.55 + top_hr * 1.15 + confirmed * 0.18 + min(spread, 15) * 0.35, 0, 100), 1)
+    edge = safe_numeric_series(work, "Matchup Advantage Score", 0.0)
+    attack = safe_numeric_series(work, "HR Attackability Score", 0.0)
 
+    lineup_source = work.get("Lineup Source", pd.Series("", index=work.index)).astype(str)
+    confirmed_pct = lineup_source.eq("CONFIRMED").mean() * 100
+
+    n = min(12, len(work))
+    top_quality = quality.nlargest(n).mean() if n else 0.0
+    top_hr = hrp.nlargest(n).mean() if n else 0.0
+    top_edge = edge.nlargest(n).mean() if n else 0.0
+    top_attack = attack.nlargest(n).mean() if n else 0.0
+
+    # 95 is the practical ceiling. A perfect 100 should not appear from
+    # lineup confirmation alone.
+    score = (
+        18
+        + top_quality * 0.34
+        + top_hr * 0.62
+        + top_edge * 0.16
+        + top_attack * 0.18
+        + confirmed_pct * 0.10
+    )
+    return round(clip(score, 15, 95), 1)
 
 def _load_learning_profile() -> dict:
     if os.path.exists(LEARNING_PROFILE_FILE):
@@ -6412,12 +6495,15 @@ def _bf_v2_role(rank, quality_score: float, grade: str, early: bool = False):
         rank_num = int(rank)
     except Exception:
         rank_num = 99
+
     if rank_num == 1:
         return "PRIMARY TARGET", "primary"
-    if rank_num == 2 or quality_score >= 88:
+    if rank_num == 2:
         return "STRONG PAIR", "strong"
-    if rank_num <= 4 or str(grade).startswith("A"):
+    if rank_num <= 4:
         return "ALTERNATE", "alt"
+    if quality_score >= 86 and str(grade) in {"A+", "A", "A-"}:
+        return "STRONG LOOK", "strong"
     return "SLEEPER", "sleeper"
 
 
@@ -6533,6 +6619,25 @@ def _bf_v2_badges(row: pd.Series, early: bool = False) -> list[str]:
     return badges[:5]
 
 
+def _bf_active_verdict(row: pd.Series) -> tuple[str, str, str]:
+    quality = safe_float(row.get("Prediction Quality Score"), 0.0)
+    edge = safe_float(row.get("Matchup Advantage Score"), 0.0)
+    attack = safe_float(row.get("HR Attackability Score"), 0.0)
+    pitch_raw = safe_float(row.get("Pitch Matchup Score"), 0.0)
+    pitch_fit = clip(pitch_raw * 10 + 40, 0, 99)
+    gb = safe_float(row.get("GroundBall%"), 45.0)
+
+    if quality >= 88 and edge >= 78 and attack >= 20 and pitch_fit >= 65:
+        return "COMPLETE HR PROFILE", "Hitter quality and matchup path both support the target.", "#35d07f"
+    if quality >= 88 and pitch_fit < 55:
+        return "ELITE BAT · PITCH-FIT CAUTION", "The hitter profile is elite, but the isolated pitch matchup is not a major advantage.", "#ffd166"
+    if edge >= 76 and attack >= 20:
+        return "STRONG MATCHUP PATH", "The overall matchup and pitcher damage profile are playable.", "#69a7ff"
+    if gb >= 50:
+        return "POWER WITH GB RISK", "The power metrics qualify, but the ground-ball profile lowers confidence.", "#ff8c66"
+    return "SECONDARY TARGET", "Useful profile, but not every major signal is aligned.", "#b6a0ff"
+
+
 def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
     player = _display_value(row.get("Player"))
     team = _display_value(row.get("Team"))
@@ -6548,6 +6653,10 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
 
     role_text, role_class = _bf_v2_role(rank, quality, grade, early=early)
     confidence = _bf_v2_confidence(row, early=early)
+    verdict_label, verdict_note, verdict_color = (
+        ("EARLY RESEARCH", "Probable-pitcher and expected-lineup research only.", "#ffd166")
+        if early else _bf_active_verdict(row)
+    )
     badges = _bf_v2_badges(row, early=early)
     reasons = _bf_v2_reason_items(row, early=early)
 
@@ -6583,6 +6692,10 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
     </div>
   </div>
   <div class="bf-v2-badges">{badge_html}</div>
+  <div class="bf-v2-verdict" style="border-color:{verdict_color}">
+    <strong style="color:{verdict_color}">{escape(verdict_label)}</strong>
+    <span>{escape(verdict_note)}</span>
+  </div>
   <div class="bf-v2-advanced">
     <div><small>QUALITY</small><strong>{quality:.0f}</strong></div>
     <div><small>MOONSHOT</small><strong>{moon:.0f}</strong></div>
