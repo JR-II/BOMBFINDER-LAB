@@ -1,6 +1,7 @@
 import hashlib
 import os
 import re
+import textwrap
 from html import escape
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -11,6 +12,7 @@ import streamlit as st
 import time
 import tempfile
 import json
+import math
 from io import StringIO
 from concurrent.futures import ThreadPoolExecutor, as_completed
 st.set_page_config(page_title="BF Data", layout="wide")
@@ -2757,39 +2759,115 @@ def _environment_meter_html(effect: dict) -> str:
 
 
 def _stadium_svg(home_abbr, weather):
+    """Draw a stadium-specific outfield shape scaled from verified dimensions."""
     dims = PARK_DIMENSIONS.get(home_abbr)
-    labels = tuple(str(x) for x in dims) if dims else ("—",) * 5
+    if dims and len(dims) >= 5:
+        lf, lcf, cf, rcf, rf = [safe_float(value, 0.0) for value in dims[:5]]
+    else:
+        lf, lcf, cf, rcf, rf = 330.0, 375.0, 400.0, 375.0, 330.0
+
     gh = weather.get("game_hour", {}) or {}
     direction = gh.get("wind_dir")
     rotation = (safe_float(direction, 0) + 180) % 360 if direction is not None else 0
-    return f"""
-    <div class="bf-field-wrap">
-      <svg class="bf-field-svg" viewBox="0 0 520 330" role="img" aria-label="Ballpark field and wind direction">
-        <defs>
-          <linearGradient id="grass-{home_abbr}" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stop-color="#183d2b"/>
-            <stop offset="1" stop-color="#0a1612"/>
-          </linearGradient>
-        </defs>
-        <path d="M260 304 L54 98 Q260 -5 466 98 Z" fill="url(#grass-{home_abbr})" stroke="#536175" stroke-width="3"/>
-        <path d="M260 304 L174 218 L260 132 L346 218 Z" fill="#7a5a36" opacity=".8" stroke="#cfb37b"/>
-        <circle cx="260" cy="215" r="5" fill="#fff"/>
-        <rect x="255" y="294" width="10" height="10" transform="rotate(45 260 299)" fill="#fff"/>
-        <text x="42" y="108" class="dim">LF {labels[0]} ft</text>
-        <text x="125" y="54" class="dim">LCF {labels[1]} ft</text>
-        <text x="235" y="30" class="dim">CF {labels[2]} ft</text>
-        <text x="355" y="54" class="dim">RCF {labels[3]} ft</text>
-        <text x="438" y="108" class="dim">RF {labels[4]} ft</text>
-        <g transform="translate(260 154) rotate({rotation})">
-          <line x1="0" y1="30" x2="0" y2="-38" stroke="#69a7ff" stroke-width="8" stroke-linecap="round"/>
-          <path d="M0 -58 L-15 -30 L15 -30 Z" fill="#69a7ff"/>
-        </g>
-        <text x="260" y="187" text-anchor="middle" class="windtxt">
-          FROM {gh.get('wind_compass','—')} · {_fmt_weather(gh.get('wind'),' MPH')}
-        </text>
-      </svg>
-    </div>
-    """
+
+    # Convert real fence distances into SVG radii. A single shared scale keeps
+    # parks visually comparable while preserving each park's asymmetry.
+    min_dim, max_dim = 300.0, 430.0
+
+    def radius(distance):
+        return 145.0 + clip((distance - min_dim) / (max_dim - min_dim), 0.0, 1.0) * 85.0
+
+    # Angles radiate from home plate: LF to RF.
+    bearings = (-48, -24, 0, 24, 48)
+    distances = (lf, lcf, cf, rcf, rf)
+    points = []
+    label_points = []
+
+    home_x, home_y = 260.0, 304.0
+    for angle_deg, distance in zip(bearings, distances):
+        angle = math.radians(angle_deg)
+        r = radius(distance)
+        x = home_x + math.sin(angle) * r
+        y = home_y - math.cos(angle) * r
+        points.append((x, y))
+
+        label_r = r + 18.0
+        lx = home_x + math.sin(angle) * label_r
+        ly = home_y - math.cos(angle) * label_r
+        label_points.append((lx, ly))
+
+    fence_path = " ".join(
+        [f"M {home_x:.1f} {home_y:.1f}", f"L {points[0][0]:.1f} {points[0][1]:.1f}"]
+        + [
+            f"Q {(points[i-1][0] + points[i][0]) / 2:.1f} "
+            f"{min(points[i-1][1], points[i][1]) - 12:.1f} "
+            f"{points[i][0]:.1f} {points[i][1]:.1f}"
+            for i in range(1, len(points))
+        ]
+        + [f"L {home_x:.1f} {home_y:.1f}", "Z"]
+    )
+
+    fence_line = " ".join(
+        [f"M {points[0][0]:.1f} {points[0][1]:.1f}"]
+        + [
+            f"Q {(points[i-1][0] + points[i][0]) / 2:.1f} "
+            f"{min(points[i-1][1], points[i][1]) - 12:.1f} "
+            f"{points[i][0]:.1f} {points[i][1]:.1f}"
+            for i in range(1, len(points))
+        ]
+    )
+
+    label_names = ("LF", "LCF", "CF", "RCF", "RF")
+    label_values = (lf, lcf, cf, rcf, rf)
+    label_svg = "".join(
+        f'<text x="{lx:.1f}" y="{ly:.1f}" text-anchor="middle" class="dim">'
+        f'{name} {int(round(value))} ft</text>'
+        for (lx, ly), name, value in zip(label_points, label_names, label_values)
+    )
+
+    unique_id = re.sub(r"[^A-Za-z0-9_-]", "", str(home_abbr or "park"))
+    return textwrap.dedent(
+        f"""
+        <div class="bf-field-wrap">
+          <svg class="bf-field-svg" viewBox="0 0 520 330" role="img"
+               aria-label="Dimension-scaled ballpark field and wind direction">
+            <defs>
+              <linearGradient id="grass-{unique_id}" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#194a32"/>
+                <stop offset="1" stop-color="#07140f"/>
+              </linearGradient>
+              <linearGradient id="warning-{unique_id}" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0" stop-color="#76532e"/>
+                <stop offset="1" stop-color="#9b7748"/>
+              </linearGradient>
+            </defs>
+
+            <path d="{fence_path}" fill="url(#grass-{unique_id})"
+                  stroke="#5c6d87" stroke-width="3"/>
+            <path d="{fence_line}" fill="none" stroke="#86a0c6" stroke-width="4"/>
+
+            <path d="M260 304 L174 218 L260 132 L346 218 Z"
+                  fill="url(#warning-{unique_id})" opacity=".92" stroke="#d1b57c"/>
+            <path d="M260 304 L260 132 M174 218 L346 218"
+                  stroke="#d9c59a" stroke-width="1.5" opacity=".55"/>
+            <circle cx="260" cy="215" r="5" fill="#fff"/>
+            <rect x="255" y="294" width="10" height="10"
+                  transform="rotate(45 260 299)" fill="#fff"/>
+
+            {label_svg}
+
+            <g transform="translate(260 154) rotate({rotation})">
+              <line x1="0" y1="30" x2="0" y2="-38"
+                    stroke="#69a7ff" stroke-width="8" stroke-linecap="round"/>
+              <path d="M0 -58 L-15 -30 L15 -30 Z" fill="#69a7ff"/>
+            </g>
+            <text x="260" y="187" text-anchor="middle" class="windtxt">
+              FROM {escape(str(gh.get('wind_compass','—')))} · {_fmt_weather(gh.get('wind'),' MPH')}
+            </text>
+          </svg>
+        </div>
+        """
+    ).strip()
 
 
 def render_weather_game_card(game: dict, preliminary: bool = False):
@@ -2855,23 +2933,24 @@ def render_weather_game_card(game: dict, preliminary: bool = False):
       </div>
     </div>
     """
-    st.markdown(html, unsafe_allow_html=True)
+    st.markdown(textwrap.dedent(html).strip(), unsafe_allow_html=True)
 
     hours = weather.get("hours", [])
     if hours:
         cols = st.columns(len(hours))
         for col, hour in zip(cols, hours):
             border = "2px solid #69a7ff" if hour.get("is_game_hour") else "1px solid rgba(255,255,255,.10)"
+            hourly_html = f"""
+            <div class="bf-hour" style="border:{border}">
+              <div class="bf-hour-time">{hour['time'].strftime('%-I %p')}</div>
+              <div class="bf-hour-icon">{hour.get('icon','•')}</div>
+              <div class="bf-hour-temp">{_fmt_weather(hour.get('temp'),'°')}</div>
+              <div>{_fmt_weather(hour.get('precip'),'%')} rain</div>
+              <div>{_fmt_weather(hour.get('wind'),' mph')} {hour.get('wind_compass','—')}</div>
+            </div>
+            """
             col.markdown(
-                f"""
-                <div class="bf-hour" style="border:{border}">
-                  <div class="bf-hour-time">{hour['time'].strftime('%-I %p')}</div>
-                  <div class="bf-hour-icon">{hour.get('icon','•')}</div>
-                  <div class="bf-hour-temp">{_fmt_weather(hour.get('temp'),'°')}</div>
-                  <div>{_fmt_weather(hour.get('precip'),'%')} rain</div>
-                  <div>{_fmt_weather(hour.get('wind'),' mph')} {hour.get('wind_compass','—')}</div>
-                </div>
-                """,
+                textwrap.dedent(hourly_html).strip(),
                 unsafe_allow_html=True,
             )
 
@@ -2887,9 +2966,9 @@ def render_live_weather_board(schedule_rows: list[dict], preliminary: bool = Fal
         .bf-weather-summary{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:5px;padding:8px}
         .bf-weather-summary>div{background:#111722;border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:6px;text-align:center}
         .bf-weather-summary b{display:block;font-size:.76rem}.bf-weather-summary span{display:block;color:#8996aa;font-size:.48rem;text-transform:uppercase;letter-spacing:.07em;margin-top:3px}
-        .bf-weather-main{display:grid;grid-template-columns:minmax(300px,1.45fr) minmax(220px,.55fr);gap:8px;padding:0 8px 8px}
-        .bf-field-wrap{border:1px solid rgba(255,255,255,.08);border-radius:9px;background:#07100d;padding:3px;max-height:285px;overflow:hidden}
-        .bf-field-svg{width:100%;height:275px;display:block}.bf-field-svg .dim{fill:#f2f5fa;font-size:13px;font-weight:800}.bf-field-svg .windtxt{fill:#9ac2ff;font-size:12px;font-weight:900}
+        .bf-weather-main{display:grid;grid-template-columns:minmax(360px,1.55fr) minmax(240px,.45fr);gap:10px;padding:0 8px 8px}
+        .bf-field-wrap{border:1px solid rgba(255,255,255,.08);border-radius:10px;background:#050d0a;padding:5px;max-height:300px;overflow:hidden}
+        .bf-field-svg{width:100%;height:286px;display:block}.bf-field-svg .dim{fill:#f2f5fa;font-size:12px;font-weight:900;paint-order:stroke;stroke:#07100d;stroke-width:3px;stroke-linejoin:round}.bf-field-svg .windtxt{fill:#9ac2ff;font-size:12px;font-weight:900;paint-order:stroke;stroke:#07100d;stroke-width:3px}
         .bf-dim-panel,.bf-env-card{background:#111722;border:1px solid rgba(255,255,255,.08);border-radius:9px;padding:10px}
         .bf-dim-title{font-weight:950;font-size:.86rem}.bf-dim-order,.bf-weather-source{color:#8f9bad;font-size:.58rem;margin-top:5px}.bf-dim-values{font-size:.92rem;font-weight:950;margin-top:5px}
         .bf-env-card{margin-top:8px}.bf-env-top{display:flex;justify-content:space-between;gap:8px;align-items:center}
