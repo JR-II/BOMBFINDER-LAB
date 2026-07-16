@@ -360,6 +360,21 @@ hr { margin-top: .38rem !important; margin-bottom: .38rem !important; }
 .bf-v2-card.early{border-color:rgba(255,209,102,.58);background:linear-gradient(90deg,#11151d,#0c1119)}
 .bf-v2-head{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:start}
 .bf-v2-name{font-weight:950;font-size:.98rem;line-height:1.08;color:#f7f9ff}
+.bf-live-hr-badge{
+    display:inline-flex;align-items:center;gap:4px;margin-left:6px;padding:2px 6px;
+    border-radius:999px;font-size:.56rem;font-weight:950;vertical-align:middle;
+    white-space:nowrap;border:1px solid rgba(255,255,255,.14);background:#151b25;color:#aeb8c8;
+}
+.bf-live-hr-badge.zero{color:#aeb8c8;border-color:rgba(174,184,200,.28);background:rgba(174,184,200,.06)}
+.bf-live-hr-badge.hit{color:#59f0a2;border-color:rgba(53,208,127,.70);background:rgba(53,208,127,.13)}
+.bf-live-hr-badge.multi{color:#ffd166;border-color:rgba(255,209,102,.75);background:rgba(255,209,102,.13)}
+.bf-live-result-strip{
+    margin:0;padding:7px 12px;border-bottom:1px solid rgba(255,255,255,.08);
+    font-size:.72rem;font-weight:900;letter-spacing:.02em;
+}
+.bf-live-result-strip.zero{color:#8f9bad;background:rgba(255,255,255,.018)}
+.bf-live-result-strip.hit{color:#35d07f;background:rgba(53,208,127,.07)}
+.bf-live-result-strip.multi{color:#ffd166;background:rgba(255,209,102,.08)}
 .bf-v2-meta{font-size:.68rem;color:#97a2b5;margin-top:3px}
 .bf-v2-role-row{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-top:7px}
 .bf-v2-role{display:inline-flex;align-items:center;border-radius:999px;padding:3px 8px;font-size:.61rem;font-weight:950;letter-spacing:.08em}
@@ -390,6 +405,8 @@ hr { margin-top: .38rem !important; margin-bottom: .38rem !important; }
 @media(max-width:900px){.bf-v2-grid{grid-template-columns:1fr}}
 @media(max-width:640px){
 .bf-v2-card{padding:8px 9px;margin:6px 0}.bf-v2-name{font-size:.86rem}.bf-v2-meta{font-size:.59rem}
+.bf-live-hr-badge{font-size:.49rem;padding:2px 5px;margin-left:4px}
+.bf-live-result-strip{font-size:.62rem;padding:6px 8px}
 .bf-v2-scores{grid-template-columns:repeat(3,48px)}.bf-v2-score span{font-size:.76rem}.bf-v2-score b{font-size:.43rem}
 .bf-v2-role{font-size:.52rem;padding:2px 6px}.bf-v2-grade{font-size:.66rem;padding:2px 6px}
 .bf-v2-badges{font-size:.53rem}.bf-v2-why{font-size:.56rem}.bf-v2-advanced{gap:3px}
@@ -6606,7 +6623,11 @@ def _match_card_html(row: pd.Series, rank_override=None):
     why = _display_value(row.get("Ranking Reasons", row.get("Why", "")))
     why2 = _display_value(row.get("Why", ""))
     actual_hr = safe_int(row.get("Actual HR Today"), 0)
-    hit_banner = f'<div class="bf-card-foot"><span class="bf-green-txt">HR HIT TODAY: {actual_hr}</span></div>' if actual_hr > 0 else ""
+    _, hr_status_class, hr_status_text = _live_hr_display(actual_hr, early=False)
+    hit_banner = (
+        f'<div class="bf-live-result-strip {hr_status_class}">'
+        f'{escape(hr_status_text)}</div>'
+    )
 
     return f'''
 <div class="bf-match-card">
@@ -6658,6 +6679,19 @@ def _compact_reason_breakdown(row: pd.Series) -> str:
         '</div>'
     )
 
+
+
+def _live_hr_display(actual_hr, early: bool = False) -> tuple[str, str, str]:
+    """Return visible HR count text and styling without affecting rankings."""
+    if early:
+        return "HR —", "zero", "EARLY RESEARCH · HR RESULTS NOT TRACKED"
+
+    hr_count = max(0, safe_int(actual_hr, 0))
+    if hr_count >= 2:
+        return f"HR {hr_count}", "multi", f"🔥 {hr_count}-HR GAME"
+    if hr_count == 1:
+        return "HR 1", "hit", "✅ HOMERED TODAY · HR 1"
+    return "HR 0", "zero", "HR TODAY · 0"
 
 
 def _bf_v2_role(rank, quality_score: float, grade: str, early: bool = False):
@@ -6837,8 +6871,11 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
     nuke = safe_float(row.get("Nuke Score"), clip((quality + moon + edge) / 3, 0, 99))
     stack = safe_float(row.get("Stack Score"), clip(edge * .55 + pitch_fit * .45, 0, 99))
     actual_hr = safe_int(row.get("Actual HR Today"), 0)
-
-    hit_badge = f" · HR {actual_hr}" if actual_hr > 0 else ""
+    hr_badge_text, hr_badge_class, _ = _live_hr_display(actual_hr, early=early)
+    hit_badge = (
+        f'<span class="bf-live-hr-badge {hr_badge_class}">'
+        f'{escape(hr_badge_text)}</span>'
+    )
     data_level = str(row.get("Data Level", "")).strip()
     meta_extra = f" · {escape(data_level)}" if early and data_level else ""
     card_class = "early" if early else role_class
@@ -6849,7 +6886,7 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
 <div class="bf-v2-card {card_class}">
   <div class="bf-v2-head">
     <div>
-      <div class="bf-v2-name">#{escape(str(rank))} {escape(player)}{escape(hit_badge)}</div>
+      <div class="bf-v2-name">#{escape(str(rank))} {escape(player)}{hit_badge}</div>
       <div class="bf-v2-role-row">
         <span class="bf-v2-role {role_class}">{escape(role_text)}</span>
         <span class="bf-v2-grade">{escape(grade)}</span>
