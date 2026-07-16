@@ -2507,28 +2507,137 @@ def _compass_name(deg):
 
 @st.cache_data(ttl=900, max_entries=60)
 def fetch_game_weather_timeline(home_team_abbr: str, game_time_value: str):
-    coords=PARK_COORDS.get(home_team_abbr)
-    if not coords: return {"found":False,"hours":[],"source":"Open-Meteo"}
-    tz_name=PARK_TIMEZONES.get(home_team_abbr,"America/New_York")
-    params={"latitude":coords[0],"longitude":coords[1],"timezone":tz_name,"hourly":"temperature_2m,relative_humidity_2m,precipitation_probability,pressure_msl,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m","temperature_unit":"fahrenheit","wind_speed_unit":"mph","forecast_days":14}
+    """Fetch resilient hourly game weather from Open-Meteo.
+
+    The first request asks for the full weather panel. If Open-Meteo rejects a
+    field or temporarily returns an incomplete payload, a smaller fallback
+    request is attempted. If the scheduled game hour is outside the returned
+    window, the nearest available hour is still used instead of showing a blank
+    weather tab.
+    """
+    coords = PARK_COORDS.get(home_team_abbr)
+    if not coords:
+        return {
+            "found": False,
+            "hours": [],
+            "source": "Open-Meteo",
+            "error": "missing park coordinates",
+        }
+
+    tz_name = PARK_TIMEZONES.get(home_team_abbr, "America/New_York")
+    base_params = {
+        "latitude": coords[0],
+        "longitude": coords[1],
+        "timezone": tz_name,
+        "temperature_unit": "fahrenheit",
+        "wind_speed_unit": "mph",
+        "forecast_days": 16,
+    }
+
+    hourly_sets = [
+        "temperature_2m,relative_humidity_2m,precipitation_probability,pressure_msl,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m",
+        "temperature_2m,relative_humidity_2m,precipitation_probability,weather_code,wind_speed_10m,wind_direction_10m",
+    ]
+
+    payload = None
+    last_error = ""
+    for hourly_fields in hourly_sets:
+        try:
+            params = dict(base_params)
+            params["hourly"] = hourly_fields
+            response = requests.get(
+                "https://api.open-meteo.com/v1/forecast",
+                params=params,
+                timeout=18,
+            )
+            response.raise_for_status()
+            candidate = response.json() or {}
+            hourly = candidate.get("hourly") or {}
+            if hourly.get("time"):
+                payload = candidate
+                break
+            last_error = "hourly response contained no times"
+        except Exception as exc:
+            last_error = str(exc)
+
+    if not payload:
+        return {
+            "found": False,
+            "hours": [],
+            "source": "Open-Meteo",
+            "error": last_error or "forecast unavailable",
+        }
+
+    hourly = payload.get("hourly") or {}
+    times = hourly.get("time") or []
+    if not times:
+        return {
+            "found": False,
+            "hours": [],
+            "source": "Open-Meteo",
+            "error": "forecast returned no hourly timestamps",
+        }
+
     try:
-        r=requests.get("https://api.open-meteo.com/v1/forecast",params=params,timeout=15); r.raise_for_status()
-        hourly=(r.json() or {}).get("hourly",{}) or {}; times=hourly.get("time",[]) or []
-        if not times: return {"found":False,"hours":[],"source":"Open-Meteo"}
-        game_dt=parse_game_time_et(game_time_value)
-        target=(game_dt.astimezone(ZoneInfo(tz_name)) if game_dt else datetime.now(ZoneInfo(tz_name)))
-        parsed=[datetime.fromisoformat(t).replace(tzinfo=ZoneInfo(tz_name)) for t in times]
-        center=min(range(len(parsed)),key=lambda i:abs((parsed[i]-target).total_seconds())); start=max(0,center-2); end=min(len(parsed),center+4)
-        def at(name,i):
-            arr=hourly.get(name) or []
-            return arr[i] if i<len(arr) else None
-        rows=[]
-        for i in range(start,end):
-            label,icon=_weather_label(at("weather_code",i)); wd=safe_float(at("wind_direction_10m",i),None)
-            rows.append({"time":parsed[i],"label":label,"icon":icon,"temp":safe_float(at("temperature_2m",i),None),"precip":safe_float(at("precipitation_probability",i),None),"humidity":safe_float(at("relative_humidity_2m",i),None),"pressure":safe_float(at("pressure_msl",i),None),"wind":safe_float(at("wind_speed_10m",i),None),"gust":safe_float(at("wind_gusts_10m",i),None),"wind_dir":wd,"wind_compass":_compass_name(wd),"is_game_hour":i==center})
-        return {"found":bool(rows),"hours":rows,"game_hour":rows[center-start] if rows else {},"source":"Open-Meteo hourly forecast"}
-    except Exception:
-        return {"found":False,"hours":[],"source":"Open-Meteo"}
+        parsed = [
+            datetime.fromisoformat(str(t)).replace(tzinfo=ZoneInfo(tz_name))
+            for t in times
+        ]
+    except Exception as exc:
+        return {
+            "found": False,
+            "hours": [],
+            "source": "Open-Meteo",
+            "error": f"could not parse forecast times: {exc}",
+        }
+
+    game_dt = parse_game_time_et(game_time_value)
+    target = (
+        game_dt.astimezone(ZoneInfo(tz_name))
+        if game_dt is not None
+        else datetime.now(ZoneInfo(tz_name))
+    )
+
+    center = min(
+        range(len(parsed)),
+        key=lambda i: abs((parsed[i] - target).total_seconds()),
+    )
+    start_idx = max(0, center - 2)
+    end_idx = min(len(parsed), center + 4)
+
+    def at(name, i):
+        values = hourly.get(name) or []
+        return values[i] if i < len(values) else None
+
+    rows = []
+    for i in range(start_idx, end_idx):
+        weather_label, icon = _weather_label(at("weather_code", i))
+        wind_dir = safe_float(at("wind_direction_10m", i), None)
+        rows.append({
+            "time": parsed[i],
+            "label": weather_label,
+            "icon": icon,
+            "temp": safe_float(at("temperature_2m", i), None),
+            "precip": safe_float(at("precipitation_probability", i), None),
+            "humidity": safe_float(at("relative_humidity_2m", i), None),
+            "pressure": safe_float(at("pressure_msl", i), None),
+            "wind": safe_float(at("wind_speed_10m", i), None),
+            "gust": safe_float(at("wind_gusts_10m", i), None),
+            "wind_dir": wind_dir,
+            "wind_compass": _compass_name(wind_dir),
+            "is_game_hour": i == center,
+        })
+
+    game_hour = next((row for row in rows if row.get("is_game_hour")), rows[0] if rows else {})
+    return {
+        "found": bool(rows),
+        "hours": rows,
+        "game_hour": game_hour,
+        "source": "Open-Meteo hourly forecast",
+        "nearest_hour_used": bool(parsed[center] != target.replace(minute=0, second=0, microsecond=0)),
+        "error": "",
+    }
+
 
 def _fmt_weather(v,suffix="",digits=0):
     return "—" if v is None else f"{safe_float(v,0):.{digits}f}{suffix}"
@@ -2541,7 +2650,35 @@ def _stadium_svg(home_abbr,weather):
 def render_weather_game_card(game: dict, preliminary: bool=False):
     home_abbr=resolve_game_park_abbr(game); weather=fetch_game_weather_timeline(home_abbr,game.get("game_time","")); gh=weather.get("game_hour",{}) or {}
     if not weather.get("found"):
-        st.warning(f"Weather forecast is not available yet for {game.get('game_key','this game')} at {game.get('venue','the listed venue')}."); return
+        current = fetch_weather_for_park(home_abbr)
+        fallback_note = escape(str(weather.get("error", "hourly forecast unavailable")))
+        st.markdown(
+            f"""
+            <div class="bf-weather-card">
+              <div class="bf-weather-head">
+                <div>
+                  <div class="bf-weather-game">{escape(game.get('game_key',''))}</div>
+                  <div class="bf-weather-venue">{escape(str(game.get('venue','TBD')))} · {format_game_time_et(game.get('game_time',''))}</div>
+                </div>
+                <div class="bf-weather-badge">CURRENT CONDITIONS FALLBACK</div>
+              </div>
+              <div class="bf-weather-summary">
+                <div><b>{_fmt_weather(current.get('TempF'),'°F')}</b><span>Current temperature</span></div>
+                <div><b>{_fmt_weather(current.get('WindMPH'),' MPH')}</b><span>Current wind</span></div>
+                <div><b>{escape(str(PARK_ROOFS.get(home_abbr,'OPEN AIR')))}</b><span>Roof type</span></div>
+                <div><b>{escape(str(PARK_FACTORS.get(home_abbr,'—')))}</b><span>Park factor</span></div>
+                <div><b>{escape(str(PARK_DIMENSIONS.get(home_abbr,'—')))}</b><span>Dimensions</span></div>
+                <div><b>RETRYING</b><span>Hourly feed</span></div>
+              </div>
+              <div class="bf-card-foot">
+                Hourly game-time forecast could not be loaded. Current park conditions are shown instead.
+                Detail: {fallback_note}
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
     dims=PARK_DIMENSIONS.get(home_abbr); dim_text=" / ".join(str(x) for x in dims) if dims else "Not available"
     label,icon=escape(str(gh.get("label","Conditions unavailable"))),gh.get("icon","•"); roof=PARK_ROOFS.get(home_abbr,"OPEN AIR")
     html=f'''<div class="bf-weather-card"><div class="bf-weather-head"><div><div class="bf-weather-game">{escape(game.get('game_key',''))}</div><div class="bf-weather-venue">{escape(str(game.get('venue','TBD')))} · {format_game_time_et(game.get('game_time',''))}</div></div><div class="bf-weather-badge">{'PRELIMINARY' if preliminary else 'GAME-TIME FORECAST'}</div></div><div class="bf-weather-summary"><div><b>{icon} {label}</b><span>Condition</span></div><div><b>{_fmt_weather(gh.get('temp'),'°F')}</b><span>Temperature</span></div><div><b>{_fmt_weather(gh.get('precip'),'%')}</b><span>Precipitation</span></div><div><b>{_fmt_weather(gh.get('humidity'),'%')}</b><span>Humidity</span></div><div><b>{_fmt_weather(gh.get('wind'),' MPH')}</b><span>From {gh.get('wind_compass','—')} ({_fmt_weather(gh.get('wind_dir'),'°')})</span></div><div><b>{roof}</b><span>Roof type</span></div></div><div class="bf-weather-main">{_stadium_svg(home_abbr,weather)}<div class="bf-dim-panel"><div class="bf-dim-title">Stadium Dimensions</div><div class="bf-dim-order">LF / LCF / CF / RCF / RF</div><div class="bf-dim-values">{dim_text}</div><div class="bf-weather-source">Forecast: {weather.get('source')} · nearest hour to first pitch. Wind direction is the direction the wind comes from.</div></div></div></div>'''
@@ -8434,6 +8571,10 @@ with tabs[8]:
 with tabs[9]:
     st.subheader("Live Weather")
     st.caption("Hourly game-time forecast, wind direction and speed, and stadium dimensions in a visual field layout.")
+    if st.button("Refresh Live Weather", key="refresh_live_weather", use_container_width=True):
+        fetch_game_weather_timeline.clear()
+        fetch_weather_for_park.clear()
+        st.rerun()
     render_live_weather_board(schedule, preliminary=False)
 
 with tabs[10]:
