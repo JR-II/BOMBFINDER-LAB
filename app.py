@@ -504,6 +504,13 @@ LEGACY_TRACKER_FILE = "hr_tracker.csv"
 LEARNING_PROFILE_FILE = os.path.join(BF_DATA_DIR, "bf_learning_profile.json")
 TRACKER_AUDIT_VERSION = "2.0"
 
+# Resource protection for Streamlit Community Cloud.
+# Consolidated tracker/lock files are preserved. Only redundant dated recovery
+# snapshots are pruned.
+BF_SNAPSHOT_RETENTION_DAYS = int(os.environ.get("BF_SNAPSHOT_RETENTION_DAYS", "30"))
+BF_BOARD_SNAPSHOT_RETENTION_DAYS = int(os.environ.get("BF_BOARD_SNAPSHOT_RETENTION_DAYS", "14"))
+BF_MAX_LOCAL_DATA_MB = int(os.environ.get("BF_MAX_LOCAL_DATA_MB", "250"))
+
 
 def ensure_snapshot_folder():
     os.makedirs(SNAPSHOT_DIR, exist_ok=True)
@@ -562,6 +569,11 @@ def save_daily_board_snapshot(board_df: pd.DataFrame, snapshot_date: str):
             return
 
     clean_board.to_csv(board_path, index=False)
+    try:
+        cleanup_bf_recovery_snapshots()
+        enforce_bf_local_storage_ceiling()
+    except Exception:
+        pass
 
 
 def load_daily_board_snapshot(snapshot_date: str) -> pd.DataFrame:
@@ -979,6 +991,114 @@ def _snapshot_directories() -> list[str]:
     return folders
 
 
+def _bf_directory_size_bytes(folder: str) -> int:
+    total = 0
+    if not folder or not os.path.isdir(folder):
+        return total
+    for root, _, files in os.walk(folder):
+        for filename in files:
+            path = os.path.join(root, filename)
+            try:
+                total += os.path.getsize(path)
+            except OSError:
+                continue
+    return total
+
+
+def cleanup_bf_recovery_snapshots(
+    tracker_days: int = BF_SNAPSHOT_RETENTION_DAYS,
+    board_days: int = BF_BOARD_SNAPSHOT_RETENTION_DAYS,
+) -> dict:
+    """Delete only old redundant dated snapshot files."""
+    ensure_snapshot_folder()
+    now = datetime.now()
+    removed_files = 0
+    removed_bytes = 0
+
+    for folder in _snapshot_directories():
+        if not os.path.isdir(folder):
+            continue
+        for filename in os.listdir(folder):
+            tracker_match = re.fullmatch(r"hr_tracker_(\d{4}-\d{2}-\d{2})\.csv", filename)
+            board_match = re.fullmatch(r"hr_board_(\d{4}-\d{2}-\d{2})\.csv", filename)
+            if not tracker_match and not board_match:
+                continue
+
+            path = os.path.join(folder, filename)
+            if not os.path.isfile(path):
+                continue
+
+            date_key = (tracker_match or board_match).group(1)
+            try:
+                file_date = datetime.strptime(date_key, "%Y-%m-%d")
+            except ValueError:
+                continue
+
+            retention = tracker_days if tracker_match else board_days
+            if (now - file_date).days <= max(1, int(retention)):
+                continue
+
+            try:
+                size = os.path.getsize(path)
+                os.remove(path)
+                removed_files += 1
+                removed_bytes += size
+            except OSError:
+                continue
+
+    return {
+        "removed_files": removed_files,
+        "removed_mb": round(removed_bytes / (1024 * 1024), 2),
+        "local_mb": round(_bf_directory_size_bytes(BF_DATA_DIR) / (1024 * 1024), 2),
+    }
+
+
+def enforce_bf_local_storage_ceiling(max_mb: int = BF_MAX_LOCAL_DATA_MB) -> dict:
+    """Remove oldest redundant snapshots if local BF data exceeds the ceiling."""
+    ensure_snapshot_folder()
+    ceiling = max(25, int(max_mb)) * 1024 * 1024
+    current = _bf_directory_size_bytes(BF_DATA_DIR)
+    removed_files = 0
+    removed_bytes = 0
+
+    if current <= ceiling:
+        return {
+            "removed_files": 0,
+            "removed_mb": 0.0,
+            "local_mb": round(current / (1024 * 1024), 2),
+        }
+
+    candidates = []
+    for folder in _snapshot_directories():
+        if not os.path.isdir(folder):
+            continue
+        for filename in os.listdir(folder):
+            if not re.fullmatch(r"hr_(?:tracker|board)_\d{4}-\d{2}-\d{2}\.csv", filename):
+                continue
+            path = os.path.join(folder, filename)
+            try:
+                candidates.append((os.path.getmtime(path), path, os.path.getsize(path)))
+            except OSError:
+                continue
+
+    for _, path, size in sorted(candidates):
+        if current <= ceiling:
+            break
+        try:
+            os.remove(path)
+            current -= size
+            removed_files += 1
+            removed_bytes += size
+        except OSError:
+            continue
+
+    return {
+        "removed_files": removed_files,
+        "removed_mb": round(removed_bytes / (1024 * 1024), 2),
+        "local_mb": round(max(current, 0) / (1024 * 1024), 2),
+    }
+
+
 def _load_tracker_snapshot_files() -> pd.DataFrame:
     frames = []
     for folder in _snapshot_directories():
@@ -1232,6 +1352,12 @@ def save_tracker(df: pd.DataFrame):
         )
         _atomic_write_csv(merged, snapshot_path)
 
+    try:
+        cleanup_bf_recovery_snapshots()
+        enforce_bf_local_storage_ceiling()
+    except Exception:
+        pass
+
 def load_combo_tracker() -> pd.DataFrame:
     columns = [
         "date", "combo_id", "combo_label", "combo_size", "legs", "games",
@@ -1251,7 +1377,7 @@ def load_combo_tracker() -> pd.DataFrame:
 
 
 def save_combo_tracker(df: pd.DataFrame):
-    df.to_csv(COMBO_TRACKER_FILE, index=False)
+    _atomic_write_csv(df, COMBO_TRACKER_FILE)
 
 
 def load_board_locks() -> pd.DataFrame:
@@ -1264,7 +1390,7 @@ def load_board_locks() -> pd.DataFrame:
 
 
 def save_board_locks(df: pd.DataFrame):
-    df.to_csv(LOCK_FILE, index=False)
+    _atomic_write_csv(df, LOCK_FILE)
 
 
 def get_locked_board_for_date(date_key: str) -> pd.DataFrame:
@@ -1417,7 +1543,7 @@ def extract_people_hand_maps(people_payload: dict) -> dict:
     return hand_map
 
 
-@st.cache_data(ttl=21600)
+@st.cache_data(ttl=21600, max_entries=24)
 def fetch_people_hand_map(person_ids_tuple: tuple) -> dict:
     ids = [str(int(x)) for x in person_ids_tuple if pd.notna(x)]
     if not ids:
@@ -1453,7 +1579,7 @@ def get_true_pitcher_hand(pitcher_id, hand_map: dict) -> str:
     return normalize_hand_code((hand_map.get(pid) or {}).get("throw"), "")
 
 
-@st.cache_data(ttl=21600)
+@st.cache_data(ttl=21600, max_entries=3)
 def fetch_mlb_people_directory() -> dict:
     """Name -> MLBAM ID directory from MLB Stats API for current/prior seasons."""
     directory = {}
@@ -1477,7 +1603,7 @@ def fetch_mlb_people_directory() -> dict:
     return directory
 
 
-@st.cache_data(ttl=21600)
+@st.cache_data(ttl=21600, max_entries=180)
 def lookup_mlb_person_id_by_name(name: str):
     """Resolve a player/pitcher name to MLBAM ID without guessing."""
     clean = str(name or "").strip()
@@ -1616,7 +1742,7 @@ def _read_statcast_csv(params: dict, timeout: int = 18) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=21600)
+@st.cache_data(ttl=21600, max_entries=100)
 def fetch_true_pitcher_arsenal(pitcher_id, days_back: int = 730, cache_version: str = "bf-real-arsenal-v8") -> dict:
     empty = {"found": False, "mix": {}, "tiles": []}
     try:
@@ -1693,7 +1819,7 @@ def fetch_true_pitcher_arsenal(pitcher_id, days_back: int = 730, cache_version: 
     return {"found": bool(tiles), "mix": {t["pitch"]: t["usage"] for t in tiles}, "tiles": tiles}
 
 
-@st.cache_data(ttl=21600)
+@st.cache_data(ttl=21600, max_entries=100)
 def fetch_true_batter_pitch_arsenal(batter_id, days_back: int = 730) -> dict:
     empty = {"found": False, "by_pitch": {}}
     try:
@@ -2313,7 +2439,7 @@ def compute_weather_boost(temp_f: float, wind_mph: float) -> tuple[float, str]:
     return round(boost, 2), " | ".join(notes[:2])
 
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=1800, max_entries=40)
 def fetch_weather_for_park(home_team_abbr: str):
     coords = PARK_COORDS.get(home_team_abbr)
     if not coords:
@@ -2417,7 +2543,7 @@ def render_live_weather_board(schedule_rows: list[dict], preliminary: bool=False
     for game in sort_schedule_rows(schedule_rows): render_weather_game_card(game,preliminary=preliminary)
 
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=1800, max_entries=40)
 def get_previous_team_game_pk(team_id: int):
     start_date = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
     try:
@@ -2448,7 +2574,7 @@ def get_previous_team_game_pk(team_id: int):
     return games[0][1]
 
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=1800, max_entries=40)
 def fetch_bullpen_fatigue_for_team(team_id: int):
     game_pk = get_previous_team_game_pk(team_id)
     neutral = {
@@ -2538,7 +2664,7 @@ def fetch_bullpen_fatigue_for_team(team_id: int):
     return neutral
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, max_entries=4)
 def fetch_schedule_payload():
     url = (
         "https://statsapi.mlb.com/api/v1/schedule"
@@ -2549,7 +2675,7 @@ def fetch_schedule_payload():
     return resp.json()
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, max_entries=40)
 def get_team_probable_pitcher(team_id: int):
     url = f"https://statsapi.mlb.com/api/v1/teams/{team_id}?hydrate=probablePitcher"
     try:
@@ -2581,7 +2707,7 @@ def resolve_pitcher_name(team_id: int, team_block: dict) -> str:
     return "Starter Pending"
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, max_entries=4)
 def get_today_schedule():
     data = fetch_schedule_payload()
 
@@ -2633,7 +2759,7 @@ def get_today_schedule():
     return sort_schedule_rows(games)
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, max_entries=48)
 def fetch_boxscore(game_pk: int):
     url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
     try:
@@ -2644,7 +2770,7 @@ def fetch_boxscore(game_pk: int):
         return {}
 
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=1800, max_entries=40)
 def get_team_hitters(team_id: int):
     url = f"https://statsapi.mlb.com/api/v1/teams/{team_id}/roster?rosterType=active"
     try:
@@ -2667,7 +2793,7 @@ def get_team_hitters(team_id: int):
         return []
 
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=1800, max_entries=24)
 def fetch_people_stats(person_ids_tuple: tuple, group: str):
     person_ids = [str(x) for x in person_ids_tuple if pd.notna(x)]
     if not person_ids:
@@ -2712,7 +2838,7 @@ def fetch_people_stats(person_ids_tuple: tuple, group: str):
     return results
 
 
-@st.cache_data(ttl=21600)
+@st.cache_data(ttl=21600, max_entries=4)
 def fetch_savant_batter_map(year: int):
     expected_urls = [
         f"https://baseballsavant.mlb.com/leaderboard/expected_statistics?type=batter&year={year}",
@@ -2803,7 +2929,7 @@ def fetch_savant_batter_map(year: int):
     return result
 
 
-@st.cache_data(ttl=21600)
+@st.cache_data(ttl=21600, max_entries=80)
 def fetch_l10_bbe_profile_from_savant_csv(player_id: int, days_back: int = 30) -> dict:
     """Fast true-L10 BBE pull for final board hitters only.
 
@@ -3783,19 +3909,40 @@ def compute_matchup_advantage_score(
 
 
 def get_best_hr_matchups(df: pd.DataFrame, limit: int = 25) -> pd.DataFrame:
-    if df.empty:
-        return df.copy()
+    """Rank the strongest available HR matchups across full and preview schemas.
 
-    board = df.copy()
+    Current-day boards normally contain ``HR Eligible``. Tomorrow/early-preview
+    frames may not yet have that field, so the function falls back to all
+    available rows instead of crashing.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame() if df is None else df.copy()
+
+    board = dedupe_columns(df.copy())
+
     if "Matchup Advantage Score" not in board.columns:
-        board["Matchup Advantage Score"] = safe_numeric_series(board, "Model Rank Score", 0.0)
-    if "HR Attackability Score" not in board.columns:
-        board["HR Attackability Score"] = safe_numeric_series(board, "Pitcher_HR9_Last7", 0.0) * 10
-    if "HR Attackability Score" not in board.columns:
-        board["HR Attackability Score"] = board["HR Attackability Score"]
+        board["Matchup Advantage Score"] = safe_numeric_series(
+            board, "Model Rank Score", 0.0
+        )
 
-    eligible = board[board["HR Eligible"].astype(bool)].copy()
-    if eligible.empty:
+    if "HR Attackability Score" not in board.columns:
+        board["HR Attackability Score"] = (
+            safe_numeric_series(board, "Pitcher_HR9_Last7", 0.0) * 10
+        )
+
+    if "HR Eligible" in board.columns:
+        raw = board["HR Eligible"]
+        if pd.api.types.is_bool_dtype(raw):
+            mask = raw.fillna(False)
+        else:
+            normalized = raw.fillna("").astype(str).str.strip().str.lower()
+            mask = normalized.isin(
+                {"true", "1", "yes", "y", "eligible", "pass"}
+            )
+        eligible = board[mask].copy()
+        if eligible.empty:
+            eligible = board.copy()
+    else:
         eligible = board.copy()
 
     eligible["_global_score"] = (
@@ -3803,10 +3950,14 @@ def get_best_hr_matchups(df: pd.DataFrame, limit: int = 25) -> pd.DataFrame:
         + safe_numeric_series(eligible, "HR Attackability Score", 0.0) * 1.10
         + safe_numeric_series(eligible, "Statcast Authority Score", 0.0) * 0.85
         + safe_numeric_series(eligible, "Model Rank Score", 0.0) * 0.05
-        + safe_numeric_series(eligible, "HR Probability %", 0.0) * 1.4
+        + safe_numeric_series(eligible, "HR Probability %", 0.0) * 1.40
     )
 
-    eligible = eligible.sort_values("_global_score", ascending=False).drop(columns=["_global_score"]).head(limit)
+    eligible = (
+        eligible.sort_values("_global_score", ascending=False)
+        .drop(columns=["_global_score"])
+        .head(max(1, int(limit)))
+    )
     return add_rank_column(dedupe_columns(eligible.reset_index(drop=True)))
 
 
@@ -4958,7 +5109,7 @@ def _prefetch_cached_calls(call_specs: list[tuple], max_workers: int = 12):
                 pass
 
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=1800, max_entries=4)
 def build_daily_dataset(deep_bbe: bool = False):
     schedule = sort_schedule_rows(get_today_schedule())
     rows = []
@@ -5510,7 +5661,7 @@ def build_visible_tracker_pool(df: pd.DataFrame, schedule: list[dict], assignmen
     return visible_df
 
 
-@st.cache_data(ttl=15)
+@st.cache_data(ttl=15, max_entries=48)
 def get_live_feed_homers(game_pk: int):
     """Count HRs from MLB live feed play-by-play.
 
@@ -5545,7 +5696,7 @@ def get_live_feed_homers(game_pk: int):
     return homer_map
 
 
-@st.cache_data(ttl=15)
+@st.cache_data(ttl=15, max_entries=48)
 def get_boxscore_homers(game_pk: int):
     url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
     homer_map = {}
@@ -7031,7 +7182,7 @@ def fetch_schedule_for_date(date_key: str) -> list[dict]:
     return sort_schedule_rows(games)
 
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=1800, max_entries=6)
 def find_next_scheduled_slate(start_date_key: str, max_days: int = 14):
     """Find the next calendar date that actually has MLB games."""
     try:
@@ -7746,6 +7897,98 @@ def render_first_time_guide():
             st.rerun()
 
 
+def render_active_tomorrow_preview():
+    """Resource-safe tomorrow/next-slate research available during active slates."""
+    next_date_key, next_schedule = find_next_scheduled_slate(today_str(), max_days=14)
+
+    if not next_date_key or not next_schedule:
+        st.warning("No future MLB slate was found within the next 14 days.")
+        return
+
+    next_dt = datetime.strptime(next_date_key, "%Y-%m-%d")
+    try:
+        date_label = next_dt.strftime("%A, %B %-d")
+    except Exception:
+        date_label = next_dt.strftime("%A, %B %d").replace(" 0", " ")
+
+    st.subheader(f"Tomorrow / Next Slate Preview — {date_label}")
+    st.caption(
+        "Early research only • probable pitchers and expected hitter pools • "
+        "never locked or tracked • updates as lineups and probable pitchers improve."
+    )
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Games", len(next_schedule))
+    m2.metric(
+        "Days Away",
+        (next_dt.date() - datetime.now(ZoneInfo("America/New_York")).date()).days,
+    )
+    probable_count = sum(
+        int(g.get("away_pitcher") != "Starter Pending")
+        + int(g.get("home_pitcher") != "Starter Pending")
+        for g in next_schedule
+    )
+    m3.metric("Probable Pitchers", f"{probable_count}/{len(next_schedule) * 2}")
+
+    schedule_view = pd.DataFrame([
+        {
+            "Time": format_game_time_et(g.get("game_time", "")),
+            "Game": g.get("game_key", ""),
+            "Venue": g.get("venue", "TBD"),
+            "Away Starter": g.get("away_pitcher", "Starter Pending"),
+            "Home Starter": g.get("home_pitcher", "Starter Pending"),
+        }
+        for g in next_schedule
+    ])
+    st.dataframe(schedule_view, use_container_width=True, hide_index=True)
+
+    build_key = f"active_next_slate_{next_date_key}"
+    if st.button(
+        "Generate Tomorrow / Next Slate Predictions",
+        type="primary",
+        use_container_width=True,
+        key="active_generate_next_slate",
+    ):
+        st.session_state["build_active_next_slate_preview"] = build_key
+
+    if st.session_state.get("build_active_next_slate_preview") != build_key:
+        st.info(
+            "Generate only when you want early research. Keeping this on demand "
+            "prevents tomorrow data from slowing today's live board."
+        )
+        return
+
+    with st.spinner("Building resource-safe next-slate predictions..."):
+        preview_df = build_next_slate_preview(
+            next_date_key,
+            tuple(tuple(sorted(g.items())) for g in next_schedule),
+        )
+
+    if preview_df is None or preview_df.empty:
+        st.warning(
+            "The slate is scheduled, but there is not enough reliable hitter data yet. "
+            "Probable pitchers and schedule details remain available above."
+        )
+        return
+
+    st.markdown("### Early BF Targets")
+    preview_targets = get_best_hr_matchups(preview_df, 20)
+
+    if preview_targets.empty:
+        preview_targets = preview_df.copy()
+
+    # Keep the same premium decision-card language as the active board where possible.
+    try:
+        render_card_grid(preview_targets, max_cards=20, columns=2)
+    except Exception:
+        preview_cols = [
+            "Rank", "Player", "Team", "Game", "Game Time", "Opponent Pitcher",
+            "Pitcher Status", "Lineup Status", "Early BF Score", "Season HR",
+            "Recent HR", "EV", "Barrel%", "HardHit%", "AIR%", "GroundBall%",
+        ]
+        display_existing_columns(preview_targets, preview_cols)
+
+
 def render_off_day_mode(tracker: pd.DataFrame):
     next_date_key, next_schedule = find_next_scheduled_slate(today_str(), max_days=14)
     previous_date, previous_board = _latest_previous_board(tracker)
@@ -7912,6 +8155,32 @@ with c1:
         st.rerun()
 
 
+# Run lightweight storage maintenance once per browser session.
+if (
+    not st.session_state.get("bf_resource_cleanup_complete", False)
+    or st.session_state.pop("bf_manual_resource_cleanup", False)
+):
+    try:
+        cleanup_bf_recovery_snapshots()
+        enforce_bf_local_storage_ceiling()
+    except Exception:
+        pass
+    st.session_state.bf_resource_cleanup_complete = True
+
+with st.sidebar.expander("BF Resource Maintenance", expanded=False):
+    local_mb = round(_bf_directory_size_bytes(BF_DATA_DIR) / (1024 * 1024), 2)
+    st.caption(f"Local BF data: {local_mb:.2f} MB")
+    st.caption(
+        f"Retention: tracker {BF_SNAPSHOT_RETENTION_DAYS} days • "
+        f"board {BF_BOARD_SNAPSHOT_RETENTION_DAYS} days"
+    )
+    if st.button("Clean old snapshots", key="bf_manual_cleanup_button"):
+        st.session_state.bf_manual_resource_cleanup = True
+        st.rerun()
+    if st.button("Clear temporary Streamlit cache", key="bf_clear_cache_button"):
+        st.cache_data.clear()
+        st.success("Temporary cache cleared. The next load will rebuild fresh data.")
+
 deep_bbe_mode = bool(st.session_state.get("deep_l10_bbe", DEFAULT_DEEP_L10_BBE))
 live_df, schedule = build_daily_dataset(deep_bbe=deep_bbe_mode)
 schedule = sort_schedule_rows(schedule)
@@ -7977,7 +8246,7 @@ if locked_df.empty:
     st.warning("No games or hitter data loaded.")
     st.stop()
 
-base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker", "Lineup Watch", "Live Weather", "BF Guide"]
+base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker", "Lineup Watch", "Live Weather", "Tomorrow Preview", "BF Guide"]
 schedule = sort_schedule_rows(schedule)
 game_tabs = [f"{format_game_time_et(g.get('game_time', ''))} | {g['game_key']}" for g in schedule]
 tabs = st.tabs(base_tabs + game_tabs)
@@ -8131,10 +8400,13 @@ with tabs[9]:
     render_live_weather_board(schedule, preliminary=False)
 
 with tabs[10]:
+    render_active_tomorrow_preview()
+
+with tabs[11]:
     render_bf_knowledge_center()
 
 
-for idx, game in enumerate(schedule, start=11):
+for idx, game in enumerate(schedule, start=12):
     with tabs[idx]:
         st.subheader(f"{game['game_key']} — {format_game_time_et(game.get('game_time', ''))}")
         st.caption(
