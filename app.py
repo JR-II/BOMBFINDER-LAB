@@ -2461,37 +2461,86 @@ def fetch_weather_for_park(home_team_abbr: str):
     coords = PARK_COORDS.get(home_team_abbr)
     if not coords:
         return {
-            "TempF": 72.0,
-            "WindMPH": 7.0,
-            "WeatherBoost": 0.0,
-            "WeatherNote": "neutral weather",
+            "found": False,
+            "TempF": None,
+            "WindMPH": None,
+            "WindDir": None,
+            "Condition": "Unavailable",
+            "source": "Unavailable",
         }
 
     lat, lon = coords
-    url = (
-        "https://api.open-meteo.com/v1/forecast"
-        f"?latitude={lat}&longitude={lon}"
-        "&current=temperature_2m,wind_speed_10m"
-        "&temperature_unit=fahrenheit&wind_speed_unit=mph"
-    )
+    timezone_name = PARK_TIMEZONES.get(home_team_abbr, "America/New_York")
 
     try:
-        resp = requests.get(url, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-        current = data.get("current", {}) or {}
-        temp_f = safe_float(current.get("temperature_2m"), 72.0)
-        wind_mph = safe_float(current.get("wind_speed_10m"), 7.0)
+        response = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "current": "temperature_2m,wind_speed_10m,wind_direction_10m,weather_code",
+                "temperature_unit": "fahrenheit",
+                "wind_speed_unit": "mph",
+                "timezone": timezone_name,
+            },
+            timeout=15,
+        )
+        response.raise_for_status()
+        current = (response.json() or {}).get("current") or {}
+        if current:
+            label, _ = _weather_label(current.get("weather_code"))
+            return {
+                "found": True,
+                "TempF": safe_float(current.get("temperature_2m"), None),
+                "WindMPH": safe_float(current.get("wind_speed_10m"), None),
+                "WindDir": safe_float(current.get("wind_direction_10m"), None),
+                "Condition": label,
+                "source": "Open-Meteo current conditions",
+            }
     except Exception:
-        temp_f = 72.0
-        wind_mph = 7.0
+        pass
 
-    boost, note = compute_weather_boost(temp_f, wind_mph)
+    try:
+        headers = {"User-Agent": "BFData/1.0 weather fallback"}
+        points = requests.get(
+            f"https://api.weather.gov/points/{lat},{lon}",
+            headers=headers,
+            timeout=15,
+        )
+        points.raise_for_status()
+        hourly_url = points.json()["properties"]["forecastHourly"]
+        hourly = requests.get(hourly_url, headers=headers, timeout=15)
+        hourly.raise_for_status()
+        periods = hourly.json().get("properties", {}).get("periods", [])
+        period = periods[0] if periods else {}
+        if period:
+            speed_match = re.search(r"(\d+(?:\.\d+)?)", str(period.get("windSpeed", "")))
+            wind_speed = float(speed_match.group(1)) if speed_match else None
+            compass = str(period.get("windDirection", "")).upper()
+            direction_map = {
+                "N": 0, "NNE": 22.5, "NE": 45, "ENE": 67.5,
+                "E": 90, "ESE": 112.5, "SE": 135, "SSE": 157.5,
+                "S": 180, "SSW": 202.5, "SW": 225, "WSW": 247.5,
+                "W": 270, "WNW": 292.5, "NW": 315, "NNW": 337.5,
+            }
+            return {
+                "found": True,
+                "TempF": safe_float(period.get("temperature"), None),
+                "WindMPH": wind_speed,
+                "WindDir": direction_map.get(compass),
+                "Condition": period.get("shortForecast", "Current conditions"),
+                "source": "U.S. National Weather Service",
+            }
+    except Exception:
+        pass
+
     return {
-        "TempF": round(temp_f, 1),
-        "WindMPH": round(wind_mph, 1),
-        "WeatherBoost": boost,
-        "WeatherNote": note,
+        "found": False,
+        "TempF": None,
+        "WindMPH": None,
+        "WindDir": None,
+        "Condition": "Weather providers unavailable",
+        "source": "Unavailable",
     }
 
 
@@ -2639,62 +2688,239 @@ def fetch_game_weather_timeline(home_team_abbr: str, game_time_value: str):
     }
 
 
-def _fmt_weather(v,suffix="",digits=0):
-    return "—" if v is None else f"{safe_float(v,0):.{digits}f}{suffix}"
+def _fmt_weather(v, suffix="", digits=0):
+    return "—" if v is None else f"{safe_float(v, 0):.{digits}f}{suffix}"
 
-def _stadium_svg(home_abbr,weather):
-    dims=PARK_DIMENSIONS.get(home_abbr); labels=tuple(str(x) for x in dims) if dims else ("—",)*5
-    gh=weather.get("game_hour",{}) or {}; direction=gh.get("wind_dir"); rotation=(safe_float(direction,0)+180)%360 if direction is not None else 0
-    return f'''<div class="bf-field-wrap"><svg class="bf-field-svg" viewBox="0 0 520 330" role="img" aria-label="Ballpark field and wind direction"><defs><linearGradient id="grass-{home_abbr}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#183d2b"/><stop offset="1" stop-color="#0a1612"/></linearGradient></defs><path d="M260 304 L54 98 Q260 -5 466 98 Z" fill="url(#grass-{home_abbr})" stroke="#536175" stroke-width="3"/><path d="M260 304 L174 218 L260 132 L346 218 Z" fill="#7a5a36" opacity=".8" stroke="#cfb37b"/><circle cx="260" cy="215" r="5" fill="#fff"/><rect x="255" y="294" width="10" height="10" transform="rotate(45 260 299)" fill="#fff"/><text x="42" y="108" class="dim">LF {labels[0]} ft</text><text x="125" y="54" class="dim">LCF {labels[1]} ft</text><text x="235" y="30" class="dim">CF {labels[2]} ft</text><text x="355" y="54" class="dim">RCF {labels[3]} ft</text><text x="438" y="108" class="dim">RF {labels[4]} ft</text><g transform="translate(260 154) rotate({rotation})"><line x1="0" y1="30" x2="0" y2="-38" stroke="#69a7ff" stroke-width="8" stroke-linecap="round"/><path d="M0 -58 L-15 -30 L15 -30 Z" fill="#69a7ff"/></g><text x="260" y="187" text-anchor="middle" class="windtxt">FROM {gh.get('wind_compass','—')} · {_fmt_weather(gh.get('wind'),' MPH')}</text></svg></div>'''
 
-def render_weather_game_card(game: dict, preliminary: bool=False):
-    home_abbr=resolve_game_park_abbr(game); weather=fetch_game_weather_timeline(home_abbr,game.get("game_time","")); gh=weather.get("game_hour",{}) or {}
+def compute_hr_environment_effect(home_abbr: str, temp_f, wind_mph, roof_status=None):
+    """Estimated park-and-weather effect, not literal player HR probability."""
+    park_factor = safe_float(PARK_FACTORS.get(home_abbr), 1.0)
+    temp = safe_float(temp_f, 72.0)
+    roof = str(roof_status or PARK_ROOFS.get(home_abbr, "OPEN AIR")).upper()
+
+    park_effect = clip((park_factor - 1.0) * 100.0, -12.0, 20.0)
+    temp_effect = clip((temp - 72.0) * 0.32, -7.0, 8.0)
+    wind_effect = 0.0
+
+    if roof in {"DOME", "CLOSED", "CLOSED ROOF"}:
+        temp_effect = 0.0
+
+    total = clip(park_effect + temp_effect + wind_effect, -18.0, 28.0)
+    index_score = int(round(clip(50.0 + total * 1.8, 10.0, 95.0)))
+
+    if total >= 10:
+        label, css_class = "STRONG BOOST", "boost"
+    elif total >= 4:
+        label, css_class = "FAVORABLE", "favorable"
+    elif total > -4:
+        label, css_class = "NEUTRAL", "neutral"
+    elif total > -10:
+        label, css_class = "SUPPRESSIVE", "suppressive"
+    else:
+        label, css_class = "STRONG SUPPRESSION", "strong-suppressive"
+
+    return {
+        "effect_pct": round(total, 1),
+        "index": index_score,
+        "label": label,
+        "css": css_class,
+        "park_effect": round(park_effect, 1),
+        "temp_effect": round(temp_effect, 1),
+    }
+
+
+def _environment_meter_html(effect: dict) -> str:
+    pct = safe_float(effect.get("effect_pct"), 0.0)
+    sign = "+" if pct > 0 else ""
+    index_score = safe_int(effect.get("index"), 50)
+    return f"""
+    <div class="bf-env-card {escape(str(effect.get('css','neutral')))}">
+      <div class="bf-env-top">
+        <div>
+          <div class="bf-env-kicker">HR ENVIRONMENT METER</div>
+          <div class="bf-env-label">{escape(str(effect.get('label','NEUTRAL')))}</div>
+        </div>
+        <div class="bf-env-number">{sign}{pct:.1f}%</div>
+      </div>
+      <div class="bf-env-track"><div class="bf-env-fill" style="width:{index_score}%"></div></div>
+      <div class="bf-env-index">Environment Index: {index_score}/100</div>
+      <div class="bf-env-components">
+        <span>Park {effect.get('park_effect',0):+.1f}%</span>
+        <span>Temperature {effect.get('temp_effect',0):+.1f}%</span>
+        <span>Wind direction displayed on field</span>
+      </div>
+      <div class="bf-env-disclaimer">
+        Estimated park-and-weather adjustment only. This is not a player's literal HR probability.
+      </div>
+    </div>
+    """
+
+
+def _stadium_svg(home_abbr, weather):
+    dims = PARK_DIMENSIONS.get(home_abbr)
+    labels = tuple(str(x) for x in dims) if dims else ("—",) * 5
+    gh = weather.get("game_hour", {}) or {}
+    direction = gh.get("wind_dir")
+    rotation = (safe_float(direction, 0) + 180) % 360 if direction is not None else 0
+    return f"""
+    <div class="bf-field-wrap">
+      <svg class="bf-field-svg" viewBox="0 0 520 330" role="img" aria-label="Ballpark field and wind direction">
+        <defs>
+          <linearGradient id="grass-{home_abbr}" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#183d2b"/>
+            <stop offset="1" stop-color="#0a1612"/>
+          </linearGradient>
+        </defs>
+        <path d="M260 304 L54 98 Q260 -5 466 98 Z" fill="url(#grass-{home_abbr})" stroke="#536175" stroke-width="3"/>
+        <path d="M260 304 L174 218 L260 132 L346 218 Z" fill="#7a5a36" opacity=".8" stroke="#cfb37b"/>
+        <circle cx="260" cy="215" r="5" fill="#fff"/>
+        <rect x="255" y="294" width="10" height="10" transform="rotate(45 260 299)" fill="#fff"/>
+        <text x="42" y="108" class="dim">LF {labels[0]} ft</text>
+        <text x="125" y="54" class="dim">LCF {labels[1]} ft</text>
+        <text x="235" y="30" class="dim">CF {labels[2]} ft</text>
+        <text x="355" y="54" class="dim">RCF {labels[3]} ft</text>
+        <text x="438" y="108" class="dim">RF {labels[4]} ft</text>
+        <g transform="translate(260 154) rotate({rotation})">
+          <line x1="0" y1="30" x2="0" y2="-38" stroke="#69a7ff" stroke-width="8" stroke-linecap="round"/>
+          <path d="M0 -58 L-15 -30 L15 -30 Z" fill="#69a7ff"/>
+        </g>
+        <text x="260" y="187" text-anchor="middle" class="windtxt">
+          FROM {gh.get('wind_compass','—')} · {_fmt_weather(gh.get('wind'),' MPH')}
+        </text>
+      </svg>
+    </div>
+    """
+
+
+def render_weather_game_card(game: dict, preliminary: bool = False):
+    home_abbr = resolve_game_park_abbr(game)
+    weather = fetch_game_weather_timeline(home_abbr, game.get("game_time", ""))
+    gh = weather.get("game_hour", {}) or {}
+    roof = PARK_ROOFS.get(home_abbr, "OPEN AIR")
+    dims = PARK_DIMENSIONS.get(home_abbr)
+    dim_text = " / ".join(str(x) for x in dims) if dims else "Not available"
+
     if not weather.get("found"):
         current = fetch_weather_for_park(home_abbr)
-        fallback_note = escape(str(weather.get("error", "hourly forecast unavailable")))
-        st.markdown(
-            f"""
-            <div class="bf-weather-card">
-              <div class="bf-weather-head">
-                <div>
-                  <div class="bf-weather-game">{escape(game.get('game_key',''))}</div>
-                  <div class="bf-weather-venue">{escape(str(game.get('venue','TBD')))} · {format_game_time_et(game.get('game_time',''))}</div>
-                </div>
-                <div class="bf-weather-badge">CURRENT CONDITIONS FALLBACK</div>
-              </div>
-              <div class="bf-weather-summary">
-                <div><b>{_fmt_weather(current.get('TempF'),'°F')}</b><span>Current temperature</span></div>
-                <div><b>{_fmt_weather(current.get('WindMPH'),' MPH')}</b><span>Current wind</span></div>
-                <div><b>{escape(str(PARK_ROOFS.get(home_abbr,'OPEN AIR')))}</b><span>Roof type</span></div>
-                <div><b>{escape(str(PARK_FACTORS.get(home_abbr,'—')))}</b><span>Park factor</span></div>
-                <div><b>{escape(str(PARK_DIMENSIONS.get(home_abbr,'—')))}</b><span>Dimensions</span></div>
-                <div><b>RETRYING</b><span>Hourly feed</span></div>
-              </div>
-              <div class="bf-card-foot">
-                Hourly game-time forecast could not be loaded. Current park conditions are shown instead.
-                Detail: {fallback_note}
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        return
-    dims=PARK_DIMENSIONS.get(home_abbr); dim_text=" / ".join(str(x) for x in dims) if dims else "Not available"
-    label,icon=escape(str(gh.get("label","Conditions unavailable"))),gh.get("icon","•"); roof=PARK_ROOFS.get(home_abbr,"OPEN AIR")
-    html=f'''<div class="bf-weather-card"><div class="bf-weather-head"><div><div class="bf-weather-game">{escape(game.get('game_key',''))}</div><div class="bf-weather-venue">{escape(str(game.get('venue','TBD')))} · {format_game_time_et(game.get('game_time',''))}</div></div><div class="bf-weather-badge">{'PRELIMINARY' if preliminary else 'GAME-TIME FORECAST'}</div></div><div class="bf-weather-summary"><div><b>{icon} {label}</b><span>Condition</span></div><div><b>{_fmt_weather(gh.get('temp'),'°F')}</b><span>Temperature</span></div><div><b>{_fmt_weather(gh.get('precip'),'%')}</b><span>Precipitation</span></div><div><b>{_fmt_weather(gh.get('humidity'),'%')}</b><span>Humidity</span></div><div><b>{_fmt_weather(gh.get('wind'),' MPH')}</b><span>From {gh.get('wind_compass','—')} ({_fmt_weather(gh.get('wind_dir'),'°')})</span></div><div><b>{roof}</b><span>Roof type</span></div></div><div class="bf-weather-main">{_stadium_svg(home_abbr,weather)}<div class="bf-dim-panel"><div class="bf-dim-title">Stadium Dimensions</div><div class="bf-dim-order">LF / LCF / CF / RCF / RF</div><div class="bf-dim-values">{dim_text}</div><div class="bf-weather-source">Forecast: {weather.get('source')} · nearest hour to first pitch. Wind direction is the direction the wind comes from.</div></div></div></div>'''
-    st.markdown(html,unsafe_allow_html=True)
-    hours=weather.get("hours",[])
-    if hours:
-        cols=st.columns(len(hours))
-        for col,h in zip(cols,hours):
-            border="2px solid #69a7ff" if h.get("is_game_hour") else "1px solid rgba(255,255,255,.10)"
-            col.markdown(f'''<div class="bf-hour" style="border:{border}"><div class="bf-hour-time">{h['time'].strftime('%-I %p')}</div><div class="bf-hour-icon">{h.get('icon','•')}</div><div class="bf-hour-temp">{_fmt_weather(h.get('temp'),'°')}</div><div>{_fmt_weather(h.get('precip'),'%')} rain</div><div>{_fmt_weather(h.get('wind'),' mph')} {h.get('wind_compass','—')}</div></div>''',unsafe_allow_html=True)
+        gh = {
+            "temp": current.get("TempF"),
+            "wind": current.get("WindMPH"),
+            "wind_dir": current.get("WindDir"),
+            "wind_compass": _compass_name(current.get("WindDir")),
+            "label": current.get("Condition", "Current conditions"),
+            "icon": "🌤️",
+        }
+        weather = {
+            "found": current.get("found", False),
+            "game_hour": gh,
+            "hours": [],
+            "source": current.get("source", "Unavailable"),
+        }
+        badge = "CURRENT CONDITIONS FALLBACK"
+    else:
+        badge = "PRELIMINARY" if preliminary else "GAME-TIME FORECAST"
 
-def render_live_weather_board(schedule_rows: list[dict], preliminary: bool=False):
-    st.markdown('''<style>.bf-weather-card{border:1px solid #293446;border-radius:13px;background:#0b1018;margin:8px 0 12px;overflow:hidden;max-width:1120px}.bf-weather-head{display:flex;justify-content:space-between;gap:10px;padding:9px 11px;background:linear-gradient(90deg,#181b22,#10141b);border-bottom:1px solid rgba(255,255,255,.09)}.bf-weather-game{font-size:.92rem;font-weight:950}.bf-weather-venue{color:#9ca9bc;font-size:.67rem;margin-top:2px}.bf-weather-badge{align-self:center;border:1px solid #69a7ff;color:#9ac2ff;border-radius:999px;padding:3px 7px;font-size:.54rem;font-weight:900}.bf-weather-summary{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:5px;padding:8px}.bf-weather-summary>div{background:#111722;border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:6px;text-align:center}.bf-weather-summary b{display:block;font-size:.76rem}.bf-weather-summary span{display:block;color:#8996aa;font-size:.48rem;text-transform:uppercase;letter-spacing:.07em;margin-top:3px}.bf-weather-main{display:grid;grid-template-columns:minmax(300px,1.45fr) minmax(180px,.55fr);gap:8px;padding:0 8px 8px}.bf-field-wrap{border:1px solid rgba(255,255,255,.08);border-radius:9px;background:#07100d;padding:3px;max-height:285px;overflow:hidden}.bf-field-svg{width:100%;height:275px;display:block}.bf-field-svg .dim{fill:#f2f5fa;font-size:13px;font-weight:800}.bf-field-svg .windtxt{fill:#9ac2ff;font-size:12px;font-weight:900}.bf-dim-panel{background:#111722;border:1px solid rgba(255,255,255,.08);border-radius:9px;padding:10px}.bf-dim-title{font-weight:950;font-size:.86rem}.bf-dim-order,.bf-weather-source{color:#8f9bad;font-size:.58rem;margin-top:5px}.bf-dim-values{font-size:.92rem;font-weight:950;margin-top:5px}.bf-hour{background:#0f141d;border-radius:8px;padding:5px 3px;text-align:center;font-size:.56rem;min-height:78px}.bf-hour-time,.bf-hour-temp{font-weight:900}.bf-hour-icon{font-size:1rem;margin:2px}.bf-hour-temp{font-size:.76rem}@media(max-width:760px){.bf-weather-card{max-width:100%}.bf-weather-summary{grid-template-columns:repeat(3,1fr)}.bf-weather-main{grid-template-columns:1fr}.bf-weather-head{padding:8px}.bf-weather-game{font-size:.82rem}.bf-field-wrap{max-height:235px}.bf-field-svg{height:225px}.bf-hour{font-size:.48rem;padding:4px 1px;min-height:70px}.bf-field-svg .dim{font-size:11px}.bf-field-svg .windtxt{font-size:10px}.bf-dim-panel{padding:8px}}</style>''',unsafe_allow_html=True)
+    effect = compute_hr_environment_effect(home_abbr, gh.get("temp"), gh.get("wind"), roof)
+    label = escape(str(gh.get("label", "Conditions unavailable")))
+    icon = gh.get("icon", "•")
+
+    html = f"""
+    <div class="bf-weather-card">
+      <div class="bf-weather-head">
+        <div>
+          <div class="bf-weather-game">{escape(game.get('game_key',''))}</div>
+          <div class="bf-weather-venue">{escape(str(game.get('venue','TBD')))} · {format_game_time_et(game.get('game_time',''))}</div>
+        </div>
+        <div class="bf-weather-badge">{badge}</div>
+      </div>
+      <div class="bf-weather-summary">
+        <div><b>{icon} {label}</b><span>Condition</span></div>
+        <div><b>{_fmt_weather(gh.get('temp'),'°F')}</b><span>Temperature</span></div>
+        <div><b>{_fmt_weather(gh.get('precip'),'%')}</b><span>Precipitation</span></div>
+        <div><b>{_fmt_weather(gh.get('humidity'),'%')}</b><span>Humidity</span></div>
+        <div><b>{_fmt_weather(gh.get('wind'),' MPH')}</b><span>From {gh.get('wind_compass','—')} ({_fmt_weather(gh.get('wind_dir'),'°')})</span></div>
+        <div><b>{roof}</b><span>Roof type</span></div>
+      </div>
+      <div class="bf-weather-main">
+        {_stadium_svg(home_abbr, weather)}
+        <div>
+          <div class="bf-dim-panel">
+            <div class="bf-dim-title">Stadium Dimensions</div>
+            <div class="bf-dim-order">LF / LCF / CF / RCF / RF</div>
+            <div class="bf-dim-values">{dim_text}</div>
+            <div class="bf-weather-source">Source: {escape(str(weather.get('source','Unavailable')))} · wind direction is where the wind comes from.</div>
+          </div>
+          {_environment_meter_html(effect)}
+        </div>
+      </div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+    hours = weather.get("hours", [])
+    if hours:
+        cols = st.columns(len(hours))
+        for col, hour in zip(cols, hours):
+            border = "2px solid #69a7ff" if hour.get("is_game_hour") else "1px solid rgba(255,255,255,.10)"
+            col.markdown(
+                f"""
+                <div class="bf-hour" style="border:{border}">
+                  <div class="bf-hour-time">{hour['time'].strftime('%-I %p')}</div>
+                  <div class="bf-hour-icon">{hour.get('icon','•')}</div>
+                  <div class="bf-hour-temp">{_fmt_weather(hour.get('temp'),'°')}</div>
+                  <div>{_fmt_weather(hour.get('precip'),'%')} rain</div>
+                  <div>{_fmt_weather(hour.get('wind'),' mph')} {hour.get('wind_compass','—')}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+
+def render_live_weather_board(schedule_rows: list[dict], preliminary: bool = False):
+    st.markdown(
+        """
+        <style>
+        .bf-weather-card{border:1px solid #293446;border-radius:13px;background:#0b1018;margin:8px 0 12px;overflow:hidden;max-width:1120px}
+        .bf-weather-head{display:flex;justify-content:space-between;gap:10px;padding:9px 11px;background:linear-gradient(90deg,#181b22,#10141b);border-bottom:1px solid rgba(255,255,255,.09)}
+        .bf-weather-game{font-size:.92rem;font-weight:950}.bf-weather-venue{color:#9ca9bc;font-size:.67rem;margin-top:2px}
+        .bf-weather-badge{align-self:center;border:1px solid #69a7ff;color:#9ac2ff;border-radius:999px;padding:3px 7px;font-size:.54rem;font-weight:900}
+        .bf-weather-summary{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:5px;padding:8px}
+        .bf-weather-summary>div{background:#111722;border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:6px;text-align:center}
+        .bf-weather-summary b{display:block;font-size:.76rem}.bf-weather-summary span{display:block;color:#8996aa;font-size:.48rem;text-transform:uppercase;letter-spacing:.07em;margin-top:3px}
+        .bf-weather-main{display:grid;grid-template-columns:minmax(300px,1.45fr) minmax(220px,.55fr);gap:8px;padding:0 8px 8px}
+        .bf-field-wrap{border:1px solid rgba(255,255,255,.08);border-radius:9px;background:#07100d;padding:3px;max-height:285px;overflow:hidden}
+        .bf-field-svg{width:100%;height:275px;display:block}.bf-field-svg .dim{fill:#f2f5fa;font-size:13px;font-weight:800}.bf-field-svg .windtxt{fill:#9ac2ff;font-size:12px;font-weight:900}
+        .bf-dim-panel,.bf-env-card{background:#111722;border:1px solid rgba(255,255,255,.08);border-radius:9px;padding:10px}
+        .bf-dim-title{font-weight:950;font-size:.86rem}.bf-dim-order,.bf-weather-source{color:#8f9bad;font-size:.58rem;margin-top:5px}.bf-dim-values{font-size:.92rem;font-weight:950;margin-top:5px}
+        .bf-env-card{margin-top:8px}.bf-env-top{display:flex;justify-content:space-between;gap:8px;align-items:center}
+        .bf-env-kicker{color:#87aef8;font-size:.50rem;font-weight:950;letter-spacing:.11em}.bf-env-label{font-size:.82rem;font-weight:950;margin-top:3px}
+        .bf-env-number{font-size:1.20rem;font-weight:950}.bf-env-track{height:8px;border-radius:999px;background:#202a38;overflow:hidden;margin-top:8px}
+        .bf-env-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#ff6666,#ffd166,#35d07f)}
+        .bf-env-index{font-size:.58rem;text-align:right;color:#aab4c4;margin-top:3px}
+        .bf-env-components{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}.bf-env-components span{font-size:.53rem;border:1px solid rgba(255,255,255,.09);border-radius:999px;padding:3px 6px;color:#b7c0cf}
+        .bf-env-disclaimer{font-size:.50rem;color:#7f8b9e;line-height:1.25;margin-top:6px}
+        .bf-env-card.boost,.bf-env-card.favorable{border-color:rgba(53,208,127,.50)}
+        .bf-env-card.boost .bf-env-label,.bf-env-card.boost .bf-env-number,.bf-env-card.favorable .bf-env-label,.bf-env-card.favorable .bf-env-number{color:#35d07f}
+        .bf-env-card.neutral .bf-env-label,.bf-env-card.neutral .bf-env-number{color:#ffd166}
+        .bf-env-card.suppressive,.bf-env-card.strong-suppressive{border-color:rgba(255,102,102,.52)}
+        .bf-env-card.suppressive .bf-env-label,.bf-env-card.suppressive .bf-env-number,.bf-env-card.strong-suppressive .bf-env-label,.bf-env-card.strong-suppressive .bf-env-number{color:#ff6666}
+        .bf-hour{background:#0f141d;border-radius:8px;padding:5px 3px;text-align:center;font-size:.56rem;min-height:78px}
+        .bf-hour-time,.bf-hour-temp{font-weight:900}.bf-hour-icon{font-size:1rem;margin:2px}.bf-hour-temp{font-size:.76rem}
+        @media(max-width:760px){
+          .bf-weather-card{max-width:100%}.bf-weather-summary{grid-template-columns:repeat(3,1fr)}.bf-weather-main{grid-template-columns:1fr}
+          .bf-weather-head{padding:8px}.bf-weather-game{font-size:.82rem}.bf-field-wrap{max-height:235px}.bf-field-svg{height:225px}
+          .bf-hour{font-size:.48rem;padding:4px 1px;min-height:70px}.bf-field-svg .dim{font-size:11px}.bf-field-svg .windtxt{font-size:10px}
+          .bf-dim-panel,.bf-env-card{padding:8px}
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     if not schedule_rows:
-        st.info("No scheduled games are available for weather display."); return
-    for game in sort_schedule_rows(schedule_rows): render_weather_game_card(game,preliminary=preliminary)
+        st.info("No scheduled games are available for weather display.")
+        return
+    for game in sort_schedule_rows(schedule_rows):
+        render_weather_game_card(game, preliminary=preliminary)
 
 
 @st.cache_data(ttl=1800, max_entries=40)
