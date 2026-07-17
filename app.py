@@ -4490,6 +4490,18 @@ def build_hitter_metrics(
     if opp_pitcher_id is None or (isinstance(opp_pitcher_id, float) and pd.isna(opp_pitcher_id)):
         opp_pitcher_id = lookup_mlb_person_id_by_name(opp_pitcher)
 
+    # Weather providers may temporarily return None for one or more fields.
+    # Normalize every optional environment input before calculations or round().
+    temp_f = safe_float(temp_f, 72.0)
+    wind_mph = safe_float(wind_mph, 7.0)
+    weather_boost = safe_float(weather_boost, 0.0)
+    park_factor = safe_float(park_factor, 1.0)
+    bullpen_fatigue_score = safe_float(bullpen_fatigue_score, 0.0)
+    bullpen_ip_prev = safe_float(bullpen_ip_prev, 0.0)
+    bullpen_arms_prev = safe_int(bullpen_arms_prev, 0)
+    weather_note = str(weather_note or "weather unavailable · neutral fallback")
+    bullpen_fatigue_note = str(bullpen_fatigue_note or "Neutral bullpen rest")
+
     live_hitter = compute_hitter_live_metrics_from_map(player_id, hitter_stats_map, use_true_bbe=deep_bbe)
     live_pitcher = compute_pitcher_live_metrics_from_map(
         opp_pitcher_id,
@@ -5102,14 +5114,14 @@ def build_hitter_metrics(
         "Park Factor": round(park_factor, 3),
         "HRR Score": round(hrr_score, 1),
         "Model Rank Score": round(model_rank_score, 2),
-        "TempF": round(temp_f, 1),
-        "WindMPH": round(wind_mph, 1),
-        "WeatherBoost": round(weather_boost, 2),
+        "TempF": round(safe_float(temp_f, 72.0), 1),
+        "WindMPH": round(safe_float(wind_mph, 7.0), 1),
+        "WeatherBoost": round(safe_float(weather_boost, 0.0), 2),
         "WeatherNote": weather_note,
-        "BullpenFatigueScore": round(bullpen_fatigue_score, 2),
+        "BullpenFatigueScore": round(safe_float(bullpen_fatigue_score, 0.0), 2),
         "BullpenFatigueNote": bullpen_fatigue_note,
-        "BullpenIPPrev": round(bullpen_ip_prev, 1),
-        "BullpenArmsPrev": int(bullpen_arms_prev),
+        "BullpenIPPrev": round(safe_float(bullpen_ip_prev, 0.0), 1),
+        "BullpenArmsPrev": safe_int(bullpen_arms_prev, 0),
         "Statcast Authority Score": round(statcast_authority_score, 2),
         "Statcast Authority Tier": statcast_authority_tier,
         "HR Attackability Score": round(pitcher_target_score, 2),
