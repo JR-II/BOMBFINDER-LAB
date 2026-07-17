@@ -935,7 +935,7 @@ def _atomic_write_csv(df: pd.DataFrame, path: str):
 def _tracker_columns() -> list[str]:
     """Permanent prediction-time snapshot used by Tracker Audit 2.0."""
     return [
-        "date", "player", "team", "game", "game_pk",
+        "date", "player", "player_id", "team", "game", "game_pk",
         "hr_probability", "hr_tier", "hr_eligible", "tracker_source",
         "board_rank", "on_core_board", "on_top12", "on_per_game",
         "quality_grade", "moonshot_score", "two_hr_score", "nuke_score",
@@ -1156,6 +1156,7 @@ def _recover_tracker_rows_from_board_snapshots() -> pd.DataFrame:
                 recovered.append({
                     "date": date_key,
                     "player": row.get("Player", ""),
+                    "player_id": row.get("Player ID", pd.NA),
                     "team": row.get("Team", ""),
                     "game": row.get("Game", ""),
                     "game_pk": row.get("game_pk", pd.NA),
@@ -6125,111 +6126,159 @@ def build_visible_tracker_pool(df: pd.DataFrame, schedule: list[dict], assignmen
     return visible_df
 
 
-@st.cache_data(ttl=15, max_entries=48)
-def get_live_feed_homers(game_pk: int):
-    """Count HRs from MLB live feed play-by-play.
+@st.cache_data(ttl=12, max_entries=64)
+def get_live_feed_homers(game_pk: int, result_version: str = "exact-hr-v2"):
+    """Return authoritative completed HR events keyed by MLB player ID and name.
 
-    Boxscore batting totals can lag or briefly show only one homer.  The live
-    play feed is better for detecting multi-HR days like Ernie Clement 2 HR.
+    Only MLB's exact ``eventType == home_run`` is accepted. Description text is
+    deliberately ignored because it can mention another player's home run and
+    create false positives.
     """
-    url = f"https://statsapi.mlb.com/api/v1.1/game/{game_pk}/feed/live"
-    homer_map = {}
+    result_map = {"by_id": {}, "by_name": {}, "source": "live_feed", "available": False}
+    url = f"https://statsapi.mlb.com/api/v1.1/game/{int(game_pk)}/feed/live"
+
     try:
         resp = requests.get(url, timeout=15)
         resp.raise_for_status()
-        data = resp.json()
+        data = resp.json() or {}
     except Exception:
-        return homer_map
+        return result_map
 
     plays = (((data.get("liveData") or {}).get("plays") or {}).get("allPlays") or [])
+    result_map["available"] = True
+
     for play in plays:
-        result = play.get("result", {}) or {}
-        event_type = str(result.get("eventType", "") or "").lower()
-        event = str(result.get("event", "") or "").lower()
-        description = str(result.get("description", "") or "").lower()
-        if event_type != "home_run" and "home run" not in event and "homers" not in event and "home run" not in description and "homers" not in description:
+        play_result = play.get("result") or {}
+        event_type = str(play_result.get("eventType", "") or "").strip().lower()
+
+        # Exact structured event only. Never infer from free-text descriptions.
+        if event_type != "home_run":
             continue
-        batter = (play.get("matchup", {}) or {}).get("batter", {}) or {}
-        name = batter.get("fullName")
-        if not name:
+
+        about = play.get("about") or {}
+        if about.get("isComplete") is False:
             continue
-        raw = str(name)
-        norm = normalize_name(raw)
-        homer_map[raw] = safe_int(homer_map.get(raw), 0) + 1
-        homer_map[norm] = safe_int(homer_map.get(norm), 0) + 1
-    return homer_map
+
+        batter = ((play.get("matchup") or {}).get("batter") or {})
+        player_id = safe_int(batter.get("id"), -1)
+        full_name = str(batter.get("fullName", "") or "").strip()
+
+        if player_id > 0:
+            result_map["by_id"][player_id] = safe_int(
+                result_map["by_id"].get(player_id), 0
+            ) + 1
+
+        if full_name:
+            norm = normalize_name(full_name)
+            result_map["by_name"][norm] = safe_int(
+                result_map["by_name"].get(norm), 0
+            ) + 1
+
+    return result_map
 
 
-@st.cache_data(ttl=15, max_entries=48)
-def get_boxscore_homers(game_pk: int):
-    url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
-    homer_map = {}
+@st.cache_data(ttl=12, max_entries=64)
+def get_boxscore_homers(game_pk: int, result_version: str = "exact-hr-v2"):
+    """Get live HR results with exact play events as the primary authority.
+
+    The boxscore is used only when the live play feed is unavailable. This
+    prevents a transient or ambiguous boxscore value from assigning a homer to
+    the wrong player.
+    """
+    feed = get_live_feed_homers(game_pk)
+    if feed.get("available"):
+        return feed
+
+    result_map = {"by_id": {}, "by_name": {}, "source": "boxscore", "available": False}
+    url = f"https://statsapi.mlb.com/api/v1/game/{int(game_pk)}/boxscore"
 
     try:
         resp = requests.get(url, timeout=20)
         resp.raise_for_status()
-        data = resp.json()
+        data = resp.json() or {}
     except Exception:
-        data = {}
+        return result_map
 
-    for side in ["away", "home"]:
-        team_data = data.get("teams", {}).get(side, {})
-        players = team_data.get("players", {})
-        for _, player_data in players.items():
-            person = player_data.get("person", {})
-            full_name = person.get("fullName")
-            batting = player_data.get("stats", {}).get("batting", {})
-            hr_count = safe_int(batting.get("homeRuns", 0), 0)
+    result_map["available"] = True
+    for side in ("away", "home"):
+        players = ((((data.get("teams") or {}).get(side) or {}).get("players")) or {})
+        for player_data in players.values():
+            person = player_data.get("person") or {}
+            player_id = safe_int(person.get("id"), -1)
+            full_name = str(person.get("fullName", "") or "").strip()
+            batting = ((player_data.get("stats") or {}).get("batting") or {})
+            hr_count = max(0, safe_int(batting.get("homeRuns"), 0))
+
+            if player_id > 0:
+                result_map["by_id"][player_id] = hr_count
             if full_name:
-                raw = str(full_name)
-                norm = normalize_name(raw)
-                homer_map[raw] = max(safe_int(homer_map.get(raw), 0), int(hr_count))
-                homer_map[norm] = max(safe_int(homer_map.get(norm), 0), int(hr_count))
+                result_map["by_name"][normalize_name(full_name)] = hr_count
 
-    # Merge play-by-play counts and keep the highest value per player.
-    feed_map = get_live_feed_homers(game_pk)
-    for key, val in feed_map.items():
-        homer_map[key] = max(safe_int(homer_map.get(key), 0), safe_int(val, 0))
-
-    return homer_map
+    return result_map
 
 
-def get_player_hr_count_from_map(homer_map: dict, player_name: str) -> int:
-    if not homer_map or not player_name:
+def get_player_hr_count_from_map(
+    homer_map: dict,
+    player_name: str,
+    player_id=None,
+) -> int:
+    """Match by MLB player ID first, then exact normalized full name."""
+    if not homer_map:
         return 0
-    raw = str(player_name)
-    if raw in homer_map:
-        return safe_int(homer_map.get(raw), 0)
-    norm = normalize_name(raw)
-    if norm in homer_map:
-        return safe_int(homer_map.get(norm), 0)
-    for key, val in homer_map.items():
-        if normalize_name(key) == norm:
-            return safe_int(val, 0)
-    return 0
+
+    pid = safe_int(player_id, -1)
+    by_id = homer_map.get("by_id") or {}
+    if pid > 0 and pid in by_id:
+        return max(0, safe_int(by_id.get(pid), 0))
+
+    norm = normalize_name(player_name)
+    if not norm:
+        return 0
+
+    by_name = homer_map.get("by_name") or {}
+    return max(0, safe_int(by_name.get(norm), 0))
 
 
 def add_live_homer_counts_to_board(df: pd.DataFrame, schedule: list[dict]) -> pd.DataFrame:
-    """Display-only result column; skip result calls before first pitch."""
+    """Hydrate display-only HR results by exact game_pk and player identity."""
     if df.empty:
         return df.copy()
+
     out = df.copy()
     out["Actual HR Today"] = 0
+
     if "game_pk" not in out.columns or "Player" not in out.columns:
         return out
+
     for game in schedule:
         if str(game.get("game_state", "Preview")) == "Preview":
             continue
-        game_pk = game.get("game_pk")
-        if game_pk is None:
+
+        game_pk = safe_int(game.get("game_pk"), -1)
+        if game_pk <= 0:
             continue
-        mask = pd.to_numeric(out["game_pk"], errors="coerce") == safe_int(game_pk, -1)
+
+        mask = pd.to_numeric(out["game_pk"], errors="coerce").fillna(-1).astype(int).eq(game_pk)
         if not mask.any():
             continue
+
         homer_map = get_boxscore_homers(game_pk)
-        out.loc[mask, "Actual HR Today"] = out.loc[mask, "Player"].apply(
-            lambda p: get_player_hr_count_from_map(homer_map, p)
-        )
+
+        def row_hr_count(row):
+            return get_player_hr_count_from_map(
+                homer_map,
+                row.get("Player", ""),
+                row.get("Player ID", None),
+            )
+
+        out.loc[mask, "Actual HR Today"] = out.loc[mask].apply(row_hr_count, axis=1)
+
+    out["Actual HR Today"] = (
+        pd.to_numeric(out["Actual HR Today"], errors="coerce")
+        .fillna(0)
+        .clip(lower=0)
+        .astype(int)
+    )
     return out
 
 
@@ -6299,6 +6348,7 @@ def sync_tracker_with_board(tracked_df: pd.DataFrame):
         new_rows.append({
             "date": date_key,
             "player": player_name,
+            "player_id": row.get("Player ID", pd.NA),
             "team": row["Team"],
             "game": row["Game"],
             "game_pk": row.get("game_pk", pd.NA),
@@ -6382,16 +6432,18 @@ def auto_update_tracker_results(tracker: pd.DataFrame, schedule: list[dict]):
 
         for idx in tracker.index[rows_mask]:
             player = tracker.at[idx, "player"]
-            hr_count = get_player_hr_count_from_map(homer_map, player)
-            old_hr = safe_int(tracker.at[idx, "hr_count"], 0)
+            player_id = tracker.at[idx, "player_id"] if "player_id" in tracker.columns else None
+            hr_count = get_player_hr_count_from_map(homer_map, player, player_id)
+
             if game_state == "Preview":
-                # A game that has not started cannot inherit a homer from another game.
+                # Pregame rows must always remain at zero.
                 hr_count = 0
                 tracker.at[idx, "result"] = pd.NA
                 tracker.at[idx, "result_state"] = "PREGAME"
-            else:
-                hr_count = max(int(hr_count), old_hr)
-            tracker.at[idx, "hr_count"] = int(hr_count)
+
+            # Authoritative current state replaces stale values. This allows a
+            # false positive to be corrected from HR 1 back to HR 0.
+            tracker.at[idx, "hr_count"] = int(max(0, hr_count))
 
             if hr_count > 0:
                 tracker.at[idx, "result"] = 1
