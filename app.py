@@ -495,7 +495,7 @@ hr { margin-top: .38rem !important; margin-bottom: .38rem !important; }
 </div>
 """, unsafe_allow_html=True)
 
-AUTO_REFRESH_SECONDS = 120
+AUTO_REFRESH_SECONDS = 300
 
 # Speed control: regular board loads avoid the heavy play-by-play L10 BBE pull.
 # Use Deep L10 Refresh only when you intentionally want the slower research pass.
@@ -950,7 +950,7 @@ def should_run_shared_task(task_name: str, interval_seconds: int, force: bool = 
 
 BF_SHARED_BOARD_CACHE_DIR = os.path.join(BF_DATA_DIR, "shared_board_cache")
 BF_SHARED_BOARD_CACHE_TTL_SECONDS = int(
-    os.environ.get("BF_SHARED_BOARD_CACHE_TTL_SECONDS", "600")
+    os.environ.get("BF_SHARED_BOARD_CACHE_TTL_SECONDS", "1800")
 )
 BF_SHARED_BOARD_STALE_SECONDS = int(
     os.environ.get("BF_SHARED_BOARD_STALE_SECONDS", "21600")
@@ -4783,8 +4783,25 @@ def build_hitter_metrics(
     weather_score_boost = weather_boost * 1.6
     bullpen_fatigue_boost = bullpen_fatigue_score * 1.8
 
-    pitch_mix_example = build_pitch_mix_profile(opp_pitcher, opp_pitcher_id)
-    arsenal_tiles = build_matchup_arsenal_tiles(opp_pitcher_id, player_id, 0.0, 0.0, include_batter=deep_bbe)
+    # PUBLIC SPEED MODE:
+    # Baseball Savant pitch-by-pitch arsenal CSV requests are the largest cold-start
+    # bottleneck in the app. Keep them for the intentional Deep L10 research build,
+    # but do not block the normal public board on up to four Savant requests per
+    # pitcher. All season/recent hitter, pitcher, park, weather, lineup and tracker
+    # calculations remain active in normal mode.
+    if deep_bbe:
+        pitch_mix_example = build_pitch_mix_profile(opp_pitcher, opp_pitcher_id)
+        arsenal_tiles = build_matchup_arsenal_tiles(
+            opp_pitcher_id,
+            player_id,
+            0.0,
+            0.0,
+            include_batter=True,
+        )
+    else:
+        pitch_mix_example = {}
+        arsenal_tiles = []
+
     pitch_context = compute_relevant_pitch_matchup(
         pitch_mix_example,
         bats,
@@ -5847,14 +5864,24 @@ def build_daily_dataset(
     # of waiting for each pitcher/game one at a time. Existing calculations,
     # cards, and data sources remain unchanged.
     prefetch_specs = []
-    for pitcher_id in sorted(all_pitcher_ids):
-        prefetch_specs.append((fetch_true_pitcher_arsenal, (pitcher_id,)))
+
+    # Only the deliberate Deep L10 research build warms Baseball Savant pitcher
+    # arsenals. The normal public board no longer waits on 25-30 large CSV exports.
+    if deep_bbe:
+        for pitcher_id in sorted(all_pitcher_ids):
+            prefetch_specs.append((fetch_true_pitcher_arsenal, (pitcher_id,)))
+
+    # These smaller independent calls are safe to warm concurrently.
     for game in schedule:
-        home_abbr = team_abbr(game["home_team"])
+        home_abbr = resolve_game_park_abbr(game)
         prefetch_specs.append((fetch_weather_for_park, (home_abbr,)))
         prefetch_specs.append((fetch_bullpen_fatigue_for_team, (game["home_team_id"],)))
         prefetch_specs.append((fetch_bullpen_fatigue_for_team, (game["away_team_id"],)))
-    _prefetch_cached_calls(prefetch_specs, max_workers=4)
+
+    _prefetch_cached_calls(
+        prefetch_specs,
+        max_workers=4 if deep_bbe else 8,
+    )
 
     for game in schedule:
         away_abbr = team_abbr(game["away_team"])
@@ -8990,7 +9017,7 @@ active_view = st.selectbox(
     all_views,
     index=0,
     key="bf_active_view",
-    help="Only the selected section is rendered. This keeps public startup fast.",
+    help="Only the selected section is rendered. Normal mode skips slow Savant arsenal exports; Deep L10 Refresh runs the full research build.",
 )
 
 manual_force = bool(st.session_state.get("manual_refresh_trigger", False))
