@@ -927,6 +927,27 @@ def _bf_runtime_locks():
     }
 
 
+@st.cache_resource
+def _bf_runtime_state():
+    """Small process-wide state used to prevent every visitor repeating writes."""
+    return {
+        "task_times": {},
+        "task_lock": threading.RLock(),
+    }
+
+
+def should_run_shared_task(task_name: str, interval_seconds: int, force: bool = False) -> bool:
+    """Return True for only one session per interval across this app process."""
+    state = _bf_runtime_state()
+    now = time.time()
+    with state["task_lock"]:
+        last = float(state["task_times"].get(task_name, 0.0))
+        if force or (now - last) >= max(1, int(interval_seconds)):
+            state["task_times"][task_name] = now
+            return True
+    return False
+
+
 BF_SHARED_BOARD_CACHE_DIR = os.path.join(BF_DATA_DIR, "shared_board_cache")
 BF_SHARED_BOARD_CACHE_TTL_SECONDS = int(
     os.environ.get("BF_SHARED_BOARD_CACHE_TTL_SECONDS", "600")
@@ -8955,29 +8976,44 @@ locked_df_raw = ensure_daily_board_lock(live_df, schedule)
 
 lineup_mode = get_lineup_mode(schedule) if schedule else "PROJECTED"
 
-# Build and save the prediction/tracker pool BEFORE adding live results.
-# This prevents post-HR result data from rewriting the prediction board.
+# Build the visible prediction pool once. File writes and tracker reconciliation are
+# process-wide periodic tasks so each Discord visitor does not repeat the same work.
 doubleheader_assignment_map = build_doubleheader_assignment_map(locked_df_raw, schedule)
 tracked_df = build_visible_tracker_pool(locked_df_raw, schedule, doubleheader_assignment_map)
-save_daily_board_snapshot(tracked_df, today_str())
 
-tracker = sync_tracker_with_board(tracked_df)
-combo_board = build_combo_board(locked_df_raw)
-combo_tracker = sync_combo_tracker_with_board(combo_board)
+base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker", "Lineup Watch", "Live Weather", "Tomorrow Preview", "BF Guide"]
+schedule = sort_schedule_rows(schedule)
+game_tabs = [f"{format_game_time_et(g.get('game_time', ''))} | {g['game_key']}" for g in schedule]
+all_views = base_tabs + game_tabs
+active_view = st.selectbox(
+    "BF Data View",
+    all_views,
+    index=0,
+    key="bf_active_view",
+    help="Only the selected section is rendered. This keeps public startup fast.",
+)
 
-# Always update results every run. Refresh/update should not be required for HR counts to move off zero.
-tracker = auto_update_tracker_results(tracker, schedule)
-combo_tracker = auto_update_combo_tracker_results(combo_tracker, schedule)
+manual_force = bool(st.session_state.get("manual_refresh_trigger", False))
+if should_run_shared_task("board_snapshot", 600, force=manual_force):
+    save_daily_board_snapshot(tracked_df, today_str())
+
+# Tracker work is shared across viewers and runs at most once every two minutes.
+# Other sessions simply read the latest persisted tracker state.
+if should_run_shared_task("tracker_sync", AUTO_REFRESH_SECONDS, force=manual_force):
+    tracker = sync_tracker_with_board(tracked_df)
+    tracker = auto_update_tracker_results(tracker, schedule)
+    save_daily_tracker_snapshot(tracker, today_str())
+else:
+    tracker = load_tracker()
+
 st.session_state.manual_refresh_trigger = False
 
-# Display-only live result column.
+# Display-only live result column. This does not rewrite model rankings.
 locked_df = add_live_homer_counts_to_board(locked_df_raw, schedule)
 
-save_daily_tracker_snapshot(tracker, today_str())
-
-summary = summarize_tracker(tracker)
-source_summary = summarize_tracker_sources(tracker)
-daily_summary = summarize_tracker_by_day(tracker)
+# Combo generation and combo-result updates are intentionally lazy.
+combo_board = pd.DataFrame()
+combo_tracker = load_combo_tracker()
 combo_summary = summarize_combo_tracker(combo_tracker)
 
 with c2:
@@ -9013,12 +9049,8 @@ if locked_df.empty:
     st.warning("No games or hitter data loaded.")
     st.stop()
 
-base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker", "Lineup Watch", "Live Weather", "Tomorrow Preview", "BF Guide"]
-schedule = sort_schedule_rows(schedule)
-game_tabs = [f"{format_game_time_et(g.get('game_time', ''))} | {g['game_key']}" for g in schedule]
-tabs = st.tabs(base_tabs + game_tabs)
 
-with tabs[0]:
+if active_view == base_tabs[0]:
     st.subheader("JR HR Board")
     st.caption("Projected teams stay live. Confirmed teams freeze once lineups lock. Actual HR Today is display-only and does not change rankings.")
     render_first_time_guide()
@@ -9037,7 +9069,7 @@ with tabs[0]:
             hide_index=True
         )
 
-with tabs[1]:
+if active_view == base_tabs[1]:
     st.subheader("Top 12 HR Candidates")
     st.caption("Confirmed teams freeze once lineups lock. Projected teams can still update. Actual HR Today is display-only and does not change rankings.")
     top12_live = get_top12_hybrid(locked_df)
@@ -9054,7 +9086,7 @@ with tabs[1]:
             hide_index=True
         )
 
-with tabs[2]:
+if active_view == base_tabs[2]:
     st.subheader("Top HR Targets — Slate-Wide Top 25")
     st.caption("Global slate ranking based on hitter authority, EV/ISO-style power, pitch exposure, pitcher HR/9 vulnerability, weather, park, and matchup advantage.")
     top_targets = get_best_hr_matchups(locked_df, 25)
@@ -9069,7 +9101,7 @@ with tabs[2]:
     with st.expander("Raw Top HR Targets Table"):
         display_existing_columns(top_targets, target_cols)
 
-with tabs[3]:
+if active_view == base_tabs[3]:
     st.subheader("Pitchers to Attack Today")
     st.caption("Attackability board emphasizing HR/9, barrel allowed, hard contact allowed, park/weather carry, and matchup vulnerability.")
     pitcher_targets = get_pitchers_to_target(locked_df)
@@ -9078,9 +9110,17 @@ with tabs[3]:
         ["Game", "Pitcher", "HR Attackability Score", "Pitcher_HR9_Last7", "Pitcher_Barrel_Allowed", "Pitcher_HardHit_Allowed", "WeatherNote", "TempF", "WindMPH"]
     )
 
-with tabs[4]:
+if active_view == base_tabs[4]:
     st.subheader("HR Combos")
     st.caption("Randomized but high-likelihood HR ladders built from the best current board without cloning the same pairings.")
+
+    combo_board = build_combo_board(locked_df_raw)
+    if should_run_shared_task("combo_sync", AUTO_REFRESH_SECONDS, force=manual_force):
+        combo_tracker = sync_combo_tracker_with_board(combo_board)
+        combo_tracker = auto_update_combo_tracker_results(combo_tracker, schedule)
+    else:
+        combo_tracker = load_combo_tracker()
+    combo_summary = summarize_combo_tracker(combo_tracker)
 
     m1, m2, m3 = st.columns(3)
     m1.metric("Today Combos", combo_summary["today_total"])
@@ -9110,7 +9150,7 @@ with tabs[4]:
             hide_index=True
         )
 
-with tabs[5]:
+if active_view == base_tabs[5]:
     st.subheader("Hits + Runs + RBIs Board")
     st.caption("Confirmed teams freeze once lineups lock. Projected teams can still update.")
     hrr = locked_df.copy().sort_values(
@@ -9127,7 +9167,7 @@ with tabs[5]:
         hide_index=True
     )
 
-with tabs[6]:
+if active_view == base_tabs[6]:
     st.subheader("Batter Breakdown")
     st.caption("Projected teams stay live until confirmed. Heavy GB bats are downgraded, not blindly erased unless the profile is truly bad.")
     breakdown = sort_for_hr(locked_df.copy())
@@ -9146,10 +9186,10 @@ with tabs[6]:
         hide_index=True
     )
 
-with tabs[7]:
+if active_view == base_tabs[7]:
     render_full_tracker_panel(tracker, key_prefix="active_tracker")
 
-with tabs[8]:
+if active_view == base_tabs[8]:
     st.subheader("Lineup Watch")
     st.caption("CONFIRMED appears only when MLB supplies all nine official batting-order positions.")
     lineup_rows=[]
@@ -9161,7 +9201,7 @@ with tabs[8]:
         ])
     display_existing_columns(pd.DataFrame(lineup_rows),["Game","Team","Opposing Starter","Confirmed Spots","Status"])
 
-with tabs[9]:
+if active_view == base_tabs[9]:
     st.subheader("Live Weather")
     st.caption("Hourly game-time forecast, wind direction and speed, and stadium dimensions in a visual field layout.")
     if st.button("Refresh Live Weather", key="refresh_live_weather", use_container_width=True):
@@ -9170,15 +9210,15 @@ with tabs[9]:
         st.rerun()
     render_live_weather_board(schedule, preliminary=False)
 
-with tabs[10]:
+if active_view == base_tabs[10]:
     render_active_tomorrow_preview()
 
-with tabs[11]:
+if active_view == base_tabs[11]:
     render_bf_knowledge_center()
 
 
-for idx, game in enumerate(schedule, start=12):
-    with tabs[idx]:
+for idx, game in enumerate(schedule):
+    if active_view == game_tabs[idx]:
         st.subheader(f"{game['game_key']} — {format_game_time_et(game.get('game_time', ''))}")
         st.caption(
             f"Start: {format_game_time_et(game.get('game_time', ''))}  |  "
