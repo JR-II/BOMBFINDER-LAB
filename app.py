@@ -13,6 +13,7 @@ import time
 import tempfile
 import json
 import math
+import threading
 from io import StringIO
 from concurrent.futures import ThreadPoolExecutor, as_completed
 st.set_page_config(page_title="BF Data", layout="wide")
@@ -590,6 +591,7 @@ def save_daily_board_snapshot(board_df: pd.DataFrame, snapshot_date: str):
     clean_board.to_csv(board_path, index=False)
     try:
         cleanup_bf_recovery_snapshots()
+        cleanup_shared_board_cache()
         enforce_bf_local_storage_ceiling()
     except Exception:
         pass
@@ -915,21 +917,197 @@ def read_html_best_table(urls: list[str], must_have_any: list[str]) -> pd.DataFr
 
 
 
+@st.cache_resource
+def _bf_runtime_locks():
+    """One shared lock set for every browser session in this app process."""
+    return {
+        "dataset": threading.RLock(),
+        "storage": threading.RLock(),
+        "tracker": threading.RLock(),
+    }
+
+
+BF_SHARED_BOARD_CACHE_DIR = os.path.join(BF_DATA_DIR, "shared_board_cache")
+BF_SHARED_BOARD_CACHE_TTL_SECONDS = int(
+    os.environ.get("BF_SHARED_BOARD_CACHE_TTL_SECONDS", "600")
+)
+BF_SHARED_BOARD_STALE_SECONDS = int(
+    os.environ.get("BF_SHARED_BOARD_STALE_SECONDS", "21600")
+)
+
+
+def _shared_board_cache_paths(deep_bbe: bool = False):
+    os.makedirs(BF_SHARED_BOARD_CACHE_DIR, exist_ok=True)
+    mode = "deep" if deep_bbe else "fast"
+    date_key = today_str()
+    return (
+        os.path.join(BF_SHARED_BOARD_CACHE_DIR, f"board_{date_key}_{mode}.pkl"),
+        os.path.join(BF_SHARED_BOARD_CACHE_DIR, f"schedule_{date_key}_{mode}.json"),
+        os.path.join(BF_SHARED_BOARD_CACHE_DIR, f"meta_{date_key}_{mode}.json"),
+    )
+
+
+def _shared_board_cache_age_seconds(meta_path: str):
+    try:
+        with open(meta_path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        saved_at = float(payload.get("saved_at", 0))
+        return max(0.0, time.time() - saved_at)
+    except Exception:
+        return None
+
+
+def _read_shared_board_cache(deep_bbe: bool = False, max_age_seconds=None):
+    board_path, schedule_path, meta_path = _shared_board_cache_paths(deep_bbe)
+    age = _shared_board_cache_age_seconds(meta_path)
+    if age is None:
+        return None
+    if max_age_seconds is not None and age > float(max_age_seconds):
+        return None
+    try:
+        board = pd.read_pickle(board_path)
+        with open(schedule_path, "r", encoding="utf-8") as handle:
+            schedule = json.load(handle)
+        if not isinstance(board, pd.DataFrame) or not isinstance(schedule, list):
+            return None
+        return board, schedule, age
+    except Exception:
+        return None
+
+
+def _write_shared_board_cache(
+    board: pd.DataFrame,
+    schedule: list[dict],
+    deep_bbe: bool = False,
+):
+    board_path, schedule_path, meta_path = _shared_board_cache_paths(deep_bbe)
+    folder = os.path.dirname(board_path)
+    os.makedirs(folder, exist_ok=True)
+
+    board_tmp = os.path.join(
+        folder, f".board_{os.getpid()}_{threading.get_ident()}.tmp"
+    )
+    schedule_tmp = os.path.join(
+        folder, f".schedule_{os.getpid()}_{threading.get_ident()}.tmp"
+    )
+    meta_tmp = os.path.join(
+        folder, f".meta_{os.getpid()}_{threading.get_ident()}.tmp"
+    )
+
+    try:
+        board.to_pickle(board_tmp)
+        with open(schedule_tmp, "w", encoding="utf-8") as handle:
+            json.dump(schedule, handle, default=str)
+        with open(meta_tmp, "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "saved_at": time.time(),
+                    "date": today_str(),
+                    "deep_bbe": bool(deep_bbe),
+                    "rows": int(len(board)),
+                },
+                handle,
+            )
+        os.replace(board_tmp, board_path)
+        os.replace(schedule_tmp, schedule_path)
+        os.replace(meta_tmp, meta_path)
+    finally:
+        for tmp_path in (board_tmp, schedule_tmp, meta_tmp):
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
+
+def load_shared_daily_dataset(
+    deep_bbe: bool = False,
+    force: bool = False,
+):
+    """Serve one shared daily build to every connected user.
+
+    Normal visitors read the existing shared cache. Only one session is allowed
+    to perform a cold build. If an upstream API fails, the latest usable stale
+    board is served instead of crashing the public app.
+    """
+    fresh = None if force else _read_shared_board_cache(
+        deep_bbe,
+        BF_SHARED_BOARD_CACHE_TTL_SECONDS,
+    )
+    if fresh is not None:
+        board, schedule, age = fresh
+        st.session_state["bf_shared_board_age"] = age
+        st.session_state["bf_shared_board_state"] = "FRESH CACHE"
+        return board.copy(), list(schedule)
+
+    locks = _bf_runtime_locks()
+    with locks["dataset"]:
+        # Another visitor may have completed the build while this session waited.
+        fresh = None if force else _read_shared_board_cache(
+            deep_bbe,
+            BF_SHARED_BOARD_CACHE_TTL_SECONDS,
+        )
+        if fresh is not None:
+            board, schedule, age = fresh
+            st.session_state["bf_shared_board_age"] = age
+            st.session_state["bf_shared_board_state"] = "SHARED CACHE"
+            return board.copy(), list(schedule)
+
+        stale = _read_shared_board_cache(
+            deep_bbe,
+            BF_SHARED_BOARD_STALE_SECONDS,
+        )
+
+        try:
+            build_token = (
+                f"{today_str()}-{int(time.time() // 300)}"
+                if force
+                else f"{today_str()}-shared"
+            )
+            board, schedule = build_daily_dataset(
+                deep_bbe=deep_bbe,
+                cache_version=build_token,
+            )
+            if board is None:
+                board = pd.DataFrame()
+            if schedule is None:
+                schedule = []
+            _write_shared_board_cache(board, schedule, deep_bbe)
+            st.session_state["bf_shared_board_age"] = 0.0
+            st.session_state["bf_shared_board_state"] = "LIVE BUILD"
+            return board.copy(), list(schedule)
+        except Exception as exc:
+            if stale is not None:
+                board, schedule, age = stale
+                st.session_state["bf_shared_board_age"] = age
+                st.session_state["bf_shared_board_state"] = "STALE FALLBACK"
+                st.session_state["bf_shared_board_error"] = str(exc)
+                return board.copy(), list(schedule)
+            raise
+
+
 def _atomic_write_csv(df: pd.DataFrame, path: str):
-    """Write a CSV atomically so interrupted Streamlit reruns cannot zero it out."""
+    """Write safely when several public sessions are active at once."""
     folder = os.path.dirname(path) or "."
     os.makedirs(folder, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(prefix=".bf_tmp_", suffix=".csv", dir=folder)
-    os.close(fd)
-    try:
-        df.to_csv(tmp_path, index=False)
-        os.replace(tmp_path, path)
-    finally:
-        if os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
+    locks = _bf_runtime_locks()
+
+    with locks["storage"]:
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=".bf_tmp_",
+            suffix=".csv",
+            dir=folder,
+        )
+        os.close(fd)
+        try:
+            df.to_csv(tmp_path, index=False)
+            os.replace(tmp_path, path)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
 
 
 def _tracker_columns() -> list[str]:
@@ -1070,6 +1248,20 @@ def cleanup_bf_recovery_snapshots(
         "removed_mb": round(removed_bytes / (1024 * 1024), 2),
         "local_mb": round(_bf_directory_size_bytes(BF_DATA_DIR) / (1024 * 1024), 2),
     }
+
+
+def cleanup_shared_board_cache(keep_days: int = 2):
+    """Remove old shared-board cache files without touching tracker history."""
+    if not os.path.isdir(BF_SHARED_BOARD_CACHE_DIR):
+        return
+    cutoff = time.time() - max(1, int(keep_days)) * 86400
+    for filename in os.listdir(BF_SHARED_BOARD_CACHE_DIR):
+        path = os.path.join(BF_SHARED_BOARD_CACHE_DIR, filename)
+        try:
+            if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+                os.remove(path)
+        except OSError:
+            continue
 
 
 def enforce_bf_local_storage_ceiling(max_mb: int = BF_MAX_LOCAL_DATA_MB) -> dict:
@@ -1374,6 +1566,7 @@ def save_tracker(df: pd.DataFrame):
 
     try:
         cleanup_bf_recovery_snapshots()
+        cleanup_shared_board_cache()
         enforce_bf_local_storage_ceiling()
     except Exception:
         pass
@@ -5572,7 +5765,7 @@ def sort_for_hr(df: pd.DataFrame) -> pd.DataFrame:
     ])
 
 
-def _prefetch_cached_calls(call_specs: list[tuple], max_workers: int = 12):
+def _prefetch_cached_calls(call_specs: list[tuple], max_workers: int = 4):
     """Warm independent cached network calls concurrently."""
     if not call_specs:
         return
@@ -5586,8 +5779,11 @@ def _prefetch_cached_calls(call_specs: list[tuple], max_workers: int = 12):
                 pass
 
 
-@st.cache_data(ttl=1800, max_entries=4)
-def build_daily_dataset(deep_bbe: bool = False):
+@st.cache_data(ttl=1800, max_entries=6)
+def build_daily_dataset(
+    deep_bbe: bool = False,
+    cache_version: str = "shared-v1",
+):
     schedule = sort_schedule_rows(get_today_schedule())
     rows = []
 
@@ -5637,7 +5833,7 @@ def build_daily_dataset(deep_bbe: bool = False):
         prefetch_specs.append((fetch_weather_for_park, (home_abbr,)))
         prefetch_specs.append((fetch_bullpen_fatigue_for_team, (game["home_team_id"],)))
         prefetch_specs.append((fetch_bullpen_fatigue_for_team, (game["away_team_id"],)))
-    _prefetch_cached_calls(prefetch_specs, max_workers=12)
+    _prefetch_cached_calls(prefetch_specs, max_workers=4)
 
     for game in schedule:
         away_abbr = team_abbr(game["away_team"])
@@ -8699,7 +8895,9 @@ with c1:
     if st.button("Deep L10 Refresh", use_container_width=True):
         st.session_state.manual_refresh_trigger = True
         st.session_state.deep_l10_bbe = True
-        st.cache_data.clear()
+        # Do not clear the global cache: that previously forced every connected
+        # Discord visitor into a simultaneous cold rebuild.
+        fetch_l10_bbe_profile_from_savant_csv.clear()
         st.rerun()
 
 
@@ -8710,6 +8908,7 @@ if (
 ):
     try:
         cleanup_bf_recovery_snapshots()
+        cleanup_shared_board_cache()
         enforce_bf_local_storage_ceiling()
     except Exception:
         pass
@@ -8730,7 +8929,13 @@ with st.sidebar.expander("BF Resource Maintenance", expanded=False):
         st.success("Temporary cache cleared. The next load will rebuild fresh data.")
 
 deep_bbe_mode = bool(st.session_state.get("deep_l10_bbe", DEFAULT_DEEP_L10_BBE))
-live_df, schedule = build_daily_dataset(deep_bbe=deep_bbe_mode)
+force_shared_rebuild = bool(
+    st.session_state.get("manual_refresh_trigger", False)
+)
+live_df, schedule = load_shared_daily_dataset(
+    deep_bbe=deep_bbe_mode,
+    force=force_shared_rebuild,
+)
 schedule = sort_schedule_rows(schedule)
 
 # Off-day mode must branch before locks, combos, tracker syncing, or empty-board stop logic.
@@ -8782,6 +8987,20 @@ with c3:
 with c4:
     slate_confidence_value = compute_slate_confidence(tracked_df)
     st.caption(f"BF Slate Confidence: {slate_confidence_value:.1f}/100")
+    shared_state = st.session_state.get("bf_shared_board_state", "LIVE")
+    shared_age = safe_float(
+        st.session_state.get("bf_shared_board_age"),
+        0.0,
+    )
+    if shared_state == "STALE FALLBACK":
+        st.caption(
+            f"Public access mode: {shared_state} · last usable board "
+            f"{max(1, int(shared_age // 60))} min old"
+        )
+    else:
+        st.caption(
+            f"Public access mode: {shared_state} · shared board served to all viewers"
+        )
     confirmed_locked = 0
     if not locked_df.empty and "lock_scope" in locked_df.columns:
         confirmed_locked = int((locked_df["lock_scope"].astype(str) == "CONFIRMED_TEAM").sum())
