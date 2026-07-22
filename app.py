@@ -414,6 +414,18 @@ hr { margin-top: .38rem !important; margin-bottom: .38rem !important; }
 .bf-v2-signal{border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:5px 7px;color:#aeb8c8;font-size:.55rem;line-height:1.25}
 .bf-v2-signal b{display:block;font-size:.46rem;letter-spacing:.10em;margin-bottom:2px}
 .bf-v2-signal.green b{color:#35d07f}.bf-v2-signal.red b{color:#ff6666}
+.bf-v2-compare{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;margin-top:7px}
+.bf-v2-compare>div{background:#101722;border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:6px;text-align:center}
+.bf-v2-compare small{display:block;color:#7f90aa;font-size:.45rem;letter-spacing:.08em;font-weight:950}
+.bf-v2-compare strong{display:block;color:#f4f7fb;font-size:.78rem;margin-top:3px}
+.bf-v2-pair{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;margin-top:7px;padding:7px 8px;border:1px solid rgba(105,167,255,.32);border-radius:9px;background:rgba(105,167,255,.055)}
+.bf-v2-pair small{display:block;color:#75a6ff;font-size:.47rem;letter-spacing:.10em;font-weight:950}
+.bf-v2-pair strong{display:block;color:#f5f7fb;font-size:.71rem;margin-top:2px}
+.bf-v2-pair-score{font-size:.93rem;font-weight:950;color:#8fc0ff;white-space:nowrap}
+.bf-v2-rankline{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
+.bf-v2-rankchip{border:1px solid rgba(255,255,255,.10);border-radius:999px;padding:2px 6px;color:#aeb8c8;font-size:.50rem;font-weight:900}
+.bf-v2-rankchip.primary{color:#61f1a3;border-color:rgba(53,208,127,.45)}
+@media(max-width:640px){.bf-v2-compare{grid-template-columns:repeat(2,minmax(0,1fr))}.bf-v2-pair{grid-template-columns:1fr}.bf-v2-pair-score{font-size:.78rem}}
 .bf-v2-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .bf-v2-expand-summary{margin:5px 0 8px;padding:7px 8px;border:1px solid rgba(255,255,255,.09);border-radius:9px;background:#0e141e}
 @media(max-width:900px){.bf-v2-grid{grid-template-columns:1fr}}
@@ -7351,6 +7363,118 @@ def _bf_active_verdict(row: pd.Series) -> tuple[str, str, str]:
     return "SECONDARY TARGET", "Useful profile, but not every major signal is aligned.", "#b6a0ff"
 
 
+def _percentile_scores(values: pd.Series, low: float = 58.0, high: float = 96.0) -> pd.Series:
+    """Spread display-only scores across the current board without changing model order."""
+    numeric = pd.to_numeric(values, errors="coerce").fillna(0.0)
+    if len(numeric) <= 1 or numeric.nunique() <= 1:
+        return pd.Series([round((low + high) / 2, 1)] * len(numeric), index=numeric.index)
+    ranks = numeric.rank(method="average", pct=True)
+    return (low + ranks * (high - low)).round(1)
+
+
+def add_comparative_card_context(df: pd.DataFrame) -> pd.DataFrame:
+    """Add display-only slate hierarchy and pairing guidance.
+
+    This does not modify BF prediction probabilities, rankings, tracker rows, or locks.
+    It only makes differences between similar-looking candidates visible.
+    """
+    if df is None or df.empty:
+        return df
+    view = df.copy().reset_index(drop=True)
+
+    bat_raw = (
+        safe_numeric_series(view, "Barrel%", 0.0) * 2.4
+        + safe_numeric_series(view, "HardHit%", 0.0) * 0.85
+        + safe_numeric_series(view, "EV", 0.0) * 0.55
+        + safe_numeric_series(view, "xSLG", 0.0) * 65
+        - safe_numeric_series(view, "GroundBall%", 45.0) * 0.28
+    )
+    matchup_raw = (
+        safe_numeric_series(view, "Pitch Matchup Score", 0.0) * 5.0
+        + safe_numeric_series(view, "Matchup Advantage Score", 0.0) * 0.72
+        + safe_numeric_series(view, "Handedness Edge", 0.0) * 3.0
+    )
+    leak_raw = (
+        safe_numeric_series(view, "Pitcher_HR9_Last7", 0.0) * 18
+        + safe_numeric_series(view, "Pitcher_Barrel_Allowed", 0.0) * 1.5
+        + safe_numeric_series(view, "Pitcher_HardHit_Allowed", 0.0) * 0.45
+        + safe_numeric_series(view, "HR Attackability Score", 0.0) * 1.1
+    )
+    recent_raw = (
+        safe_numeric_series(view, "L10_BBE_Quality", 0.0) * 0.72
+        + safe_numeric_series(view, "Recent HR", 0.0) * 8
+        + safe_numeric_series(view, "Recent XBH", 0.0) * 2.2
+        + safe_numeric_series(view, "recent_iso", 0.0) * 35
+    )
+
+    view["Display Bat Power"] = _percentile_scores(bat_raw, 62, 98)
+    view["Display Matchup Fit"] = _percentile_scores(matchup_raw, 58, 97)
+    view["Display Pitcher Leak"] = _percentile_scores(leak_raw, 55, 98)
+    view["Display Recent Form"] = _percentile_scores(recent_raw, 52, 95)
+
+    wager_raw = (
+        safe_numeric_series(view, "Model Rank Score", 0.0) * 0.40
+        + safe_numeric_series(view, "Matchup Advantage Score", 0.0) * 0.32
+        + safe_numeric_series(view, "HR Probability %", 0.0) * 1.20
+        + view["Display Bat Power"] * 0.22
+        + view["Display Pitcher Leak"] * 0.18
+        + view["Display Recent Form"] * 0.12
+    )
+    view["Wager Priority"] = _percentile_scores(wager_raw, 66, 98)
+    order = wager_raw.rank(method="first", ascending=False).astype(int)
+    view["Display Slate Rank"] = order
+
+    view["Display Team Rank"] = (
+        view.groupby(view.get("Team", pd.Series([""] * len(view))).astype(str))["Wager Priority"]
+        .rank(method="first", ascending=False).astype(int)
+    )
+    view["Display Game Rank"] = (
+        view.groupby(view.get("Game", pd.Series([""] * len(view))).astype(str))["Wager Priority"]
+        .rank(method="first", ascending=False).astype(int)
+    )
+
+    n = len(view)
+    roles=[]
+    for _, r in view.iterrows():
+        slate_rank=safe_int(r.get("Display Slate Rank"), n)
+        wp=safe_float(r.get("Wager Priority"),0)
+        confirmed=str(r.get("Lineup Source","")).upper()=="CONFIRMED"
+        if slate_rank <= max(1, round(n * .12)) and wp >= 88:
+            role="ELITE ANCHOR"
+        elif slate_rank <= max(2, round(n * .30)):
+            role="STRONG COMPLEMENT"
+        elif slate_rank <= max(4, round(n * .60)):
+            role="SECONDARY LEG"
+        else:
+            role="LONGSHOT ONLY"
+        if not confirmed and role == "ELITE ANCHOR":
+            role="STRONG COMPLEMENT"
+        roles.append(role)
+    view["Pair Role"] = roles
+
+    # Best complement: prioritize quality, different game, confirmed status, and weakest-leg strength.
+    best_names=[]; pair_scores=[]
+    for i, row in view.iterrows():
+        best_j=None; best_score=-1e9
+        for j, other in view.iterrows():
+            if i==j: continue
+            score=min(safe_float(row.get("Wager Priority"),0), safe_float(other.get("Wager Priority"),0)) * 0.72
+            score += (safe_float(row.get("Wager Priority"),0)+safe_float(other.get("Wager Priority"),0))*0.14
+            if str(row.get("Game","")) != str(other.get("Game","")): score += 6.0
+            else: score -= 4.0
+            if str(other.get("Lineup Source","")).upper()=="CONFIRMED": score += 3.0
+            if str(row.get("Team","")) == str(other.get("Team","")): score -= 5.0
+            if score > best_score:
+                best_score=score; best_j=j
+        if best_j is None:
+            best_names.append("—"); pair_scores.append(0.0)
+        else:
+            best_names.append(str(view.at[best_j,"Player"])); pair_scores.append(round(clip(best_score,0,99),1))
+    view["Best Pair With"] = best_names
+    view["Pair Score"] = pair_scores
+    return view
+
+
 def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
     player = _display_value(row.get("Player"))
     team = _display_value(row.get("Team"))
@@ -7394,6 +7518,17 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
     attack_color = "#35d07f" if attack_pct >= 72 else ("#ffd166" if attack_pct >= 48 else "#ff6666")
 
     green_flag = reasons[0] if reasons else "Blended BF matchup edge"
+    bat_power = safe_float(row.get("Display Bat Power", quality), quality)
+    matchup_display = safe_float(row.get("Display Matchup Fit", pitch_fit), pitch_fit)
+    pitcher_leak = safe_float(row.get("Display Pitcher Leak", attack_pct), attack_pct)
+    recent_form = safe_float(row.get("Display Recent Form", confidence), confidence)
+    wager_priority = safe_float(row.get("Wager Priority", edge), edge)
+    slate_rank = safe_int(row.get("Display Slate Rank", rank), safe_int(rank, 0))
+    team_rank = safe_int(row.get("Display Team Rank", 1), 1)
+    game_rank = safe_int(row.get("Display Game Rank", 1), 1)
+    pair_role = str(row.get("Pair Role", role_text))
+    best_pair = str(row.get("Best Pair With", "—"))
+    pair_score = safe_float(row.get("Pair Score", 0.0), 0.0)
     gb_value = safe_float(row.get("GroundBall%"), 0.0)
     pitch_hr9_value = safe_float(
         row.get("Pitcher_HR9_Last7", row.get("Pitcher HR/9")),
@@ -7419,11 +7554,17 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
         <span class="bf-v2-delta">CONF {confidence:.0f}{meta_extra}</span>
       </div>
       <div class="bf-v2-meta">{escape(team)} · {escape(game)} · vs {escape(pitcher)}</div>
+      <div class="bf-v2-rankline">
+        <span class="bf-v2-rankchip primary">SLATE #{slate_rank}</span>
+        <span class="bf-v2-rankchip">TEAM #{team_rank}</span>
+        <span class="bf-v2-rankchip">GAME #{game_rank}</span>
+        <span class="bf-v2-rankchip">WAGER {wager_priority:.1f}</span>
+      </div>
     </div>
     <div class="bf-v2-scores">
-      <div class="bf-v2-score"><b>EDGE</b><span>{edge:.1f}</span></div>
+      <div class="bf-v2-score"><b>WAGER</b><span>{wager_priority:.1f}</span></div>
       <div class="bf-v2-score"><b>GRADE</b><span>{escape(grade)}</span></div>
-      <div class="bf-v2-score"><b>PITCH</b><span>{pitch_fit:.0f}</span></div>
+      <div class="bf-v2-score"><b>ATTACK</b><span>{attack_pct:.0f}</span></div>
     </div>
   </div>
   <div class="bf-v2-badges">{badge_html}</div>
@@ -7447,12 +7588,15 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
     <strong style="color:{verdict_color}">{escape(verdict_label)}</strong>
     <span>{escape(verdict_note)}</span>
   </div>
-  <div class="bf-v2-advanced">
-    <div><small>QUALITY</small><strong>{quality:.0f}</strong></div>
-    <div><small>MOONSHOT</small><strong>{moon:.0f}</strong></div>
-    <div><small>2-HR</small><strong>{two_hr:.0f}</strong></div>
-    <div><small>NUKE</small><strong>{nuke:.0f}</strong></div>
-    <div><small>STACK</small><strong>{stack:.0f}</strong></div>
+  <div class="bf-v2-compare">
+    <div><small>BAT POWER</small><strong>{bat_power:.0f}</strong></div>
+    <div><small>MATCHUP FIT</small><strong>{matchup_display:.0f}</strong></div>
+    <div><small>PITCHER LEAK</small><strong>{pitcher_leak:.0f}</strong></div>
+    <div><small>RECENT FORM</small><strong>{recent_form:.0f}</strong></div>
+  </div>
+  <div class="bf-v2-pair">
+    <div><small>{escape(pair_role)}</small><strong>Best pair: {escape(best_pair)}</strong></div>
+    <div class="bf-v2-pair-score">PAIR {pair_score:.0f}</div>
   </div>
   <div class="bf-v2-confidence">
     <div class="bf-v2-confidence-head"><span>BF CONFIDENCE</span><span>{confidence:.0f}%</span></div>
@@ -7705,6 +7849,8 @@ def render_card_grid(df: pd.DataFrame, max_cards: int = 24, columns: int = 3, ti
         return
 
     view = df.copy().head(max_cards).reset_index(drop=True)
+    if not view.empty:
+        view = add_comparative_card_context(view)
     if title:
         st.markdown(f"### {title}")
 
