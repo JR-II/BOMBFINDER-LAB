@@ -403,6 +403,17 @@ hr { margin-top: .38rem !important; margin-bottom: .38rem !important; }
 .bf-v2-confidence-head{display:flex;justify-content:space-between;font-size:.56rem;font-weight:900;color:#aeb8c8;margin-bottom:3px}
 .bf-v2-confidence-track{height:5px;border-radius:999px;background:#202938;overflow:hidden}
 .bf-v2-confidence-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#4f83ff,#35d07f)}
+.bf-v2-attack-panel{margin-top:8px;padding:8px 9px;border:1px solid rgba(255,255,255,.10);border-radius:10px;background:linear-gradient(90deg,#101722,#0b1119)}
+.bf-v2-attack-head{display:flex;justify-content:space-between;align-items:end;gap:8px}
+.bf-v2-attack-kicker{font-size:.50rem;letter-spacing:.13em;font-weight:950;color:#8299bf}
+.bf-v2-attack-label{font-size:.83rem;font-weight:950;margin-top:2px}
+.bf-v2-attack-score{font-size:1.10rem;font-weight:950}
+.bf-v2-attack-track{height:9px;border-radius:999px;background:#202938;overflow:hidden;margin-top:7px}
+.bf-v2-attack-fill{height:100%;border-radius:999px}
+.bf-v2-signal-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:7px}
+.bf-v2-signal{border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:5px 7px;color:#aeb8c8;font-size:.55rem;line-height:1.25}
+.bf-v2-signal b{display:block;font-size:.46rem;letter-spacing:.10em;margin-bottom:2px}
+.bf-v2-signal.green b{color:#35d07f}.bf-v2-signal.red b{color:#ff6666}
 .bf-v2-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .bf-v2-expand-summary{margin:5px 0 8px;padding:7px 8px;border:1px solid rgba(255,255,255,.09);border-radius:9px;background:#0e141e}
 @media(max-width:900px){.bf-v2-grid{grid-template-columns:1fr}}
@@ -2237,7 +2248,7 @@ def summarize_tracker_by_day(df: pd.DataFrame) -> pd.DataFrame:
             "top12_hit_rate_pct",
         ])
 
-    work = df.copy()
+    work = official_tracker_rows(df.copy())
     if "tracker_source" not in work.columns:
         work["tracker_source"] = "CORE_BOARD"
     work["tracker_source"] = work["tracker_source"].fillna("CORE_BOARD").astype(str).str.strip().str.upper()
@@ -7057,7 +7068,13 @@ def _match_card_html(row: pd.Series, rank_override=None):
     opp_avg = clip(.190 + pitch_hh / 500 + pitch_barrel / 1000, .180, .330)
     era_proxy = clip(2.20 + pitch_hr9 * 1.15 + pitch_barrel * .05, 1.50, 6.50)
     k_proxy = clip(18 + (100 - k_score) * .12 + pitch_hh * .08, 12, 35)
-    stuff_label = "Elite" if hr_attack_pct < 45 else ("Mixed" if hr_attack_pct < 70 else "Attackable")
+    stuff_label = (
+        "Strong Attack"
+        if hr_attack_pct >= 70
+        else "Mixed"
+        if hr_attack_pct >= 45
+        else "Suppressive"
+    )
 
     pitches = _parse_relevant_pitches(row)
     tiles = []
@@ -7141,7 +7158,7 @@ def _match_card_html(row: pd.Series, rank_override=None):
       <div class="bf-pitcher-stat"><span>K%</span><span class="bf-pill-num {_score_color_class(k_proxy, 22, 18)}">{k_proxy:.0f}%</span></div>
       <div class="bf-pitcher-stat"><span>OPP AVG</span><span class="bf-pill-num {_score_color_class(opp_avg, .235, .270, True)}">{opp_avg:.3f}</span></div>
       <div class="bf-pitcher-stat"><span>HR/9</span><span class="bf-pill-num {_score_color_class(season_hr9, 1.25, .85)}">{season_hr9:.2f}</span></div>
-      <div class="bf-pitcher-stat"><span>STUFF</span><span class="bf-pill-num {_score_color_class(100-hr_attack_pct, 60, 35)}">{escape(stuff_label)}</span></div>
+      <div class="bf-pitcher-stat"><span>HR TARGET</span><span class="bf-pill-num {_score_color_class(hr_attack_pct, 70, 45)}">{escape(stuff_label)}</span></div>
     </div>
     <div>
       <div class="bf-section-title">X-ARSENAL · PITCH TYPE MATCHUP</div>
@@ -7374,6 +7391,22 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
     attack_pct = safe_float(row.get("HR Attackability %", _attackability_pct(row.get("HR Attackability Score", 0))), 0.0)
     attack_label = "STRONG HR ATTACK" if attack_pct >= 72 else ("MIXED / ATTACKABLE" if attack_pct >= 48 else "POOR HR TARGET")
     attack_class = "bf-fill-green" if attack_pct >= 72 else ("bf-fill-yellow" if attack_pct >= 48 else "bf-fill-red")
+    attack_color = "#35d07f" if attack_pct >= 72 else ("#ffd166" if attack_pct >= 48 else "#ff6666")
+
+    green_flag = reasons[0] if reasons else "Blended BF matchup edge"
+    gb_value = safe_float(row.get("GroundBall%"), 0.0)
+    pitch_hr9_value = safe_float(
+        row.get("Pitcher_HR9_Last7", row.get("Pitcher HR/9")),
+        0.0,
+    )
+    if gb_value >= 50:
+        red_flag = f"Ground-ball caution ({gb_value:.1f}%)"
+    elif pitch_fit < 55:
+        red_flag = "Pitch-fit edge is limited"
+    elif pitch_hr9_value < 0.90:
+        red_flag = "Opposing pitcher suppresses HR damage"
+    else:
+        red_flag = "No major red flag"
 
     return f'''
 <div class="bf-v2-card {card_class}">
@@ -7394,9 +7427,21 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
     </div>
   </div>
   <div class="bf-v2-badges">{badge_html}</div>
-  <div class="bf-bar-wrap">
-    <div class="bf-bar-head"><span>{escape(attack_label)}</span><span>{attack_pct:.0f}/100</span></div>
-    <div class="bf-track"><div class="bf-fill {attack_class}" style="width:{clip(attack_pct,0,100):.0f}%"></div></div>
+  <div class="bf-v2-attack-panel" style="border-color:{attack_color}">
+    <div class="bf-v2-attack-head">
+      <div>
+        <div class="bf-v2-attack-kicker">BF HR ATTACK</div>
+        <div class="bf-v2-attack-label" style="color:{attack_color}">{escape(attack_label)}</div>
+      </div>
+      <div class="bf-v2-attack-score" style="color:{attack_color}">{attack_pct:.0f}/100</div>
+    </div>
+    <div class="bf-v2-attack-track">
+      <div class="bf-v2-attack-fill" style="width:{clip(attack_pct,0,100):.0f}%;background:{attack_color}"></div>
+    </div>
+    <div class="bf-v2-signal-grid">
+      <div class="bf-v2-signal green"><b>BIGGEST GREEN FLAG</b>{escape(str(green_flag))}</div>
+      <div class="bf-v2-signal red"><b>BIGGEST CAUTION</b>{escape(str(red_flag))}</div>
+    </div>
   </div>
   <div class="bf-v2-verdict" style="border-color:{verdict_color}">
     <strong style="color:{verdict_color}">{escape(verdict_label)}</strong>
@@ -8850,10 +8895,43 @@ with tabs[4]:
     st.subheader("HR Combos")
     st.caption("Quality-first HR ladders. Large combos appear only when every leg clears strict probability, quality, and lineup requirements.")
 
+    active_combo_count = len(combo_board) if combo_board is not None else 0
+    active_combo_ids = set()
+    if combo_board is not None and not combo_board.empty:
+        for _, combo_row in combo_board.iterrows():
+            active_legs = [
+                value.strip()
+                for value in str(combo_row.get("Players", "")).split("|")
+                if value.strip()
+            ]
+            active_combo_ids.add(
+                f"{today_str()}-{len(active_legs)}L-{_combo_signature(active_legs)}"
+            )
+
+    active_combo_history = pd.DataFrame()
+    if combo_tracker is not None and not combo_tracker.empty and active_combo_ids:
+        active_combo_history = combo_tracker[
+            combo_tracker["combo_id"].astype(str).isin(active_combo_ids)
+        ].copy()
+
+    active_full_hits = (
+        int(active_combo_history["result_state"].astype(str).eq("FULL_HIT").sum())
+        if not active_combo_history.empty else 0
+    )
+    active_partial_hits = (
+        int(
+            (
+                pd.to_numeric(active_combo_history["legs_hit"], errors="coerce").fillna(0).gt(0)
+                & ~active_combo_history["result_state"].astype(str).eq("FULL_HIT")
+            ).sum()
+        )
+        if not active_combo_history.empty else 0
+    )
+
     m1, m2, m3 = st.columns(3)
-    m1.metric("Today Combos", combo_summary["today_total"])
-    m2.metric("Today Full Hits", combo_summary["today_full_hits"])
-    m3.metric("Today Partial Hits", combo_summary["today_partial_hits"])
+    m1.metric("Active Combos", active_combo_count)
+    m2.metric("Active Full Hits", active_full_hits)
+    m3.metric("Active Partial Hits", active_partial_hits)
 
     if combo_board.empty:
         st.caption("No combos generated yet.")
@@ -8864,14 +8942,18 @@ with tabs[4]:
                 continue
             st.markdown(f"**{combo_type} HR Combos**")
             st.dataframe(
-                cdf[["Combo #", "Combo Label", "Avg Leg HR %", "Combined Score", "Games"]],
+                cdf[[
+                    "Combo #", "Combo Label", "Avg Leg HR %",
+                    "Weakest Leg HR %", "Weakest Leg Quality",
+                    "Combined Score", "Games"
+                ]],
                 use_container_width=True,
                 hide_index=True
             )
 
     if not combo_tracker.empty:
         st.divider()
-        st.caption("Tracked combo history")
+        st.caption("Combo audit history — includes earlier versions invalidated by lineup changes; these are not included in Active Combos.")
         st.dataframe(
             dedupe_columns(combo_tracker.sort_values(by=["date", "combo_size", "combined_score"], ascending=[False, True, False])),
             use_container_width=True,
