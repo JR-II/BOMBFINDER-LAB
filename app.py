@@ -510,6 +510,263 @@ hr { margin-top: .38rem !important; margin-bottom: .38rem !important; }
 @media(max-width:900px){.bf-guide-quick{grid-template-columns:repeat(2,minmax(0,1fr))}.bf-guide-grid{grid-template-columns:1fr}}
 @media(max-width:640px){.bf-guide-table{grid-template-columns:115px 1fr}.bf-guide-table>div{padding:6px;font-size:.57rem}}
 
+
+/* ================================================================
+   BF DATA RESPONSIVE FIT PATCH
+   UI-only: no prediction, lineup, tracker, combo, lock, or history logic changed.
+   Designed for comfortable use at browser zoom 100% on desktop and iPhone.
+   ================================================================ */
+
+/* Use more of the available desktop viewport without stretching cards excessively. */
+.block-container{
+    width:min(96vw, 1720px) !important;
+    max-width:1720px !important;
+    padding-left:clamp(.70rem,1.25vw,1.25rem) !important;
+    padding-right:clamp(.70rem,1.25vw,1.25rem) !important;
+    padding-top:.45rem !important;
+}
+
+/* Keep the app navigation on one compact, horizontally-scrollable line. */
+.stTabs [data-baseweb="tab-list"]{
+    gap:2px !important;
+    overflow-x:auto !important;
+    overflow-y:hidden !important;
+    flex-wrap:nowrap !important;
+    scrollbar-width:thin;
+    padding-bottom:2px;
+}
+.stTabs [data-baseweb="tab"]{
+    flex:0 0 auto !important;
+    padding:5px 8px !important;
+    min-height:30px !important;
+    border-radius:7px !important;
+}
+.stTabs [data-baseweb="tab"] p{
+    font-size:.70rem !important;
+    white-space:nowrap !important;
+}
+
+/* More compact page headings and Streamlit spacing. */
+h1{font-size:1.65rem !important;margin:.35rem 0 .45rem !important}
+h2{font-size:1.30rem !important;margin:.35rem 0 .40rem !important}
+h3{font-size:1.05rem !important;margin:.28rem 0 .34rem !important}
+[data-testid="stVerticalBlock"]{gap:.52rem !important}
+[data-testid="stHorizontalBlock"]{gap:.65rem !important}
+div[data-testid="stExpander"] summary{
+    min-height:35px !important;
+    padding:.35rem .65rem !important;
+    font-size:.76rem !important;
+}
+
+/* Desktop decision cards: same information, tighter vertical rhythm. */
+.bf-v2-grid{gap:7px !important}
+.bf-v2-card{
+    padding:8px 9px !important;
+    margin:5px 0 6px !important;
+    border-radius:11px !important;
+}
+.bf-v2-head{gap:6px !important}
+.bf-v2-name{font-size:.88rem !important}
+.bf-v2-meta{font-size:.58rem !important;margin-top:2px !important}
+.bf-v2-role-row{gap:4px !important;margin-top:5px !important}
+.bf-v2-role{font-size:.50rem !important;padding:2px 6px !important}
+.bf-v2-grade{font-size:.64rem !important;padding:2px 6px !important}
+.bf-v2-delta{font-size:.50rem !important}
+.bf-v2-scores{grid-template-columns:repeat(3,52px) !important;gap:4px !important}
+.bf-v2-score{padding:3px !important;border-radius:7px !important}
+.bf-v2-score b{font-size:.42rem !important}
+.bf-v2-score span{font-size:.76rem !important}
+.bf-v2-rankline{gap:4px !important;margin-top:4px !important}
+.bf-v2-rankchip{font-size:.43rem !important;padding:2px 5px !important}
+.bf-v2-badges{gap:4px !important;margin-top:5px !important;font-size:.51rem !important}
+.bf-v2-attack-panel{
+    margin-top:6px !important;
+    padding:6px 7px !important;
+    border-radius:8px !important;
+}
+.bf-v2-attack-kicker{font-size:.43rem !important}
+.bf-v2-attack-label{font-size:.69rem !important}
+.bf-v2-attack-score{font-size:.90rem !important}
+.bf-v2-attack-track{height:7px !important;margin-top:5px !important}
+.bf-v2-signal-grid{gap:4px !important;margin-top:5px !important}
+.bf-v2-signal{padding:4px 6px !important;font-size:.47rem !important}
+.bf-v2-signal b{font-size:.39rem !important}
+.bf-v2-verdict{
+    margin-top:5px !important;
+    padding:4px 6px !important;
+    gap:6px !important;
+}
+.bf-v2-verdict strong{font-size:.48rem !important}
+.bf-v2-verdict span{font-size:.49rem !important}
+.bf-v2-compare{gap:4px !important;margin-top:5px !important}
+.bf-v2-compare>div{padding:4px !important;border-radius:7px !important}
+.bf-v2-compare small{font-size:.38rem !important}
+.bf-v2-compare strong{font-size:.67rem !important;margin-top:2px !important}
+.bf-v2-pair{
+    margin-top:5px !important;
+    padding:5px 6px !important;
+    border-radius:7px !important;
+}
+.bf-v2-pair small{font-size:.39rem !important}
+.bf-v2-pair strong{font-size:.61rem !important}
+.bf-v2-pair-score{font-size:.79rem !important}
+.bf-v2-confidence{margin-top:5px !important}
+.bf-v2-confidence-head{font-size:.47rem !important;margin-bottom:2px !important}
+.bf-v2-confidence-track{height:4px !important}
+.bf-v2-why{
+    margin-top:5px !important;
+    padding-top:4px !important;
+    font-size:.52rem !important;
+    line-height:1.22 !important;
+}
+.bf-v2-why b{font-size:.44rem !important}
+
+/* Compact expanded matchup card on normal laptop/desktop screens. */
+.bf-match-card{margin:4px 0 7px !important;border-radius:11px !important}
+.bf-match-topline{
+    grid-template-columns:minmax(145px,1.1fr) minmax(135px,.95fr) 54px 54px 54px !important;
+}
+.bf-cell-head{padding:7px 8px !important}
+.bf-head-label{font-size:.49rem !important}
+.bf-head-main{font-size:.82rem !important;margin-top:3px !important}
+.bf-score-box{min-height:48px !important}
+.bf-score-box .lab{font-size:.46rem !important}
+.bf-score-box .num{font-size:.80rem !important;padding:4px 6px !important}
+.bf-live-result-strip{padding:5px 9px !important;font-size:.60rem !important}
+.bf-card-body{
+    grid-template-columns:165px minmax(0,1fr) !important;
+    gap:9px !important;
+    padding:8px !important;
+}
+.bf-side-panel{padding-right:8px !important}
+.bf-section-title{font-size:.50rem !important;margin:3px 0 6px !important}
+.bf-score-line,.bf-pitcher-stat{
+    font-size:.63rem !important;
+    margin-bottom:5px !important;
+}
+.bf-pill-num{padding:3px 5px !important}
+.bf-arsenal-grid{gap:4px !important}
+.bf-pitch-tile{padding:5px 6px !important;min-height:62px !important}
+.bf-pitch-name{font-size:.49rem !important}
+.bf-pitch-score{font-size:.88rem !important}
+.bf-pitch-note{font-size:.41rem !important}
+.bf-bvp-title{margin-top:8px !important;padding-top:7px !important;font-size:.49rem !important}
+.bf-bvp-grid{gap:4px !important;margin-top:5px !important}
+.bf-bvp-cell{padding:5px 6px !important}
+.bf-bvp-label{font-size:.47rem !important}
+.bf-bvp-values{font-size:.64rem !important;margin-top:3px !important}
+.bf-card-foot{padding:0 8px 8px !important;font-size:.57rem !important}
+
+/* Laptop widths: retain two cards per row, but reduce unused margins. */
+@media (min-width:901px) and (max-width:1450px){
+    .block-container{
+        width:98vw !important;
+        padding-left:.55rem !important;
+        padding-right:.55rem !important;
+    }
+    .bf-v2-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important}
+}
+
+/* Tablet / narrow browser: one clean card column. */
+@media (max-width:900px){
+    .block-container{
+        width:100% !important;
+        max-width:none !important;
+        padding-left:.50rem !important;
+        padding-right:.50rem !important;
+    }
+    .bf-v2-grid{grid-template-columns:1fr !important}
+    .bf-card-body{grid-template-columns:1fr !important}
+}
+
+/* iPhone/mobile: deliberately compact, no forced desktop-width elements. */
+@media (max-width:640px){
+    html,body,.stApp{font-size:14px !important}
+    .block-container{
+        padding:.25rem .38rem 1.2rem !important;
+        width:100% !important;
+    }
+    h1{font-size:1.28rem !important}
+    h2{font-size:1.08rem !important}
+    h3{font-size:.92rem !important}
+
+    .bf-hero{padding:7px 8px !important;margin-bottom:4px !important;border-radius:10px !important}
+    .bf-title{font-size:1.18rem !important}
+    .bf-subtitle{font-size:.64rem !important}
+    .bf-kicker{font-size:.50rem !important}
+
+    .stTabs [data-baseweb="tab-list"]{gap:1px !important}
+    .stTabs [data-baseweb="tab"]{padding:4px 6px !important;min-height:27px !important}
+    .stTabs [data-baseweb="tab"] p{font-size:.59rem !important}
+
+    [data-testid="stVerticalBlock"]{gap:.36rem !important}
+    [data-testid="stHorizontalBlock"]{gap:.35rem !important}
+
+    .bf-v2-card{padding:6px 7px !important;margin:4px 0 5px !important;border-radius:9px !important}
+    .bf-v2-name{font-size:.78rem !important}
+    .bf-v2-head{grid-template-columns:minmax(0,1fr) auto !important;gap:4px !important}
+    .bf-v2-scores{grid-template-columns:repeat(3,43px) !important}
+    .bf-v2-score span{font-size:.66rem !important}
+    .bf-v2-score b{font-size:.35rem !important}
+    .bf-v2-role-row{margin-top:4px !important}
+    .bf-v2-role{font-size:.45rem !important}
+    .bf-v2-meta{font-size:.51rem !important}
+    .bf-v2-rankchip{font-size:.38rem !important}
+    .bf-v2-badges{font-size:.45rem !important}
+    .bf-v2-attack-panel{padding:5px 6px !important}
+    .bf-v2-attack-label{font-size:.61rem !important}
+    .bf-v2-attack-score{font-size:.78rem !important}
+    .bf-v2-signal-grid{grid-template-columns:1fr 1fr !important}
+    .bf-v2-signal{font-size:.42rem !important;padding:3px 4px !important}
+    .bf-v2-verdict span{font-size:.44rem !important}
+    .bf-v2-compare{grid-template-columns:repeat(4,minmax(0,1fr)) !important}
+    .bf-v2-compare>div{padding:3px 2px !important}
+    .bf-v2-compare small{font-size:.31rem !important}
+    .bf-v2-compare strong{font-size:.58rem !important}
+    .bf-v2-pair{
+        grid-template-columns:1fr auto !important;
+        padding:4px 5px !important;
+    }
+    .bf-v2-pair strong{font-size:.54rem !important}
+    .bf-v2-pair-score{font-size:.68rem !important}
+    .bf-v2-why{font-size:.45rem !important}
+
+    div[data-testid="stExpander"] summary{
+        min-height:31px !important;
+        padding:.28rem .48rem !important;
+        font-size:.67rem !important;
+    }
+
+    .bf-match-topline{
+        grid-template-columns:minmax(92px,1fr) minmax(88px,1fr) 37px 37px 37px !important;
+    }
+    .bf-cell-head{padding:5px 4px !important}
+    .bf-head-label{font-size:.39rem !important}
+    .bf-head-main{font-size:.65rem !important}
+    .bf-score-box .lab{font-size:.35rem !important}
+    .bf-score-box .num{font-size:.62rem !important;padding:3px !important;min-width:24px !important}
+    .bf-card-body{padding:6px !important;gap:6px !important}
+    .bf-arsenal-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important}
+    .bf-bvp-grid{grid-template-columns:repeat(3,minmax(0,1fr)) !important}
+    .bf-pitch-tile{padding:4px !important}
+    .bf-pitch-note{font-size:.39rem !important}
+    .bf-card-foot{font-size:.50rem !important;padding:0 6px 6px !important}
+
+    /* Prevent wide tables/cards from forcing the whole mobile page wider. */
+    .bf-match-card,.bf-v2-card,.bf-weather-card,
+    div[data-testid="stDataFrame"]{
+        max-width:100% !important;
+    }
+}
+
+/* Very small iPhones. */
+@media (max-width:390px){
+    .block-container{padding-left:.28rem !important;padding-right:.28rem !important}
+    .bf-v2-scores{grid-template-columns:repeat(3,39px) !important}
+    .bf-v2-compare small{letter-spacing:.03em !important}
+    .bf-bvp-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important}
+}
+
 </style>
 <div class="bf-hero">
     <div class="bf-kicker">BF DATA PRO LAB</div>
