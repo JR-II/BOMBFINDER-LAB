@@ -13,6 +13,7 @@ import time
 import tempfile
 import json
 import math
+import shutil
 from io import StringIO
 from concurrent.futures import ThreadPoolExecutor, as_completed
 st.set_page_config(page_title="BF Data", layout="wide")
@@ -521,7 +522,23 @@ SNAPSHOT_DIR = os.path.join(BF_DATA_DIR, "tracker_snapshots")
 LEGACY_SNAPSHOT_DIR = "tracker_snapshots"
 LEGACY_TRACKER_FILE = "hr_tracker.csv"
 LEARNING_PROFILE_FILE = os.path.join(BF_DATA_DIR, "bf_learning_profile.json")
-TRACKER_AUDIT_VERSION = "2.0"
+TRACKER_AUDIT_VERSION = "2.1"
+BACKUP_DIR = os.path.join(BF_DATA_DIR, "history_backups")
+os.makedirs(BACKUP_DIR, exist_ok=True)
+_BACKED_UP_PATHS = set()
+
+
+def _backup_file_before_write(path: str, label: str):
+    if not path or path in _BACKED_UP_PATHS or not os.path.exists(path):
+        return
+    try:
+        stamp = datetime.now(ZoneInfo("America/New_York")).strftime("%Y%m%d_%H%M%S")
+        shutil.copy2(path, os.path.join(BACKUP_DIR, f"{label}_{stamp}_{os.path.basename(path)}"))
+        _BACKED_UP_PATHS.add(path)
+    except Exception:
+        pass
+
+
 
 # Resource protection for Streamlit Community Cloud.
 # Consolidated tracker/lock files are preserved. Only redundant dated recovery
@@ -1053,7 +1070,9 @@ def cleanup_bf_recovery_snapshots(
             except ValueError:
                 continue
 
-            retention = tracker_days if tracker_match else board_days
+            if tracker_match:
+                continue
+            retention = board_days
             if (now - file_date).days <= max(1, int(retention)):
                 continue
 
@@ -1092,7 +1111,7 @@ def enforce_bf_local_storage_ceiling(max_mb: int = BF_MAX_LOCAL_DATA_MB) -> dict
         if not os.path.isdir(folder):
             continue
         for filename in os.listdir(folder):
-            if not re.fullmatch(r"hr_(?:tracker|board)_\d{4}-\d{2}-\d{2}\.csv", filename):
+            if not re.fullmatch(r"hr_board_\d{4}-\d{2}-\d{2}\.csv", filename):
                 continue
             path = os.path.join(folder, filename)
             try:
@@ -1354,6 +1373,7 @@ def dedupe_tracker_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def save_tracker(df: pd.DataFrame):
+    _backup_file_before_write(TRACKER_FILE, "tracker")
     tracker = _basic_tracker_dedupe(df)
     _atomic_write_csv(tracker, TRACKER_FILE)
 
@@ -1397,6 +1417,7 @@ def load_combo_tracker() -> pd.DataFrame:
 
 
 def save_combo_tracker(df: pd.DataFrame):
+    _backup_file_before_write(COMBO_TRACKER_FILE, "combo_tracker")
     _atomic_write_csv(df, COMBO_TRACKER_FILE)
 
 
@@ -1410,6 +1431,7 @@ def load_board_locks() -> pd.DataFrame:
 
 
 def save_board_locks(df: pd.DataFrame):
+    _backup_file_before_write(LOCK_FILE, "board_locks")
     _atomic_write_csv(df, LOCK_FILE)
 
 
@@ -2170,7 +2192,7 @@ def summarize_tracker(df: pd.DataFrame):
     if df.empty:
         return summary
 
-    work = df.copy()
+    work = official_tracker_rows(df.copy())
     if "tracker_source" not in work.columns:
         work["tracker_source"] = "CORE_BOARD"
     work["tracker_source"] = work["tracker_source"].fillna("CORE_BOARD").astype(str).str.strip().str.upper()
@@ -3129,7 +3151,7 @@ def fetch_bullpen_fatigue_for_team(team_id: int):
     return neutral
 
 
-@st.cache_data(ttl=300, max_entries=4)
+@st.cache_data(ttl=60, max_entries=4)
 def fetch_schedule_payload():
     url = (
         "https://statsapi.mlb.com/api/v1/schedule"
@@ -3172,7 +3194,7 @@ def resolve_pitcher_name(team_id: int, team_block: dict) -> str:
     return "Starter Pending"
 
 
-@st.cache_data(ttl=300, max_entries=4)
+@st.cache_data(ttl=60, max_entries=4)
 def get_today_schedule():
     data = fetch_schedule_payload()
 
@@ -3187,11 +3209,11 @@ def get_today_schedule():
             away_id = away_block["team"]["id"]
             home_id = home_block["team"]["id"]
 
-            linescore = game.get("linescore", {})
-            offense = linescore.get("offense", {})
-
-            away_confirmed = 9 if offense.get("battingOrder") else 0
-            home_confirmed = 9 if offense.get("battingOrder") else 0
+            box = fetch_boxscore(game.get("gamePk"))
+            away_players = (((box.get("teams") or {}).get("away") or {}).get("players") or {})
+            home_players = (((box.get("teams") or {}).get("home") or {}).get("players") or {})
+            away_confirmed = sum(1 for p in away_players.values() if str(p.get("battingOrder") or "").strip())
+            home_confirmed = sum(1 for p in home_players.values() if str(p.get("battingOrder") or "").strip())
 
             status = game.get("status", {})
             game_state = status.get("abstractGameState", "Preview")
@@ -3224,7 +3246,7 @@ def get_today_schedule():
     return sort_schedule_rows(games)
 
 
-@st.cache_data(ttl=300, max_entries=48)
+@st.cache_data(ttl=30, max_entries=48)
 def fetch_boxscore(game_pk: int):
     url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
     try:
@@ -5574,7 +5596,7 @@ def _prefetch_cached_calls(call_specs: list[tuple], max_workers: int = 12):
                 pass
 
 
-@st.cache_data(ttl=1800, max_entries=4)
+@st.cache_data(ttl=120, max_entries=4)
 def build_daily_dataset(deep_bbe: bool = False):
     schedule = sort_schedule_rows(get_today_schedule())
     rows = []
@@ -6402,6 +6424,39 @@ def sync_tracker_with_board(tracked_df: pd.DataFrame):
     save_tracker(tracker)
     return tracker
 
+
+def reconcile_today_tracker_with_visible_board(tracker, visible_df, schedule):
+    """Exclude pregame off-board players without deleting their audit history."""
+    if tracker is None or tracker.empty:
+        return tracker
+    work = tracker.copy()
+    visible_keys = set()
+    if visible_df is not None and not visible_df.empty:
+        for _, row in visible_df.iterrows():
+            visible_keys.add((safe_int(row.get("game_pk"), -1), safe_int(row.get("Player ID"), -1), normalize_name(row.get("Player", "")), str(row.get("Tracker Source", "CORE_BOARD") or "CORE_BOARD").strip().upper()))
+    states = {safe_int(g.get("game_pk"), -1): str(g.get("game_state", "Preview")) for g in schedule}
+    today_mask = work["date"].astype(str).eq(today_str())
+    for idx in work.index[today_mask]:
+        game_pk = safe_int(work.at[idx, "game_pk"], -1)
+        key = (game_pk, safe_int(work.at[idx, "player_id"], -1), normalize_name(work.at[idx, "player"]), str(work.at[idx, "tracker_source"] or "CORE_BOARD").strip().upper())
+        if key in visible_keys:
+            if str(work.at[idx, "result_state"]) == "SCRATCHED_EXCLUDED":
+                work.at[idx, "result_state"] = "PENDING"
+            continue
+        if states.get(game_pk, "Preview") == "Preview":
+            work.at[idx, "result_state"] = "SCRATCHED_EXCLUDED"
+            work.at[idx, "result"] = pd.NA
+            work.at[idx, "hr_count"] = 0
+            work.at[idx, "updated_at"] = now_et_string()
+    return dedupe_tracker_rows(work)
+
+
+def official_tracker_rows(df):
+    if df is None or df.empty or "result_state" not in df.columns:
+        return df
+    excluded = {"SCRATCHED_EXCLUDED", "REMOVED_FROM_LINEUP", "INVALID_LINEUP"}
+    return df[~df["result_state"].fillna("").astype(str).isin(excluded)].copy()
+
 def auto_update_tracker_results(tracker: pd.DataFrame, schedule: list[dict]):
     if tracker.empty:
         return tracker
@@ -6471,130 +6526,66 @@ def _combo_signature(players: list[str]) -> str:
 
 def _pick_combo_rows(candidates: pd.DataFrame, size: int, max_combos: int, global_usage: dict) -> list[dict]:
     from itertools import combinations
-
     if candidates.empty or len(candidates) < size:
         return []
-
+    min_prob, min_quality, confirmed_required = {2:(14.0,70.0,False),3:(16.0,76.0,False),4:(18.0,82.0,True),5:(20.0,86.0,True)}[size]
     ranked = candidates.reset_index(drop=True).copy()
-    combos = []
+    choices = []
     for idxs in combinations(ranked.index.tolist(), size):
         rows = ranked.loc[list(idxs)].copy()
-        players = rows["Player"].tolist()
-        games = rows["Game"].tolist()
-        teams = rows["Team"].tolist()
-        if len(set(players)) != size:
+        players = rows["Player"].astype(str).tolist(); games = rows["Game"].astype(str).tolist(); teams = rows["Team"].astype(str).tolist()
+        if len(set(players)) != size or (size >= 3 and len(set(games)) < size - 1) or len(set(teams)) < max(2, size - 1):
             continue
-        if size >= 3 and len(set(games)) < size - 1:
+        probs = pd.to_numeric(rows["HR Probability %"], errors="coerce").fillna(0.0)
+        quality = pd.to_numeric(rows.get("Prediction Quality Score"), errors="coerce").fillna(0.0)
+        model = pd.to_numeric(rows.get("Model Rank Score"), errors="coerce").fillna(0.0)
+        lineup = rows.get("Lineup Source", pd.Series(["PROJECTED"] * len(rows))).astype(str).str.upper()
+        weakest_prob = float(probs.min()); weakest_quality = float(quality.min())
+        if weakest_prob < min_prob or weakest_quality < min_quality or (confirmed_required and not lineup.eq("CONFIRMED").all()):
             continue
-        if len(set(teams)) < max(2, size - 1):
-            continue
-
-        avg_prob = rows["HR Probability %"].mean()
-        total_prob = rows["HR Probability %"].sum()
-        total_model = rows["Model Rank Score"].sum()
-        diversity_bonus = len(set(games)) * 2.4 + len(set(teams)) * 1.2
-        same_game_penalty = max(0, size - len(set(games))) * 6.0
-        score = total_prob + (total_model * 0.08) + diversity_bonus - same_game_penalty
-        combos.append({
-            "players": players,
-            "games": games,
-            "rows": rows,
-            "score": round(score, 2),
-            "avg_prob": round(avg_prob, 2),
-        })
-
-    combos = sorted(combos, key=lambda x: (x["score"], x["avg_prob"]), reverse=True)
-
-    selected = []
-    seen = set()
-    for combo in combos:
-        sig = _combo_signature(combo["players"])
-        if sig in seen:
-            continue
-        if any(global_usage.get(p, 0) >= 3 for p in combo["players"]):
-            continue
-        if any(len(set(combo["players"]) & set(existing["players"])) > max(1, size // 2) for existing in selected):
-            continue
-        selected.append(combo)
-        seen.add(sig)
-        for p in combo["players"]:
-            global_usage[p] = global_usage.get(p, 0) + 1
-        if len(selected) >= max_combos:
-            break
+        score = float(probs.mean())*size + float(quality.mean())*.55 + float(model.mean())*.10 + weakest_prob*2 + weakest_quality*.65 + len(set(games))*2.8 + len(set(teams))*1.25 - int((lineup != "CONFIRMED").sum())*(3 if size <= 3 else 8) - max(0,size-len(set(games)))*8
+        choices.append({"players":players,"games":games,"rows":rows,"score":round(score,2),"avg_prob":round(float(probs.mean()),2),"weakest_prob":round(weakest_prob,2),"weakest_quality":round(weakest_quality,2)})
+    choices.sort(key=lambda x:(x["weakest_quality"],x["weakest_prob"],x["score"]), reverse=True)
+    selected=[]
+    for c in choices:
+        if any(global_usage.get(p,0)>=2 for p in c["players"]): continue
+        if any(len(set(c["players"]) & set(o["players"])) > max(1,size//2) for o in selected): continue
+        selected.append(c)
+        for p in c["players"]: global_usage[p]=global_usage.get(p,0)+1
+        if len(selected)>=max_combos: break
     return selected
 
 
 def build_combo_board(df: pd.DataFrame) -> pd.DataFrame:
-    shortlist = get_research_shortlist_pool(df)
-    top12 = get_top12_hybrid(df)
-    if shortlist.empty and top12.empty:
-        return pd.DataFrame()
-
-    candidate_pool = pd.concat([top12, shortlist], ignore_index=True)
-    candidate_pool = candidate_pool.drop_duplicates(subset=["Player", "Team", "Game"])
-    candidate_pool = sort_for_hr(candidate_pool).head(14).reset_index(drop=True)
-
-    global_usage = {}
-    rows = []
-    combo_counts = {2: 5, 3: 4, 4: 3, 5: 2}
-    for size in [2, 3, 4, 5]:
-        selected = _pick_combo_rows(candidate_pool, size, combo_counts[size], global_usage)
-        for idx, combo in enumerate(selected, start=1):
-            players = combo["players"]
-            games = combo["games"]
-            labels = [f"{p} ({t})" for p, t in zip(combo["players"], combo["rows"]["Team"].tolist())]
-            rows.append({
-                "Combo Type": f"{size}-Leg",
-                "Combo #": idx,
-                "Combo Label": " + ".join(labels),
-                "Players": " | ".join(players),
-                "Games": " | ".join(games),
-                "Avg Leg HR %": round(combo["avg_prob"], 2),
-                "Combined Score": combo["score"],
-                "Source Pool": "TOP12+CORE",
-            })
+    shortlist=get_research_shortlist_pool(df); top12=get_top12_hybrid(df)
+    if shortlist.empty and top12.empty: return pd.DataFrame()
+    pool=pd.concat([top12,shortlist],ignore_index=True).drop_duplicates(subset=["Player","Team","Game"])
+    pool=sort_for_hr(pool).head(16).reset_index(drop=True)
+    rows=[]; usage={}; limits={2:3,3:2,4:1,5:1}
+    for size in (2,3,4,5):
+        for number,c in enumerate(_pick_combo_rows(pool,size,limits[size],usage),start=1):
+            labels=[f"{p} ({team})" for p,team in zip(c["players"],c["rows"]["Team"].astype(str).tolist())]
+            rows.append({"Combo Type":f"{size}-Leg","Combo #":number,"Combo Label":" + ".join(labels),"Players":" | ".join(c["players"]),"Games":" | ".join(c["games"]),"Avg Leg HR %":c["avg_prob"],"Weakest Leg HR %":c["weakest_prob"],"Weakest Leg Quality":c["weakest_quality"],"Combined Score":c["score"],"Source Pool":"TOP12+CORE_QUALITY_FIRST"})
     return pd.DataFrame(rows)
 
 
 def sync_combo_tracker_with_board(combo_df: pd.DataFrame):
-    tracker = load_combo_tracker()
-    date_key = today_str()
-    if combo_df.empty:
-        return tracker
-
-    existing_ids = set()
+    tracker=load_combo_tracker(); date_key=today_str()
+    if combo_df.empty: return tracker
+    existing=set(tracker.loc[tracker["date"].astype(str).eq(date_key),"combo_id"].astype(str)) if not tracker.empty else set()
+    active=set(); new_rows=[]
+    for _,row in combo_df.iterrows():
+        legs=[x.strip() for x in str(row["Players"]).split("|") if x.strip()]
+        combo_id=f"{date_key}-{len(legs)}L-{_combo_signature(legs)}"; active.add(combo_id)
+        if combo_id in existing: continue
+        new_rows.append({"date":date_key,"combo_id":combo_id,"combo_label":row["Combo Label"],"combo_size":len(legs),"legs":row["Players"],"games":row["Games"],"avg_leg_probability":row["Avg Leg HR %"],"combined_score":row["Combined Score"],"source_pool":row["Source Pool"],"result":pd.NA,"result_state":"PENDING","legs_hit":0,"total_legs":len(legs),"updated_at":now_et_string()})
     if not tracker.empty:
-        existing_today = tracker[tracker["date"].astype(str) == date_key].copy()
-        if not existing_today.empty and "combo_id" in existing_today.columns:
-            existing_ids = set(existing_today["combo_id"].astype(str).tolist())
-
-    new_rows = []
-    for _, row in combo_df.iterrows():
-        combo_id = f"{date_key}-{row['Combo Type']}-{int(row['Combo #'])}"
-        if combo_id in existing_ids:
-            continue
-        legs = str(row["Players"]).split(" | ")
-        new_rows.append({
-            "date": date_key,
-            "combo_id": combo_id,
-            "combo_label": row["Combo Label"],
-            "combo_size": int(str(row["Combo Type"]).split("-")[0]),
-            "legs": row["Players"],
-            "games": row["Games"],
-            "avg_leg_probability": row["Avg Leg HR %"],
-            "combined_score": row["Combined Score"],
-            "source_pool": row["Source Pool"],
-            "result": pd.NA,
-            "result_state": "PENDING",
-            "legs_hit": 0,
-            "total_legs": len(legs),
-            "updated_at": now_et_string(),
-        })
-
-    if new_rows:
-        tracker = pd.concat([tracker, pd.DataFrame(new_rows)], ignore_index=True)
-        save_combo_tracker(tracker)
-    return tracker
+        mask=tracker["date"].astype(str).eq(date_key)
+        for idx in tracker.index[mask]:
+            if str(tracker.at[idx,"combo_id"]) not in active and str(tracker.at[idx,"result_state"])=="PENDING":
+                tracker.at[idx,"result_state"]="INVALID_LINEUP"; tracker.at[idx,"updated_at"]=now_et_string()
+    if new_rows: tracker=pd.concat([tracker,pd.DataFrame(new_rows)],ignore_index=True)
+    save_combo_tracker(tracker); return tracker
 
 
 def auto_update_combo_tracker_results(combo_tracker: pd.DataFrame, schedule: list[dict]):
@@ -7380,6 +7371,9 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
     card_class = "early" if early else role_class
     badge_html = "".join(f"<span>{escape(str(x))}</span>" for x in badges)
     reason_html = " · ".join(escape(str(x)) for x in reasons)
+    attack_pct = safe_float(row.get("HR Attackability %", _attackability_pct(row.get("HR Attackability Score", 0))), 0.0)
+    attack_label = "STRONG HR ATTACK" if attack_pct >= 72 else ("MIXED / ATTACKABLE" if attack_pct >= 48 else "POOR HR TARGET")
+    attack_class = "bf-fill-green" if attack_pct >= 72 else ("bf-fill-yellow" if attack_pct >= 48 else "bf-fill-red")
 
     return f'''
 <div class="bf-v2-card {card_class}">
@@ -7400,6 +7394,10 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
     </div>
   </div>
   <div class="bf-v2-badges">{badge_html}</div>
+  <div class="bf-bar-wrap">
+    <div class="bf-bar-head"><span>{escape(attack_label)}</span><span>{attack_pct:.0f}/100</span></div>
+    <div class="bf-track"><div class="bf-fill {attack_class}" style="width:{clip(attack_pct,0,100):.0f}%"></div></div>
+  </div>
   <div class="bf-v2-verdict" style="border-color:{verdict_color}">
     <strong style="color:{verdict_color}">{escape(verdict_label)}</strong>
     <span>{escape(verdict_note)}</span>
@@ -8745,6 +8743,7 @@ tracked_df = build_visible_tracker_pool(locked_df_raw, schedule, doubleheader_as
 save_daily_board_snapshot(tracked_df, today_str())
 
 tracker = sync_tracker_with_board(tracked_df)
+tracker = reconcile_today_tracker_with_visible_board(tracker, tracked_df, schedule)
 combo_board = build_combo_board(locked_df_raw)
 combo_tracker = sync_combo_tracker_with_board(combo_board)
 
@@ -8849,7 +8848,7 @@ with tabs[3]:
 
 with tabs[4]:
     st.subheader("HR Combos")
-    st.caption("Randomized but high-likelihood HR ladders built from the best current board without cloning the same pairings.")
+    st.caption("Quality-first HR ladders. Large combos appear only when every leg clears strict probability, quality, and lineup requirements.")
 
     m1, m2, m3 = st.columns(3)
     m1.metric("Today Combos", combo_summary["today_total"])
