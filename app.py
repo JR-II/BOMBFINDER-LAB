@@ -1777,6 +1777,318 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Final readability correction for 100% browser zoom.
+# UI-only: no prediction, ranking, lineup, tracker, lock, weather,
+# history, or combo-generation calculations are changed.
+st.markdown(
+    """
+    <style>
+    /* ------------------------------------------------------------
+       GLOBAL LAPTOP READABILITY
+       Restore a comfortable middle ground: compact, but clearly readable.
+       ------------------------------------------------------------ */
+    html, body, .stApp{
+        font-size:15px !important;
+    }
+
+    .block-container{
+        width:100% !important;
+        max-width:1640px !important;
+        padding-top:.40rem !important;
+        padding-left:clamp(.60rem,1.15vw,1.05rem) !important;
+        padding-right:clamp(.60rem,1.15vw,1.05rem) !important;
+        padding-bottom:1.50rem !important;
+    }
+
+    [data-testid="stVerticalBlock"]{gap:.46rem !important}
+    [data-testid="stHorizontalBlock"]{gap:.58rem !important}
+
+    .bf-hero{
+        padding:10px 13px !important;
+        margin-bottom:7px !important;
+        border-radius:12px !important;
+    }
+    .bf-title{font-size:clamp(1.48rem,2.35vw,2.25rem) !important}
+    .bf-subtitle{font-size:.79rem !important;line-height:1.35 !important}
+    .bf-kicker{font-size:.57rem !important}
+
+    [data-testid="stMetric"]{
+        padding:7px 10px !important;
+        min-height:58px !important;
+    }
+    [data-testid="stMetricLabel"] p{font-size:.68rem !important}
+    [data-testid="stMetricValue"]{font-size:1rem !important}
+
+    .stTabs [data-baseweb="tab"]{
+        padding:5px 9px !important;
+        min-height:31px !important;
+    }
+    .stTabs [data-baseweb="tab"] p{
+        font-size:.69rem !important;
+    }
+
+    h1{font-size:1.50rem !important}
+    h2{font-size:1.24rem !important}
+    h3{font-size:1rem !important}
+
+    /* ------------------------------------------------------------
+       PLAYER CARDS
+       Increase actual reading text without returning to oversized cards.
+       ------------------------------------------------------------ */
+    .bf-scan-card{
+        padding:8px 9px !important;
+        margin:5px 0 6px !important;
+        border-radius:10px !important;
+    }
+    .bf-scan-top{gap:7px !important}
+    .bf-scan-name{font-size:.97rem !important}
+    .bf-scan-matchup{font-size:.61rem !important}
+
+    .bf-scan-actions{
+        grid-template-columns:repeat(3,51px) !important;
+        gap:4px !important;
+    }
+    .bf-scan-action{
+        padding:4px 3px !important;
+        border-radius:7px !important;
+    }
+    .bf-scan-action small{font-size:.39rem !important}
+    .bf-scan-action strong{font-size:.74rem !important}
+
+    .bf-scan-roleline{gap:4px !important;margin-top:5px !important}
+    .bf-scan-role{font-size:.48rem !important;padding:3px 7px !important}
+    .bf-scan-grade{font-size:.52rem !important;padding:3px 6px !important}
+    .bf-scan-confidence,.bf-scan-rank{font-size:.49rem !important}
+
+    .bf-scan-badges{gap:4px !important;margin-top:5px !important}
+    .bf-scan-badge{font-size:.46rem !important;padding:3px 7px !important}
+
+    .bf-scan-attack{margin-top:6px !important;gap:6px !important}
+    .bf-scan-attack-label{font-size:.49rem !important}
+    .bf-scan-attack-score{font-size:.57rem !important}
+    .bf-scan-track{height:6px !important}
+
+    .bf-scan-metrics{gap:4px !important;margin-top:6px !important}
+    .bf-scan-metric{padding:4px 5px !important}
+    .bf-scan-metric small{font-size:.34rem !important}
+    .bf-scan-metric strong{font-size:.64rem !important}
+
+    .bf-scan-why{
+        font-size:.50rem !important;
+        line-height:1.30 !important;
+        margin-top:5px !important;
+    }
+    .bf-scan-bottom{
+        padding:5px 7px !important;
+        margin-top:6px !important;
+    }
+    .bf-scan-pair{font-size:.50rem !important}
+    .bf-scan-pair-score{font-size:.59rem !important}
+
+    div[data-testid="stExpander"] summary{
+        min-height:32px !important;
+        padding:.30rem .60rem !important;
+        font-size:.76rem !important;
+    }
+
+    /* Expanded research: readable labels and stats while retaining density. */
+    .bf-match-topline{
+        grid-template-columns:minmax(150px,1.05fr) minmax(140px,.92fr) 54px 54px 54px !important;
+    }
+    .bf-cell-head{padding:8px 9px !important}
+    .bf-head-label{font-size:.49rem !important}
+    .bf-head-main{font-size:.84rem !important;margin-top:3px !important}
+    .bf-score-box{min-height:49px !important}
+    .bf-score-box .lab{font-size:.44rem !important}
+    .bf-score-box .num{font-size:.78rem !important;padding:4px 6px !important}
+
+    .bf-card-body{
+        grid-template-columns:170px minmax(0,1fr) !important;
+        gap:10px !important;
+        padding:9px !important;
+    }
+    .bf-section-title{font-size:.49rem !important;margin:3px 0 7px !important}
+    .bf-score-line,.bf-pitcher-stat{font-size:.65rem !important;margin-bottom:6px !important}
+    .bf-pitch-tile{padding:6px 7px !important;min-height:68px !important}
+    .bf-pitch-name{font-size:.52rem !important}
+    .bf-pitch-score{font-size:.92rem !important}
+    .bf-pitch-note{font-size:.46rem !important;line-height:1.18 !important}
+    .bf-bvp-title{font-size:.50rem !important;margin-top:8px !important;padding-top:7px !important}
+    .bf-bvp-cell{padding:6px 7px !important}
+    .bf-bvp-label{font-size:.47rem !important}
+    .bf-bvp-values{font-size:.65rem !important}
+
+    /* ------------------------------------------------------------
+       COMBO BOARD STRUCTURE FIX
+       The prior grid defined 7 columns for 8 cells. That forced the Games
+       cell to wrap into an unreadable strip on the left. This uses 8 columns.
+       ------------------------------------------------------------ */
+    .bf-combo-status{
+        padding:10px 12px !important;
+    }
+    .bf-combo-status strong{font-size:.82rem !important}
+    .bf-combo-status span{font-size:.64rem !important;line-height:1.35 !important}
+    .bf-combo-zero{font-size:.58rem !important;padding:4px 8px !important}
+
+    .bf-combo-picks{
+        gap:8px !important;
+        margin:8px 0 11px !important;
+    }
+    .bf-combo-pick{
+        padding:9px 10px !important;
+    }
+    .bf-combo-pick small{font-size:.50rem !important}
+    .bf-combo-pick strong{
+        font-size:.75rem !important;
+        white-space:normal !important;
+        overflow:visible !important;
+    }
+    .bf-combo-pick span{font-size:.57rem !important;line-height:1.3 !important}
+
+    .bf-combo-section{
+        margin:10px 0 5px !important;
+    }
+    .bf-combo-section strong{font-size:.83rem !important}
+    .bf-combo-section span{font-size:.56rem !important}
+
+    .bf-combo-card{
+        grid-template-columns:
+            40px
+            minmax(260px,2.10fr)
+            minmax(72px,.52fr)
+            minmax(72px,.52fr)
+            minmax(72px,.52fr)
+            minmax(78px,.56fr)
+            minmax(92px,.66fr)
+            minmax(150px,1.05fr) !important;
+        width:100% !important;
+        margin:5px 0 !important;
+        min-height:70px !important;
+        overflow:hidden !important;
+    }
+    .bf-combo-cell{
+        padding:8px 9px !important;
+        min-width:0 !important;
+        overflow:hidden !important;
+    }
+    .bf-combo-cell small{
+        font-size:.43rem !important;
+        line-height:1.1 !important;
+    }
+    .bf-combo-cell strong{
+        font-size:.67rem !important;
+        margin-top:4px !important;
+        line-height:1.25 !important;
+    }
+    .bf-combo-label strong{
+        font-size:.72rem !important;
+        white-space:normal !important;
+        overflow:visible !important;
+        text-overflow:clip !important;
+    }
+    .bf-combo-tag{
+        font-size:.43rem !important;
+        padding:3px 6px !important;
+        margin-top:5px !important;
+    }
+
+    /* Keep every combo cell inside the card. */
+    .bf-combo-card > .bf-combo-cell:nth-child(1){grid-column:1}
+    .bf-combo-card > .bf-combo-cell:nth-child(2){grid-column:2}
+    .bf-combo-card > .bf-combo-cell:nth-child(3){grid-column:3}
+    .bf-combo-card > .bf-combo-cell:nth-child(4){grid-column:4}
+    .bf-combo-card > .bf-combo-cell:nth-child(5){grid-column:5}
+    .bf-combo-card > .bf-combo-cell:nth-child(6){grid-column:6}
+    .bf-combo-card > .bf-combo-cell:nth-child(7){grid-column:7}
+    .bf-combo-card > .bf-combo-cell:nth-child(8){grid-column:8}
+
+    @media (min-width:901px) and (max-width:1450px){
+        .block-container{
+            width:100% !important;
+            padding-left:.65rem !important;
+            padding-right:.65rem !important;
+        }
+        .bf-scan-name{font-size:.91rem !important}
+        .bf-scan-matchup{font-size:.56rem !important}
+        .bf-combo-card{
+            grid-template-columns:
+                36px
+                minmax(225px,1.85fr)
+                64px
+                64px
+                66px
+                70px
+                84px
+                minmax(120px,.95fr) !important;
+        }
+        .bf-combo-cell{padding:7px !important}
+        .bf-combo-cell strong{font-size:.61rem !important}
+        .bf-combo-label strong{font-size:.67rem !important}
+    }
+
+    @media(max-width:1000px){
+        .bf-combo-card{
+            grid-template-columns:
+                34px
+                minmax(210px,1.7fr)
+                66px
+                66px
+                70px
+                minmax(110px,.9fr) !important;
+        }
+        .bf-combo-card > .bf-combo-cell:nth-child(6),
+        .bf-combo-card > .bf-combo-cell:nth-child(7){
+            display:none !important;
+        }
+        .bf-combo-card > .bf-combo-cell:nth-child(8){
+            grid-column:6 !important;
+        }
+    }
+
+    @media(max-width:900px){
+        .bf-card-body{grid-template-columns:1fr !important}
+        .bf-combo-picks{grid-template-columns:1fr !important}
+        .bf-combo-card{
+            grid-template-columns:32px minmax(190px,1fr) 64px 68px !important;
+        }
+        .bf-combo-card > .bf-combo-cell:nth-child(5),
+        .bf-combo-card > .bf-combo-cell:nth-child(6),
+        .bf-combo-card > .bf-combo-cell:nth-child(7),
+        .bf-combo-card > .bf-combo-cell:nth-child(8){
+            display:none !important;
+        }
+    }
+
+    @media(max-width:640px){
+        html,body,.stApp{font-size:14px !important}
+        .block-container{padding:.28rem .40rem 1.15rem !important}
+
+        .bf-scan-name{font-size:.86rem !important}
+        .bf-scan-matchup{font-size:.53rem !important}
+        .bf-scan-actions{grid-template-columns:repeat(3,45px) !important}
+        .bf-scan-action strong{font-size:.66rem !important}
+        .bf-scan-role{font-size:.42rem !important}
+        .bf-scan-badge{font-size:.41rem !important}
+        .bf-scan-metric strong{font-size:.58rem !important}
+
+        .bf-combo-status{align-items:flex-start !important;flex-direction:column !important}
+        .bf-combo-card{
+            grid-template-columns:29px minmax(155px,1fr) 54px !important;
+        }
+        .bf-combo-card > .bf-combo-cell:nth-child(4),
+        .bf-combo-card > .bf-combo-cell:nth-child(5),
+        .bf-combo-card > .bf-combo-cell:nth-child(6),
+        .bf-combo-card > .bf-combo-cell:nth-child(7),
+        .bf-combo-card > .bf-combo-cell:nth-child(8){
+            display:none !important;
+        }
+        .bf-combo-label strong{font-size:.59rem !important}
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 AUTO_REFRESH_SECONDS = 120
 
 # Speed control: regular board loads avoid the heavy play-by-play L10 BBE pull.
