@@ -1563,6 +1563,220 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Final 100%-zoom desktop/laptop fit layer.
+# Presentation only: no board generation, ranking, model, tracker, lock,
+# lineup, weather, or combo-generation calculations are changed.
+st.markdown(
+    """
+    <style>
+    /* A predictable content width that fits older 1366px laptops and modern displays. */
+    .block-container{
+        width:100% !important;
+        max-width:1680px !important;
+        padding-top:.30rem !important;
+        padding-left:clamp(.45rem,1vw,.90rem) !important;
+        padding-right:clamp(.45rem,1vw,.90rem) !important;
+        padding-bottom:1.35rem !important;
+    }
+
+    html,body,.stApp{
+        font-size:14px !important;
+    }
+    [data-testid="stVerticalBlock"]{gap:.36rem !important}
+    [data-testid="stHorizontalBlock"]{gap:.48rem !important}
+
+    .bf-hero{
+        padding:8px 11px !important;
+        margin-bottom:5px !important;
+        border-radius:11px !important;
+        box-shadow:0 6px 18px rgba(0,0,0,.14) !important;
+    }
+    .bf-title{font-size:clamp(1.28rem,2.1vw,2rem) !important}
+    .bf-subtitle{font-size:.70rem !important}
+    .bf-kicker{font-size:.50rem !important}
+
+    [data-testid="stMetric"]{
+        padding:5px 8px !important;
+        min-height:52px !important;
+        border-radius:8px !important;
+        box-shadow:none !important;
+    }
+    [data-testid="stMetricLabel"] p{font-size:.60rem !important}
+    [data-testid="stMetricValue"]{font-size:.88rem !important}
+
+    .stTabs [data-baseweb="tab"]{
+        padding:4px 7px !important;
+        min-height:27px !important;
+    }
+    .stTabs [data-baseweb="tab"] p{font-size:.61rem !important}
+
+    h1{font-size:1.35rem !important}
+    h2{font-size:1.12rem !important}
+    h3{font-size:.92rem !important}
+    h1,h2,h3{margin:.22rem 0 .28rem !important}
+
+    /* Compact scan cards: readable at 100%, but no oversized padding. */
+    .bf-scan-card{
+        padding:6px 7px !important;
+        margin:3px 0 4px !important;
+        border-radius:8px !important;
+        box-shadow:0 4px 13px rgba(0,0,0,.12) !important;
+    }
+    .bf-scan-top{gap:5px !important}
+    .bf-scan-name{font-size:.82rem !important}
+    .bf-scan-matchup{font-size:.50rem !important}
+    .bf-scan-actions{grid-template-columns:repeat(3,45px) !important;gap:3px !important}
+    .bf-scan-action{padding:2px !important;border-radius:6px !important}
+    .bf-scan-action small{font-size:.32rem !important}
+    .bf-scan-action strong{font-size:.64rem !important}
+    .bf-scan-roleline{gap:3px !important;margin-top:3px !important}
+    .bf-scan-role{font-size:.40rem !important;padding:2px 5px !important}
+    .bf-scan-grade{font-size:.43rem !important;padding:2px 5px !important}
+    .bf-scan-confidence,.bf-scan-rank{font-size:.40rem !important}
+    .bf-scan-badges{gap:3px !important;margin-top:3px !important}
+    .bf-scan-badge{font-size:.38rem !important;padding:2px 5px !important}
+    .bf-scan-attack{margin-top:4px !important;gap:4px !important}
+    .bf-scan-attack-label{font-size:.40rem !important}
+    .bf-scan-attack-score{font-size:.47rem !important}
+    .bf-scan-track{height:5px !important}
+    .bf-scan-metrics{gap:3px !important;margin-top:4px !important}
+    .bf-scan-metric{padding:2px 3px !important}
+    .bf-scan-metric small{font-size:.28rem !important}
+    .bf-scan-metric strong{font-size:.53rem !important}
+    .bf-scan-why{font-size:.42rem !important;margin-top:3px !important}
+    .bf-scan-bottom{padding:3px 5px !important;margin-top:4px !important}
+    .bf-scan-pair{font-size:.41rem !important}
+    .bf-scan-pair-score{font-size:.49rem !important}
+
+    div[data-testid="stExpander"] summary{
+        min-height:28px !important;
+        padding:.20rem .48rem !important;
+        font-size:.67rem !important;
+    }
+
+    /* Expanded matchup view fits a standard HP 1366x768 laptop at 100% zoom. */
+    .bf-match-topline{
+        grid-template-columns:minmax(130px,1.05fr) minmax(125px,.92fr) 47px 47px 47px !important;
+    }
+    .bf-cell-head{padding:6px 7px !important}
+    .bf-head-label{font-size:.42rem !important}
+    .bf-head-main{font-size:.72rem !important;margin-top:2px !important}
+    .bf-score-box{min-height:43px !important}
+    .bf-score-box .lab{font-size:.38rem !important}
+    .bf-score-box .num{font-size:.68rem !important;padding:3px 5px !important}
+    .bf-card-body{
+        grid-template-columns:145px minmax(0,1fr) !important;
+        gap:7px !important;
+        padding:6px !important;
+    }
+    .bf-section-title{font-size:.43rem !important;margin:2px 0 5px !important}
+    .bf-score-line,.bf-pitcher-stat{font-size:.55rem !important;margin-bottom:4px !important}
+    .bf-pitch-tile{padding:4px 5px !important;min-height:55px !important}
+    .bf-pitch-name{font-size:.43rem !important}
+    .bf-pitch-score{font-size:.76rem !important}
+    .bf-pitch-note{font-size:.36rem !important}
+    .bf-bvp-title{font-size:.43rem !important;margin-top:6px !important;padding-top:5px !important}
+    .bf-bvp-cell{padding:4px 5px !important}
+    .bf-bvp-label{font-size:.39rem !important}
+    .bf-bvp-values{font-size:.54rem !important}
+
+    /* Combo command center */
+    .bf-combo-status{
+        display:flex;justify-content:space-between;align-items:center;gap:10px;
+        padding:8px 10px;margin:5px 0 7px;border:1px solid var(--bf-border);
+        border-radius:9px;background:var(--bf-panel);
+    }
+    .bf-combo-status strong{font-size:.72rem;color:var(--bf-text)}
+    .bf-combo-status span{font-size:.55rem;color:var(--bf-muted)}
+    .bf-combo-zero{
+        color:#ffb0b0 !important;border:1px solid rgba(255,85,85,.32);
+        background:rgba(255,85,85,.06);border-radius:999px;padding:3px 7px;
+        font-size:.50rem !important;font-weight:900;white-space:nowrap;
+    }
+    .bf-combo-picks{
+        display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
+        gap:6px;margin:6px 0 9px;
+    }
+    .bf-combo-pick{
+        border:1px solid var(--bf-border);border-radius:9px;
+        background:var(--bf-panel-2);padding:7px 8px;min-width:0;
+    }
+    .bf-combo-pick.featured{border-color:rgba(53,208,127,.44)}
+    .bf-combo-pick.value{border-color:var(--bf-accent-line)}
+    .bf-combo-pick.safe{border-color:rgba(255,209,102,.38)}
+    .bf-combo-pick small{
+        display:block;font-size:.43rem;font-weight:950;letter-spacing:.09em;
+        color:var(--bf-accent);margin-bottom:4px;
+    }
+    .bf-combo-pick strong{
+        display:block;color:var(--bf-text);font-size:.65rem;line-height:1.25;
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    }
+    .bf-combo-pick span{
+        display:block;color:var(--bf-muted);font-size:.48rem;margin-top:4px;
+    }
+    .bf-combo-section{
+        display:flex;justify-content:space-between;align-items:center;
+        margin:7px 0 4px;padding:0 2px;
+    }
+    .bf-combo-section strong{font-size:.72rem;color:var(--bf-text)}
+    .bf-combo-section span{font-size:.48rem;color:var(--bf-muted)}
+    .bf-combo-card{
+        display:grid;
+        grid-template-columns:34px minmax(220px,1.7fr) repeat(4,minmax(62px,.45fr)) minmax(130px,.85fr);
+        gap:0;border:1px solid var(--bf-border);border-radius:8px;
+        background:var(--bf-panel);margin:3px 0;overflow:hidden;
+    }
+    .bf-combo-cell{
+        padding:6px 7px;border-right:1px solid var(--bf-border);
+        min-width:0;display:flex;flex-direction:column;justify-content:center;
+    }
+    .bf-combo-cell:last-child{border-right:0}
+    .bf-combo-cell small{
+        color:var(--bf-muted);font-size:.37rem;font-weight:900;
+        letter-spacing:.07em;text-transform:uppercase;
+    }
+    .bf-combo-cell strong{
+        color:var(--bf-text);font-size:.58rem;margin-top:2px;
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    }
+    .bf-combo-rank{align-items:center;text-align:center}
+    .bf-combo-label strong{font-size:.62rem}
+    .bf-combo-tag{
+        display:inline-flex;align-self:flex-start;margin-top:3px;border-radius:999px;
+        padding:2px 5px;font-size:.37rem;font-weight:950;
+        color:var(--bf-accent);border:1px solid var(--bf-accent-line);
+    }
+
+    @media(max-width:1100px){
+        .bf-combo-card{
+            grid-template-columns:30px minmax(190px,1.6fr) repeat(4,minmax(54px,.42fr)) minmax(105px,.72fr);
+        }
+        .bf-combo-cell{padding:5px}
+        .bf-combo-cell strong{font-size:.53rem}
+    }
+    @media(max-width:900px){
+        .bf-card-body{grid-template-columns:1fr !important}
+        .bf-combo-picks{grid-template-columns:1fr}
+        .bf-combo-card{
+            grid-template-columns:28px minmax(180px,1fr) 58px 58px 70px;
+        }
+        .bf-combo-card .bf-hide-narrow{display:none}
+    }
+    @media(max-width:640px){
+        html,body,.stApp{font-size:13px !important}
+        .block-container{padding:.22rem .32rem 1rem !important}
+        .bf-combo-status{align-items:flex-start;flex-direction:column}
+        .bf-combo-card{grid-template-columns:25px minmax(145px,1fr) 48px 55px}
+        .bf-combo-card .bf-hide-mobile{display:none}
+        .bf-combo-cell{padding:5px 4px}
+        .bf-combo-label strong{font-size:.52rem}
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 AUTO_REFRESH_SECONDS = 120
 
 # Speed control: regular board loads avoid the heavy play-by-play L10 BBE pull.
@@ -10170,8 +10384,11 @@ with tabs[3]:
     )
 
 with tabs[4]:
-    st.subheader("HR Combos")
-    st.caption("Quality-first HR ladders. Large combos appear only when every leg clears strict probability, quality, and lineup requirements.")
+    st.subheader("HR Combo Command Center")
+    st.caption(
+        "Display-only decision layer over the existing combo engine. "
+        "Combo generation, player selection, scores, tracking, and results are not recalculated here."
+    )
 
     active_combo_count = len(combo_board) if combo_board is not None else 0
     active_combo_ids = set()
@@ -10206,37 +10423,173 @@ with tabs[4]:
         if not active_combo_history.empty else 0
     )
 
-    m1, m2, m3 = st.columns(3)
+    all_time_full_hits = 0
+    all_time_finished = 0
+    all_time_partial = 0
+    if combo_tracker is not None and not combo_tracker.empty:
+        _combo_states = combo_tracker["result_state"].fillna("").astype(str).str.upper()
+        all_time_full_hits = int(_combo_states.eq("FULL_HIT").sum())
+        all_time_finished = int(
+            _combo_states.isin(["FULL_HIT", "PARTIAL_HIT", "MISS", "FINAL_MISS"]).sum()
+        )
+        _legs_hit = pd.to_numeric(combo_tracker["legs_hit"], errors="coerce").fillna(0)
+        all_time_partial = int((_legs_hit.gt(0) & ~_combo_states.eq("FULL_HIT")).sum())
+
+    combo_hit_rate = (
+        round((all_time_full_hits / all_time_finished) * 100, 1)
+        if all_time_finished else 0.0
+    )
+
+    status_text = (
+        "No tracked combo has completed as a full hit yet."
+        if all_time_full_hits == 0
+        else f"{all_time_full_hits} tracked combo{'s' if all_time_full_hits != 1 else ''} completed as full hits."
+    )
+    st.markdown(
+        f"""
+        <div class="bf-combo-status">
+            <div>
+                <strong>Combo performance is now shown honestly</strong>
+                <span>{escape(status_text)} Historical full-hit rate: {combo_hit_rate:.1f}% across {all_time_finished} finalized tracked combos.</span>
+            </div>
+            <div class="bf-combo-zero">{all_time_full_hits} FULL HITS · {all_time_partial} PARTIALS</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("Active Combos", active_combo_count)
     m2.metric("Active Full Hits", active_full_hits)
     m3.metric("Active Partial Hits", active_partial_hits)
+    m4.metric("Historical Full-Hit Rate", f"{combo_hit_rate:.1f}%")
 
-    if combo_board.empty:
-        st.caption("No combos generated yet.")
+    if combo_board is None or combo_board.empty:
+        st.info("No combos currently clear the engine's requirements.")
     else:
-        for combo_type in ["2-Leg", "3-Leg", "4-Leg", "5-Leg"]:
-            cdf = combo_board[combo_board["Combo Type"] == combo_type].copy()
-            if cdf.empty:
-                continue
-            st.markdown(f"**{combo_type} HR Combos**")
-            st.dataframe(
-                cdf[[
-                    "Combo #", "Combo Label", "Avg Leg HR %",
-                    "Weakest Leg HR %", "Weakest Leg Quality",
-                    "Combined Score", "Games"
-                ]],
-                use_container_width=True,
-                hide_index=True
+        combo_view = combo_board.copy()
+        for _col in [
+            "Avg Leg HR %", "Weakest Leg HR %", "Weakest Leg Quality", "Combined Score"
+        ]:
+            combo_view[_col] = pd.to_numeric(combo_view.get(_col), errors="coerce").fillna(0.0)
+
+        combo_view["_leg_count"] = (
+            combo_view["Combo Type"].astype(str).str.extract(r"(\d+)")[0]
+            .pipe(pd.to_numeric, errors="coerce").fillna(99)
+        )
+        # Display-only labels. They do not feed back into combo generation.
+        combo_view["_model_value"] = (
+            combo_view["Combined Score"] / combo_view["_leg_count"].clip(lower=1)
+        )
+        combo_view["_safety"] = (
+            combo_view["Weakest Leg HR %"] * 0.55
+            + combo_view["Weakest Leg Quality"] * 0.45
+        )
+
+        two_leg_pool = combo_view[combo_view["_leg_count"].eq(2)].copy()
+        take_pool = two_leg_pool if not two_leg_pool.empty else combo_view
+        best_take = take_pool.sort_values(
+            ["_safety", "Combined Score"], ascending=[False, False]
+        ).iloc[0]
+        best_value = combo_view.sort_values(
+            ["_model_value", "Weakest Leg Quality"], ascending=[False, False]
+        ).iloc[0]
+        safest = combo_view.sort_values(
+            ["Weakest Leg HR %", "Weakest Leg Quality", "Combined Score"],
+            ascending=[False, False, False],
+        ).iloc[0]
+
+        def _combo_pick_html(css_class, kicker, row, detail):
+            return (
+                f'<div class="bf-combo-pick {css_class}">'
+                f'<small>{escape(kicker)}</small>'
+                f'<strong>{escape(str(row.get("Combo Label", "—")))}</strong>'
+                f'<span>{escape(detail)}</span>'
+                f'</div>'
             )
 
-    if not combo_tracker.empty:
-        st.divider()
-        st.caption("Combo audit history — includes earlier versions invalidated by lineup changes; these are not included in Active Combos.")
-        st.dataframe(
-            dedupe_columns(combo_tracker.sort_values(by=["date", "combo_size", "combined_score"], ascending=[False, True, False])),
-            use_container_width=True,
-            hide_index=True
+        pick_html = "".join([
+            '<div class="bf-combo-picks">',
+            _combo_pick_html(
+                "featured", "BEST COMBO TO CONSIDER", best_take,
+                f"{best_take.get('Combo Type','')} · weakest leg {best_take.get('Weakest Leg HR %',0):.0f}% · quality {best_take.get('Weakest Leg Quality',0):.0f}"
+            ),
+            _combo_pick_html(
+                "value", "BEST MODEL VALUE", best_value,
+                f"Score per leg {best_value.get('_model_value',0):.1f} · combined score {best_value.get('Combined Score',0):.1f}"
+            ),
+            _combo_pick_html(
+                "safe", "STRONGEST FLOOR", safest,
+                f"Weakest leg {safest.get('Weakest Leg HR %',0):.0f}% · weakest quality {safest.get('Weakest Leg Quality',0):.0f}"
+            ),
+            '</div>',
+        ])
+        st.markdown(pick_html, unsafe_allow_html=True)
+        st.caption(
+            "“Best Model Value” is a BF Data score-per-leg comparison, not sportsbook expected value. "
+            "Odds are not available in this app."
         )
+
+        for combo_type in ["2-Leg", "3-Leg", "4-Leg", "5-Leg"]:
+            cdf = combo_view[combo_view["Combo Type"] == combo_type].copy()
+            if cdf.empty:
+                continue
+            cdf = cdf.sort_values(
+                ["_safety", "Combined Score"], ascending=[False, False]
+            ).reset_index(drop=True)
+
+            risk_note = {
+                "2-Leg": "Most practical",
+                "3-Leg": "Higher variance",
+                "4-Leg": "Longshot only",
+                "5-Leg": "Extreme longshot",
+            }.get(combo_type, "")
+
+            st.markdown(
+                f'<div class="bf-combo-section"><strong>{combo_type} HR Combos</strong>'
+                f'<span>{risk_note} · ranked by weakest-leg floor, then combined score</span></div>',
+                unsafe_allow_html=True,
+            )
+
+            rows_html = []
+            for idx, row in cdf.iterrows():
+                label = str(row.get("Combo Label", "—"))
+                tag = "TOP CHOICE" if idx == 0 else f"OPTION {idx + 1}"
+                rows_html.append(
+                    '<div class="bf-combo-card">'
+                    f'<div class="bf-combo-cell bf-combo-rank"><small>#</small><strong>{idx + 1}</strong></div>'
+                    f'<div class="bf-combo-cell bf-combo-label"><small>COMBO</small><strong>{escape(label)}</strong><span class="bf-combo-tag">{tag}</span></div>'
+                    f'<div class="bf-combo-cell"><small>AVG HR</small><strong>{safe_float(row.get("Avg Leg HR %"),0):.0f}%</strong></div>'
+                    f'<div class="bf-combo-cell"><small>WEAKEST</small><strong>{safe_float(row.get("Weakest Leg HR %"),0):.0f}%</strong></div>'
+                    f'<div class="bf-combo-cell bf-hide-mobile"><small>QUALITY</small><strong>{safe_float(row.get("Weakest Leg Quality"),0):.0f}</strong></div>'
+                    f'<div class="bf-combo-cell bf-hide-narrow bf-hide-mobile"><small>SCORE</small><strong>{safe_float(row.get("Combined Score"),0):.1f}</strong></div>'
+                    f'<div class="bf-combo-cell bf-hide-narrow"><small>MODEL VALUE</small><strong>{safe_float(row.get("_model_value"),0):.1f}/leg</strong></div>'
+                    f'<div class="bf-combo-cell bf-hide-mobile"><small>GAMES</small><strong>{escape(str(row.get("Games","—")))}</strong></div>'
+                    '</div>'
+                )
+            st.markdown("".join(rows_html), unsafe_allow_html=True)
+
+    if combo_tracker is not None and not combo_tracker.empty:
+        with st.expander("Combo audit history"):
+            st.caption(
+                "Includes prior combo versions and lineup-invalidated combinations. "
+                "The history is displayed for accountability and is not used to rewrite today's combo board."
+            )
+            history_cols = [
+                "date", "combo_label", "combo_size", "avg_leg_probability",
+                "combined_score", "result_state", "legs_hit", "total_legs"
+            ]
+            available_history_cols = [c for c in history_cols if c in combo_tracker.columns]
+            st.dataframe(
+                dedupe_columns(
+                    combo_tracker.sort_values(
+                        by=["date", "combo_size", "combined_score"],
+                        ascending=[False, True, False],
+                    )[available_history_cols]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
 
 with tabs[5]:
     st.subheader("Hits + Runs + RBIs Board")
