@@ -16,7 +16,113 @@ import math
 import shutil
 from io import StringIO
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
 st.set_page_config(page_title="BF Data", layout="wide")
+
+# ------------------------------------------------------------------
+# BF DATA VISUAL THEME ENGINE
+# UI-only. Prediction, ranking, lineup, tracker, combo, lock, weather,
+# history, and model calculations are not changed.
+# ------------------------------------------------------------------
+BF_THEME_OPTIONS = {
+    "Midnight": {
+        "icon": "🌙",
+        "description": "Calm navy-black with restrained sky-blue accents.",
+        "mode": "dark",
+        "bg": "#070B11",
+        "bg_2": "#0A1018",
+        "panel": "#101720",
+        "panel_2": "#141D28",
+        "panel_3": "#192432",
+        "text": "#F4F7FB",
+        "muted": "#A3AFBF",
+        "accent": "#83A9D6",
+        "accent_soft": "rgba(131,169,214,.10)",
+        "accent_line": "rgba(131,169,214,.28)",
+        "border": "rgba(190,205,224,.13)",
+        "border_strong": "rgba(190,205,224,.22)",
+        "shadow": "rgba(0,0,0,.26)",
+        "field": "#06100C",
+    },
+    "Arctic": {
+        "icon": "☀️",
+        "description": "Bright daytime mode with crisp white surfaces and navy text.",
+        "mode": "light",
+        "bg": "#EDF2F7",
+        "bg_2": "#F7F9FC",
+        "panel": "#FFFFFF",
+        "panel_2": "#F4F7FA",
+        "panel_3": "#EAF0F6",
+        "text": "#182230",
+        "muted": "#5E6D7D",
+        "accent": "#416D9C",
+        "accent_soft": "rgba(65,109,156,.10)",
+        "accent_line": "rgba(65,109,156,.30)",
+        "border": "rgba(36,55,78,.13)",
+        "border_strong": "rgba(36,55,78,.22)",
+        "shadow": "rgba(25,43,63,.12)",
+        "field": "#EAF3ED",
+    },
+    "Carbon": {
+        "icon": "⚙️",
+        "description": "Neutral charcoal with a calm teal interface accent.",
+        "mode": "dark",
+        "bg": "#0C0F12",
+        "bg_2": "#111519",
+        "panel": "#171C21",
+        "panel_2": "#1C232A",
+        "panel_3": "#232C34",
+        "text": "#F3F6F7",
+        "muted": "#A7B0B7",
+        "accent": "#68B7AA",
+        "accent_soft": "rgba(104,183,170,.10)",
+        "accent_line": "rgba(104,183,170,.30)",
+        "border": "rgba(211,222,224,.12)",
+        "border_strong": "rgba(211,222,224,.21)",
+        "shadow": "rgba(0,0,0,.27)",
+        "field": "#07110D",
+    },
+    "Obsidian": {
+        "icon": "🟢",
+        "description": "Deep black with subtle emerald product accents.",
+        "mode": "dark",
+        "bg": "#030606",
+        "bg_2": "#070B0A",
+        "panel": "#0D1311",
+        "panel_2": "#121A17",
+        "panel_3": "#18231F",
+        "text": "#F2F7F4",
+        "muted": "#9FAFA8",
+        "accent": "#62B98D",
+        "accent_soft": "rgba(98,185,141,.10)",
+        "accent_line": "rgba(98,185,141,.30)",
+        "border": "rgba(196,222,208,.12)",
+        "border_strong": "rgba(196,222,208,.21)",
+        "shadow": "rgba(0,0,0,.30)",
+        "field": "#03100A",
+    },
+}
+
+if "bf_visual_theme" not in st.session_state:
+    st.session_state.bf_visual_theme = "Midnight"
+
+with st.sidebar:
+    st.markdown("### 🎨 BF Data Theme")
+    selected_theme = st.selectbox(
+        "Platform appearance",
+        options=list(BF_THEME_OPTIONS.keys()),
+        index=list(BF_THEME_OPTIONS.keys()).index(st.session_state.bf_visual_theme),
+        key="bf_theme_selector",
+        help="Changes appearance only. Rankings and predictions remain identical.",
+    )
+    st.session_state.bf_visual_theme = selected_theme
+    _selected_theme_meta = BF_THEME_OPTIONS[selected_theme]
+    st.caption(
+        f"{_selected_theme_meta['icon']} "
+        f"{_selected_theme_meta['description']}"
+    )
+
+BF_ACTIVE_THEME = BF_THEME_OPTIONS[st.session_state.bf_visual_theme]
 
 st.markdown("""
 <style>
@@ -1161,6 +1267,240 @@ div[data-testid="stDataFrame"]{
     <div class="bf-subtitle">Premium MLB home run intelligence — fast slate scanning, matchup signals, lineup awareness, and locked accuracy tracking.</div>
 </div>
 """, unsafe_allow_html=True)
+
+# Late-loading theme layer. This intentionally overrides legacy hard-coded
+# colors without changing any card content or application logic.
+_t = BF_ACTIVE_THEME
+_light = _t["mode"] == "light"
+_light_css = """
+html, body, .stApp, [data-testid="stAppViewContainer"] { color-scheme: light !important; }
+.stMarkdown, .stCaption, label, p, li, span { color: var(--bf-text); }
+[data-testid="stSidebar"] { color-scheme: light !important; }
+[data-testid="stSidebar"] * { color: var(--bf-text); }
+[data-baseweb="select"] > div,
+[data-baseweb="input"] > div,
+[data-testid="stTextInput"] input {
+    background: var(--bf-panel) !important;
+    color: var(--bf-text) !important;
+}
+.bf-field-svg .dim {
+    fill: #172231 !important;
+    stroke: rgba(255,255,255,.88) !important;
+}
+.bf-field-svg .windtxt {
+    fill: var(--bf-accent) !important;
+    stroke: rgba(255,255,255,.90) !important;
+}
+""" if _light else ""
+
+st.markdown(
+    f"""
+    <style>
+    :root {{
+        --bf-bg:{_t['bg']} !important;
+        --bf-bg-deep:{_t['bg_2']} !important;
+        --bf-panel:{_t['panel']} !important;
+        --bf-panel-2:{_t['panel_2']} !important;
+        --bf-surface:{_t['panel']} !important;
+        --bf-surface-2:{_t['panel_2']} !important;
+        --bf-surface-3:{_t['panel_3']} !important;
+        --bf-text:{_t['text']} !important;
+        --bf-muted:{_t['muted']} !important;
+        --bf-blue:{_t['accent']} !important;
+        --bf-blue-bright:{_t['accent']} !important;
+        --bf-accent:{_t['accent']} !important;
+        --bf-accent-soft:{_t['accent_soft']} !important;
+        --bf-accent-line:{_t['accent_line']} !important;
+        --bf-border:{_t['border']} !important;
+        --bf-border-strong:{_t['border_strong']} !important;
+        --bf-line:{_t['border']} !important;
+        --bf-line-strong:{_t['border_strong']} !important;
+    }}
+
+    html,body,.stApp,[data-testid="stAppViewContainer"] {{
+        background:
+          radial-gradient(circle at 10% -5%, {_t['accent_soft']}, transparent 27rem),
+          linear-gradient(180deg,{_t['bg_2']} 0%,{_t['bg']} 50%,{_t['bg_2']} 100%) !important;
+        color:{_t['text']} !important;
+    }}
+    [data-testid="stAppViewContainer"] > .main {{
+        background:transparent !important;
+    }}
+    header[data-testid="stHeader"] {{
+        background:{_t['bg_2']}F2 !important;
+        border-bottom:1px solid {_t['border']} !important;
+    }}
+    [data-testid="stSidebar"] {{
+        background:linear-gradient(180deg,{_t['panel']} 0%,{_t['bg_2']} 100%) !important;
+        border-right:1px solid {_t['border']} !important;
+    }}
+
+    h1,h2,h3,h4,h5,h6,
+    .bf-title,.bf-scan-name,.bf-head-main,.bf-weather-game,
+    .bf-dim-title,.bf-dim-values {{
+        color:{_t['text']} !important;
+    }}
+    p,.bf-subtitle,.bf-scan-matchup,.bf-scan-pair,
+    .bf-weather-venue,.bf-weather-source,.bf-env-disclaimer,
+    .bf-card-foot,.bf-pitch-note,.bf-v2-meta {{
+        color:{_t['muted']} !important;
+    }}
+
+    .bf-hero {{
+        background:linear-gradient(135deg,{_t['panel_2']},{_t['panel']}) !important;
+        border-color:{_t['border_strong']} !important;
+        box-shadow:0 14px 34px {_t['shadow']} !important;
+    }}
+    .bf-kicker,.bf-scan-action small,.bf-scan-pair b,
+    .bf-scan-pair-score,.bf-research-signals .label,
+    .bf-head-label,.bf-score-box .lab,.bf-section-title,
+    .bf-bvp-title,.bf-env-kicker,.bf-weather-badge,
+    .bf-guide-title,.bf-scout-title {{
+        color:{_t['accent']} !important;
+    }}
+
+    button[kind="secondary"],.stButton>button {{
+        background:linear-gradient(180deg,{_t['panel_3']},{_t['panel_2']}) !important;
+        border-color:{_t['border_strong']} !important;
+        color:{_t['text']} !important;
+        box-shadow:0 4px 12px {_t['shadow']} !important;
+    }}
+    button[kind="secondary"]:hover,.stButton>button:hover {{
+        background:{_t['panel_3']} !important;
+        border-color:{_t['accent_line']} !important;
+    }}
+
+    [data-testid="stMetric"],
+    .bf-scan-action,.bf-scan-metric,.bf-pitch-tile,.bf-bvp-cell,
+    .bf-weather-summary>div,.bf-dim-panel,.bf-env-card,
+    .bf-hour,.bf-guide-card,.bf-guide-quick>div {{
+        background:{_t['panel_2']} !important;
+        border-color:{_t['border']} !important;
+        color:{_t['text']} !important;
+    }}
+    [data-testid="stMetricLabel"] p,
+    .bf-scan-metric small,.bf-bvp-label,.bf-env-index {{
+        color:{_t['muted']} !important;
+    }}
+    [data-testid="stMetricValue"],
+    .bf-scan-action strong,.bf-scan-metric strong,
+    .bf-bvp-values,.bf-pitch-name {{
+        color:{_t['text']} !important;
+    }}
+
+    .stTabs [data-baseweb="tab-list"] {{
+        border-bottom-color:{_t['border']} !important;
+    }}
+    .stTabs [data-baseweb="tab"] {{
+        color:{_t['muted']} !important;
+    }}
+    .stTabs [aria-selected="true"] {{
+        color:{_t['text']} !important;
+        background:{_t['accent_soft']} !important;
+        border-bottom-color:{_t['accent']} !important;
+    }}
+    .stTabs [data-baseweb="tab-highlight"] {{
+        background-color:{_t['accent']} !important;
+    }}
+
+    .bf-team-header {{
+        border-color:{_t['border_strong']} !important;
+        border-left-color:{_t['accent']} !important;
+        background:linear-gradient(90deg,{_t['accent_soft']},transparent) !important;
+    }}
+    .bf-team-header strong {{ color:{_t['text']} !important; }}
+    .bf-team-header span {{ color:{_t['muted']} !important; }}
+
+    .bf-scan-card,.bf-v2-card {{
+        background:linear-gradient(145deg,{_t['panel_2']},{_t['panel']}) !important;
+        border-color:{_t['border']} !important;
+        box-shadow:0 8px 22px {_t['shadow']} !important;
+    }}
+    .bf-scan-card:hover,.bf-v2-card:hover {{
+        border-color:{_t['accent_line']} !important;
+        box-shadow:0 11px 28px {_t['shadow']} !important;
+    }}
+    .bf-scan-card.primary,.bf-v2-card.primary {{
+        border-color:rgba(53,208,127,.58) !important;
+    }}
+    .bf-scan-card.strong,.bf-v2-card.strong {{
+        border-color:{_t['accent_line']} !important;
+    }}
+    .bf-scan-card.sleeper,.bf-v2-card.sleeper {{
+        border-color:rgba(187,123,255,.48) !important;
+    }}
+    .bf-scan-badge,.bf-research-signals .signal {{
+        background:{_t['panel_3']} !important;
+        border-color:{_t['border']} !important;
+        color:{_t['text']} !important;
+    }}
+    .bf-scan-bottom,.bf-v2-pair {{
+        background:{_t['accent_soft']} !important;
+        border-color:{_t['accent_line']} !important;
+    }}
+    .bf-scan-track,.bf-track,.bf-v2-attack-track,
+    .bf-v2-confidence-track,.bf-env-track,.bf-usage-track {{
+        background:{_t['panel_3']} !important;
+    }}
+    .bf-scan-why b,.bf-v2-why b,.bf-v2-pair small,
+    .bf-v2-pair-score,.bf-reason-strip b {{
+        color:{_t['accent']} !important;
+    }}
+
+    div[data-testid="stExpander"] {{
+        background:{_t['panel']}E8 !important;
+        border-color:{_t['border']} !important;
+    }}
+    div[data-testid="stExpander"] summary:hover {{
+        background:{_t['accent_soft']} !important;
+    }}
+    .bf-research-signals,.bf-v2-expand-summary,
+    .bf-guide-panel,.bf-scout-panel {{
+        background:linear-gradient(145deg,{_t['panel_2']},{_t['panel']}) !important;
+        border-color:{_t['accent_line']} !important;
+    }}
+
+    .bf-match-card,.bf-weather-card {{
+        background:{_t['panel']} !important;
+        border-color:{_t['border_strong']} !important;
+        box-shadow:0 10px 26px {_t['shadow']} !important;
+    }}
+    .bf-match-topline,.bf-weather-head {{
+        background:linear-gradient(90deg,{_t['panel_3']},{_t['panel_2']}) !important;
+        border-color:{_t['border']} !important;
+    }}
+    .bf-side-panel,.bf-cell-head,.bf-score-box {{
+        border-color:{_t['border']} !important;
+    }}
+    .bf-pill-num {{
+        background:{_t['panel_3']} !important;
+        color:{_t['text']} !important;
+    }}
+    .bf-usage-fill {{
+        background:{_t['accent']} !important;
+    }}
+
+    .bf-field-wrap {{
+        background:{_t['field']} !important;
+        border-color:{_t['border']} !important;
+    }}
+    .bf-weather-badge {{
+        border-color:{_t['accent_line']} !important;
+    }}
+
+    div[data-testid="stDataFrame"] {{
+        border-color:{_t['border_strong']} !important;
+        box-shadow:0 8px 20px {_t['shadow']} !important;
+    }}
+
+    a {{ color:{_t['accent']} !important; }}
+    hr {{ border-color:{_t['border']} !important; }}
+
+    {_light_css}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 AUTO_REFRESH_SECONDS = 120
 
