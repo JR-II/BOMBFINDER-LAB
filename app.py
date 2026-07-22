@@ -767,6 +767,55 @@ div[data-testid="stExpander"] summary{
     .bf-bvp-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important}
 }
 
+/* BF DATA COMPACT SCAN CARDS — UI only */
+.bf-scan-card{border:1px solid rgba(255,255,255,.12);border-radius:10px;background:#0c1119;padding:7px 8px;margin:4px 0 5px}
+.bf-scan-card.primary{border-color:rgba(53,208,127,.72)}
+.bf-scan-card.strong{border-color:rgba(74,135,255,.62)}
+.bf-scan-card.sleeper{border-color:rgba(195,107,255,.60)}
+.bf-scan-card.early{border-color:rgba(255,209,102,.58)}
+.bf-scan-top{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px;align-items:center}
+.bf-scan-name{color:#f7f9ff;font-size:.84rem;font-weight:950;line-height:1.05}
+.bf-scan-matchup{margin-top:2px;color:#96a2b4;font-size:.52rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bf-scan-actions{display:grid;grid-template-columns:repeat(3,48px);gap:4px}
+.bf-scan-action{background:#111824;border:1px solid rgba(255,255,255,.09);border-radius:7px;text-align:center;padding:3px 2px}
+.bf-scan-action small{display:block;color:#6d9cff;font-size:.36rem;font-weight:950;letter-spacing:.08em}
+.bf-scan-action strong{display:block;color:#f5f7fb;font-size:.68rem;font-weight:950;margin-top:1px}
+.bf-scan-roleline{display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin-top:4px}
+.bf-scan-role{border-radius:999px;padding:2px 6px;font-size:.42rem;font-weight:950;letter-spacing:.06em}
+.bf-scan-role.primary{color:#61f1a3;border:1px solid #2bd17f;background:rgba(43,209,127,.10)}
+.bf-scan-role.strong{color:#79a9ff;border:1px solid #4d85e6;background:rgba(77,133,230,.10)}
+.bf-scan-role.alt{color:#d3d6dd;border:1px solid #747b88;background:rgba(116,123,136,.10)}
+.bf-scan-role.sleeper{color:#d995ff;border:1px solid #9c57c6;background:rgba(156,87,198,.11)}
+.bf-scan-grade{color:#f2f5fa;border:1px solid rgba(255,255,255,.12);border-radius:6px;padding:2px 5px;font-size:.48rem;font-weight:950}
+.bf-scan-confidence{color:#aeb8c8;font-size:.45rem;font-weight:900}
+.bf-scan-rank{color:#9ba7b8;font-size:.41rem;font-weight:850}
+.bf-scan-attack{display:grid;grid-template-columns:auto minmax(70px,1fr) auto;gap:6px;align-items:center;margin-top:5px}
+.bf-scan-attack-label{font-size:.45rem;font-weight:950;white-space:nowrap}
+.bf-scan-track{height:5px;border-radius:999px;overflow:hidden;background:#202938}
+.bf-scan-fill{height:100%;border-radius:999px}
+.bf-scan-attack-score{font-size:.55rem;font-weight:950;white-space:nowrap}
+.bf-scan-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;margin-top:5px}
+.bf-scan-metric{background:#101722;border:1px solid rgba(255,255,255,.07);border-radius:6px;padding:3px 4px;text-align:center}
+.bf-scan-metric small{display:block;color:#7f90aa;font-size:.31rem;letter-spacing:.06em;font-weight:950}
+.bf-scan-metric strong{display:block;color:#f4f7fb;font-size:.59rem;margin-top:1px}
+.bf-scan-bottom{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:center;margin-top:5px;padding-top:4px;border-top:1px solid rgba(255,255,255,.06)}
+.bf-scan-pair{color:#b8c2d0;font-size:.45rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bf-scan-pair b{color:#75a6ff}
+.bf-scan-pair-score{color:#8fc0ff;font-size:.58rem;font-weight:950;white-space:nowrap}
+div[data-testid="stExpander"] summary{min-height:29px !important;padding:.24rem .52rem !important}
+@media(max-width:640px){
+ .bf-scan-card{padding:6px;border-radius:8px;margin:3px 0 4px}
+ .bf-scan-name{font-size:.75rem}.bf-scan-matchup{font-size:.46rem}
+ .bf-scan-actions{grid-template-columns:repeat(3,42px);gap:3px}
+ .bf-scan-action small{font-size:.31rem}.bf-scan-action strong{font-size:.60rem}
+ .bf-scan-role{font-size:.37rem;padding:2px 5px}
+ .bf-scan-grade,.bf-scan-confidence,.bf-scan-rank{font-size:.39rem}
+ .bf-scan-attack{gap:4px;margin-top:4px}.bf-scan-attack-label{font-size:.39rem}.bf-scan-attack-score{font-size:.48rem}
+ .bf-scan-metrics{gap:3px;margin-top:4px}.bf-scan-metric{padding:3px 2px}
+ .bf-scan-metric small{font-size:.27rem}.bf-scan-metric strong{font-size:.53rem}
+ .bf-scan-bottom{margin-top:4px;padding-top:3px}.bf-scan-pair{font-size:.40rem}.bf-scan-pair-score{font-size:.50rem}
+}
+
 </style>
 <div class="bf-hero">
     <div class="bf-kicker">BF DATA PRO LAB</div>
@@ -7800,6 +7849,43 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
     else:
         red_flag = "No major red flag"
 
+    if not early:
+        return f"""
+<div class="bf-scan-card {card_class}">
+  <div class="bf-scan-top">
+    <div>
+      <div class="bf-scan-name">#{escape(str(rank))} {escape(player)}{hit_badge}</div>
+      <div class="bf-scan-matchup">{escape(team)} · {escape(game)} · vs {escape(pitcher)}</div>
+      <div class="bf-scan-roleline">
+        <span class="bf-scan-role {role_class}">{escape(role_text)}</span>
+        <span class="bf-scan-grade">{escape(grade)}</span>
+        <span class="bf-scan-confidence">CONF {confidence:.0f}%</span>
+        <span class="bf-scan-rank">SLATE #{slate_rank} · TEAM #{team_rank} · GAME #{game_rank}</span>
+      </div>
+    </div>
+    <div class="bf-scan-actions">
+      <div class="bf-scan-action"><small>WAGER</small><strong>{wager_priority:.1f}</strong></div>
+      <div class="bf-scan-action"><small>GRADE</small><strong>{escape(grade)}</strong></div>
+      <div class="bf-scan-action"><small>ATTACK</small><strong>{attack_pct:.0f}</strong></div>
+    </div>
+  </div>
+  <div class="bf-scan-attack">
+    <div class="bf-scan-attack-label" style="color:{attack_color}">{escape(attack_label)}</div>
+    <div class="bf-scan-track"><div class="bf-scan-fill" style="width:{clip(attack_pct,0,100):.0f}%;background:{attack_color}"></div></div>
+    <div class="bf-scan-attack-score" style="color:{attack_color}">{attack_pct:.0f}/100</div>
+  </div>
+  <div class="bf-scan-metrics">
+    <div class="bf-scan-metric"><small>BAT POWER</small><strong>{bat_power:.0f}</strong></div>
+    <div class="bf-scan-metric"><small>MATCHUP</small><strong>{matchup_display:.0f}</strong></div>
+    <div class="bf-scan-metric"><small>PITCHER LEAK</small><strong>{pitcher_leak:.0f}</strong></div>
+    <div class="bf-scan-metric"><small>FORM</small><strong>{recent_form:.0f}</strong></div>
+  </div>
+  <div class="bf-scan-bottom">
+    <div class="bf-scan-pair"><b>{escape(pair_role)}</b> · Best pair: {escape(best_pair)}</div>
+    <div class="bf-scan-pair-score">PAIR {pair_score:.0f}</div>
+  </div>
+</div>"""
+
     return f'''
 <div class="bf-v2-card {card_class}">
   <div class="bf-v2-head">
@@ -8087,7 +8173,7 @@ def render_early_watchlist_cards(preview_df: pd.DataFrame, max_cards: int = 6):
         _render_bf_html(_bf_v2_card_html(row, rank, early=True))
         player = _display_value(row.get("Player"))
         pitcher = _display_value(row.get("Opponent Pitcher"))
-        with st.expander(f"Open matchup card — {player} vs {pitcher}", expanded=False):
+        with st.expander(f"Full research — {player} vs {pitcher}", expanded=False):
             _render_bf_html(_early_matchup_card_html(row, rank))
 
 def render_player_card(row: pd.Series, rank_override=None):
@@ -8097,7 +8183,7 @@ def render_player_card(row: pd.Series, rank_override=None):
 
     _render_bf_html(_bf_v2_card_html(row, rank, early=False))
 
-    with st.expander(f"Open matchup card — {player} vs {pitcher}", expanded=False):
+    with st.expander(f"Full research — {player} vs {pitcher}", expanded=False):
         _render_bf_html(_match_card_html(row, rank_override=rank))
 
 def render_card_grid(df: pd.DataFrame, max_cards: int = 24, columns: int = 3, title: str | None = None):
