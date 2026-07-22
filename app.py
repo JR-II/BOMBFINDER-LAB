@@ -25,95 +25,102 @@ st.set_page_config(page_title="BF Data", layout="wide")
 # history, and model calculations are not changed.
 # ------------------------------------------------------------------
 BF_THEME_OPTIONS = {
-    "Midnight": {
-        "icon": "🌙",
-        "description": "Calm navy-black with restrained sky-blue accents.",
+    "BF Classic": {
+        "icon": "🔵",
+        "description": "The original BF Data blue identity, cleaned up and preserved.",
         "mode": "dark",
-        "bg": "#070B11",
-        "bg_2": "#0A1018",
-        "panel": "#101720",
-        "panel_2": "#141D28",
-        "panel_3": "#192432",
+        "bg": "#07101B",
+        "bg_2": "#040912",
+        "panel": "#0D1724",
+        "panel_2": "#111D2C",
+        "panel_3": "#152235",
         "text": "#F4F7FB",
-        "muted": "#A3AFBF",
-        "accent": "#83A9D6",
-        "accent_soft": "rgba(131,169,214,.10)",
-        "accent_line": "rgba(131,169,214,.28)",
-        "border": "rgba(190,205,224,.13)",
-        "border_strong": "rgba(190,205,224,.22)",
-        "shadow": "rgba(0,0,0,.26)",
+        "muted": "#9EABC0",
+        "accent": "#78AEFC",
+        "accent_soft": "rgba(120,174,252,.085)",
+        "accent_line": "rgba(120,174,252,.27)",
+        "border": "rgba(145,174,216,.16)",
+        "border_strong": "rgba(145,174,216,.27)",
+        "shadow": "rgba(0,0,0,.22)",
         "field": "#06100C",
+        "glow": "rgba(73,126,208,.085)",
     },
-    "Arctic": {
-        "icon": "☀️",
-        "description": "Bright daytime mode with crisp white surfaces and navy text.",
+    "BF Night": {
+        "icon": "⚫",
+        "description": "True black night mode with calm neutral surfaces and restrained BF blue.",
+        "mode": "dark",
+        "bg": "#030405",
+        "bg_2": "#07090C",
+        "panel": "#0C0F13",
+        "panel_2": "#11151A",
+        "panel_3": "#171C22",
+        "text": "#F5F7FA",
+        "muted": "#A0A8B3",
+        "accent": "#8CAFD6",
+        "accent_soft": "rgba(140,175,214,.075)",
+        "accent_line": "rgba(140,175,214,.24)",
+        "border": "rgba(224,230,238,.105)",
+        "border_strong": "rgba(224,230,238,.18)",
+        "shadow": "rgba(0,0,0,.34)",
+        "field": "#030A07",
+        "glow": "rgba(140,175,214,.035)",
+    },
+    "BF White": {
+        "icon": "⚪",
+        "description": "Clean white workspace with crisp contrast and restrained professional blue.",
         "mode": "light",
-        "bg": "#EDF2F7",
-        "bg_2": "#F7F9FC",
+        "bg": "#F2F4F7",
+        "bg_2": "#FFFFFF",
         "panel": "#FFFFFF",
-        "panel_2": "#F4F7FA",
-        "panel_3": "#EAF0F6",
-        "text": "#182230",
-        "muted": "#5E6D7D",
-        "accent": "#416D9C",
-        "accent_soft": "rgba(65,109,156,.10)",
-        "accent_line": "rgba(65,109,156,.30)",
-        "border": "rgba(36,55,78,.13)",
-        "border_strong": "rgba(36,55,78,.22)",
-        "shadow": "rgba(25,43,63,.12)",
-        "field": "#EAF3ED",
+        "panel_2": "#F7F8FA",
+        "panel_3": "#ECEFF3",
+        "text": "#17202B",
+        "muted": "#667180",
+        "accent": "#356A9F",
+        "accent_soft": "rgba(53,106,159,.07)",
+        "accent_line": "rgba(53,106,159,.23)",
+        "border": "rgba(30,44,60,.105)",
+        "border_strong": "rgba(30,44,60,.18)",
+        "shadow": "rgba(24,39,56,.09)",
+        "field": "#EAF1EC",
+        "glow": "rgba(53,106,159,.028)",
     },
-    "Carbon": {
-        "icon": "⚙️",
-        "description": "Neutral charcoal with a calm teal interface accent.",
-        "mode": "dark",
-        "bg": "#0C0F12",
-        "bg_2": "#111519",
-        "panel": "#171C21",
-        "panel_2": "#1C232A",
-        "panel_3": "#232C34",
-        "text": "#F3F6F7",
-        "muted": "#A7B0B7",
-        "accent": "#68B7AA",
-        "accent_soft": "rgba(104,183,170,.10)",
-        "accent_line": "rgba(104,183,170,.30)",
-        "border": "rgba(211,222,224,.12)",
-        "border_strong": "rgba(211,222,224,.21)",
-        "shadow": "rgba(0,0,0,.27)",
-        "field": "#07110D",
-    },
-    "Obsidian": {
-        "icon": "🟢",
-        "description": "Deep black with subtle emerald product accents.",
-        "mode": "dark",
-        "bg": "#030606",
-        "bg_2": "#070B0A",
-        "panel": "#0D1311",
-        "panel_2": "#121A17",
-        "panel_3": "#18231F",
-        "text": "#F2F7F4",
-        "muted": "#9FAFA8",
-        "accent": "#62B98D",
-        "accent_soft": "rgba(98,185,141,.10)",
-        "accent_line": "rgba(98,185,141,.30)",
-        "border": "rgba(196,222,208,.12)",
-        "border_strong": "rgba(196,222,208,.21)",
-        "shadow": "rgba(0,0,0,.30)",
-        "field": "#03100A",
+    "BF Light": {
+        "icon": "☀️",
+        "description": "Soft off-white mode built to reduce glare during long daytime sessions.",
+        "mode": "light",
+        "bg": "#F4F1EB",
+        "bg_2": "#FAF8F4",
+        "panel": "#FFFEFC",
+        "panel_2": "#F6F3EE",
+        "panel_3": "#ECE8E1",
+        "text": "#20252B",
+        "muted": "#6D737A",
+        "accent": "#557895",
+        "accent_soft": "rgba(85,120,149,.065)",
+        "accent_line": "rgba(85,120,149,.22)",
+        "border": "rgba(53,59,65,.105)",
+        "border_strong": "rgba(53,59,65,.18)",
+        "shadow": "rgba(48,43,36,.075)",
+        "field": "#E9EFE9",
+        "glow": "rgba(85,120,149,.022)",
     },
 }
 
-if "bf_visual_theme" not in st.session_state:
-    st.session_state.bf_visual_theme = "Midnight"
+if (
+    "bf_visual_theme" not in st.session_state
+    or st.session_state.bf_visual_theme not in BF_THEME_OPTIONS
+):
+    st.session_state.bf_visual_theme = "BF Classic"
 
 with st.sidebar:
-    st.markdown("### 🎨 BF Data Theme")
+    st.markdown("### 🎨 Appearance")
     selected_theme = st.selectbox(
-        "Platform appearance",
+        "BF Data theme",
         options=list(BF_THEME_OPTIONS.keys()),
         index=list(BF_THEME_OPTIONS.keys()).index(st.session_state.bf_visual_theme),
         key="bf_theme_selector",
-        help="Changes appearance only. Rankings and predictions remain identical.",
+        help="Appearance only. Predictions, rankings, tracker results, and locks never change.",
     )
     st.session_state.bf_visual_theme = selected_theme
     _selected_theme_meta = BF_THEME_OPTIONS[selected_theme]
@@ -1273,23 +1280,55 @@ div[data-testid="stDataFrame"]{
 _t = BF_ACTIVE_THEME
 _light = _t["mode"] == "light"
 _light_css = """
-html, body, .stApp, [data-testid="stAppViewContainer"] { color-scheme: light !important; }
-.stMarkdown, .stCaption, label, p, li, span { color: var(--bf-text); }
-[data-testid="stSidebar"] { color-scheme: light !important; }
-[data-testid="stSidebar"] * { color: var(--bf-text); }
+html, body, .stApp, [data-testid="stAppViewContainer"] {
+    color-scheme: light !important;
+}
+.stMarkdown, .stCaption, label, p, li,
+[data-testid="stWidgetLabel"],
+[data-testid="stWidgetLabel"] p {
+    color: var(--bf-text) !important;
+}
+[data-testid="stSidebar"] {
+    color-scheme: light !important;
+}
+[data-testid="stSidebar"] * {
+    color: var(--bf-text);
+}
 [data-baseweb="select"] > div,
 [data-baseweb="input"] > div,
-[data-testid="stTextInput"] input {
+[data-testid="stTextInput"] input,
+[data-testid="stNumberInput"] input,
+[data-testid="stDateInput"] input {
+    background: var(--bf-panel) !important;
+    color: var(--bf-text) !important;
+    border-color: var(--bf-border-strong) !important;
+}
+[data-baseweb="popover"],
+[data-baseweb="menu"],
+[role="listbox"] {
     background: var(--bf-panel) !important;
     color: var(--bf-text) !important;
 }
+[data-baseweb="menu"] li,
+[role="option"] {
+    color: var(--bf-text) !important;
+}
+[data-baseweb="menu"] li:hover,
+[role="option"]:hover {
+    background: var(--bf-accent-soft) !important;
+}
+.bf-chip, .bf-key-chip,
+.bf-scan-badge, .bf-research-signals .signal,
+.bf-v2-grade, .bf-v2-rankchip {
+    color: var(--bf-text) !important;
+}
 .bf-field-svg .dim {
-    fill: #172231 !important;
-    stroke: rgba(255,255,255,.88) !important;
+    fill: #182331 !important;
+    stroke: rgba(255,255,255,.92) !important;
 }
 .bf-field-svg .windtxt {
     fill: var(--bf-accent) !important;
-    stroke: rgba(255,255,255,.90) !important;
+    stroke: rgba(255,255,255,.94) !important;
 }
 """ if _light else ""
 
@@ -1319,7 +1358,7 @@ st.markdown(
 
     html,body,.stApp,[data-testid="stAppViewContainer"] {{
         background:
-          radial-gradient(circle at 10% -5%, {_t['accent_soft']}, transparent 27rem),
+          radial-gradient(circle at 10% -5%, {_t['glow']}, transparent 27rem),
           linear-gradient(180deg,{_t['bg_2']} 0%,{_t['bg']} 50%,{_t['bg_2']} 100%) !important;
         color:{_t['text']} !important;
     }}
@@ -1495,6 +1534,28 @@ st.markdown(
 
     a {{ color:{_t['accent']} !important; }}
     hr {{ border-color:{_t['border']} !important; }}
+
+    /* Calm premium hierarchy: surfaces remain neutral while the accent is
+       reserved for active navigation, information labels, and interactions. */
+    .bf-hero,
+    .bf-scan-card,.bf-v2-card,
+    .bf-match-card,.bf-weather-card,
+    [data-testid="stMetric"] {{
+        backdrop-filter:none !important;
+    }}
+    .bf-scan-card:not(.primary):not(.sleeper),
+    .bf-v2-card:not(.primary):not(.sleeper) {{
+        border-color:{_t['border']} !important;
+    }}
+    .bf-scan-card.strong,.bf-v2-card.strong {{
+        border-left:2px solid {_t['accent']} !important;
+    }}
+    .bf-scan-bottom,.bf-v2-pair {{
+        background:{_t['panel_2']} !important;
+    }}
+    .stTabs [aria-selected="true"] {{
+        box-shadow:none !important;
+    }}
 
     {_light_css}
     </style>
