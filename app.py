@@ -816,6 +816,115 @@ div[data-testid="stExpander"] summary{min-height:29px !important;padding:.24rem 
  .bf-scan-bottom{margin-top:4px;padding-top:3px}.bf-scan-pair{font-size:.40rem}.bf-scan-pair-score{font-size:.50rem}
 }
 
+/* ================================================================
+   BF DATA COMPACT CARD READABILITY + SIGNAL BADGES
+   UI-only. Ranking/model/tracker/lock/combo logic is unchanged.
+   ================================================================ */
+.bf-scan-name{font-size:.95rem !important}
+.bf-scan-matchup{font-size:.62rem !important}
+.bf-scan-role{font-size:.52rem !important;padding:3px 7px !important}
+.bf-scan-grade{font-size:.58rem !important;padding:3px 6px !important}
+.bf-scan-confidence{font-size:.55rem !important}
+.bf-scan-rank{
+    display:inline-flex !important;
+    align-items:center;
+    gap:3px;
+    color:#b7c3d5 !important;
+    font-size:.52rem !important;
+    font-weight:900 !important;
+}
+.bf-scan-actions{grid-template-columns:repeat(3,54px) !important}
+.bf-scan-action small{font-size:.43rem !important}
+.bf-scan-action strong{font-size:.78rem !important}
+.bf-scan-attack-label{font-size:.55rem !important}
+.bf-scan-attack-score{font-size:.63rem !important}
+.bf-scan-metric small{font-size:.39rem !important}
+.bf-scan-metric strong{font-size:.68rem !important}
+.bf-scan-pair{font-size:.54rem !important}
+.bf-scan-pair-score{font-size:.66rem !important}
+
+.bf-scan-badges{
+    display:flex;
+    flex-wrap:wrap;
+    gap:4px;
+    margin-top:5px;
+}
+.bf-scan-badge{
+    display:inline-flex;
+    align-items:center;
+    border:1px solid rgba(255,255,255,.11);
+    border-radius:999px;
+    padding:3px 7px;
+    background:#111824;
+    color:#d7deea;
+    font-size:.48rem;
+    font-weight:900;
+    white-space:nowrap;
+}
+.bf-scan-badge.good{
+    color:#73efad;
+    border-color:rgba(53,208,127,.42);
+    background:rgba(53,208,127,.08);
+}
+.bf-scan-badge.weather{
+    color:#8fc0ff;
+    border-color:rgba(105,167,255,.42);
+    background:rgba(105,167,255,.08);
+}
+.bf-scan-badge.hot{
+    color:#ffd166;
+    border-color:rgba(255,209,102,.42);
+    background:rgba(255,209,102,.08);
+}
+.bf-research-signals{
+    display:flex;
+    flex-wrap:wrap;
+    gap:6px;
+    margin:2px 0 8px;
+    padding:7px 8px;
+    border:1px solid rgba(105,167,255,.25);
+    border-radius:9px;
+    background:#0d141f;
+}
+.bf-research-signals .label{
+    width:100%;
+    color:#75a6ff;
+    font-size:.58rem;
+    font-weight:950;
+    letter-spacing:.10em;
+}
+.bf-research-signals .signal{
+    border:1px solid rgba(255,255,255,.10);
+    border-radius:999px;
+    padding:4px 8px;
+    color:#d7deea;
+    background:#111824;
+    font-size:.58rem;
+    font-weight:900;
+}
+.bf-rank-help{
+    color:#8f9bad;
+    font-size:.55rem;
+    line-height:1.3;
+    margin-top:4px;
+}
+
+@media(max-width:640px){
+    .bf-scan-name{font-size:.84rem !important}
+    .bf-scan-matchup{font-size:.55rem !important}
+    .bf-scan-role{font-size:.45rem !important;padding:2px 6px !important}
+    .bf-scan-grade{font-size:.49rem !important}
+    .bf-scan-confidence,.bf-scan-rank{font-size:.45rem !important}
+    .bf-scan-actions{grid-template-columns:repeat(3,45px) !important}
+    .bf-scan-action small{font-size:.35rem !important}
+    .bf-scan-action strong{font-size:.66rem !important}
+    .bf-scan-badge{font-size:.42rem !important;padding:2px 6px !important}
+    .bf-scan-metric small{font-size:.32rem !important}
+    .bf-scan-metric strong{font-size:.58rem !important}
+    .bf-scan-pair{font-size:.45rem !important}
+    .bf-research-signals .signal{font-size:.49rem !important;padding:3px 6px !important}
+}
+
 </style>
 <div class="bf-hero">
     <div class="bf-kicker">BF DATA PRO LAB</div>
@@ -7817,6 +7926,18 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
     meta_extra = f" · {escape(data_level)}" if early and data_level else ""
     card_class = "early" if early else role_class
     badge_html = "".join(f"<span>{escape(str(x))}</span>" for x in badges)
+    compact_badge_parts = []
+    for badge in badges:
+        badge_text = str(badge)
+        badge_class = "good"
+        if "CARRY" in badge_text or "WEATHER" in badge_text:
+            badge_class = "weather"
+        elif "HOT" in badge_text or "BARREL GOD" in badge_text:
+            badge_class = "hot"
+        compact_badge_parts.append(
+            f'<span class="bf-scan-badge {badge_class}">{escape(badge_text)}</span>'
+        )
+    compact_badge_html = "".join(compact_badge_parts)
     reason_html = " · ".join(escape(str(x)) for x in reasons)
     attack_pct = safe_float(row.get("HR Attackability %", _attackability_pct(row.get("HR Attackability Score", 0))), 0.0)
     attack_label = "STRONG HR ATTACK" if attack_pct >= 72 else ("MIXED / ATTACKABLE" if attack_pct >= 48 else "POOR HR TARGET")
@@ -7860,8 +7981,9 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
         <span class="bf-scan-role {role_class}">{escape(role_text)}</span>
         <span class="bf-scan-grade">{escape(grade)}</span>
         <span class="bf-scan-confidence">CONF {confidence:.0f}%</span>
-        <span class="bf-scan-rank">SLATE #{slate_rank} · TEAM #{team_rank} · GAME #{game_rank}</span>
+        <span class="bf-scan-rank">SLATE RANK #{slate_rank} · TEAM RANK #{team_rank} · GAME RANK #{game_rank}</span>
       </div>
+      <div class="bf-scan-badges">{compact_badge_html}</div>
     </div>
     <div class="bf-scan-actions">
       <div class="bf-scan-action"><small>WAGER</small><strong>{wager_priority:.1f}</strong></div>
@@ -8176,6 +8298,29 @@ def render_early_watchlist_cards(preview_df: pd.DataFrame, max_cards: int = 6):
         with st.expander(f"Full research — {player} vs {pitcher}", expanded=False):
             _render_bf_html(_early_matchup_card_html(row, rank))
 
+
+def _bf_research_signal_strip_html(row: pd.Series) -> str:
+    badges = _bf_v2_badges(row, early=False)
+    reasons = _bf_v2_reason_items(row, early=False)
+    signal_items = badges + reasons[:3]
+    if not signal_items:
+        signal_items = ["Blended BF matchup profile"]
+    chips = "".join(
+        f'<span class="signal">{escape(str(item))}</span>'
+        for item in signal_items[:8]
+    )
+    return (
+        '<div class="bf-research-signals">'
+        '<div class="label">BF SIGNALS · WHY THIS PLAYER SURFACED</div>'
+        f'{chips}'
+        '<div class="bf-rank-help">'
+        'Slate Rank = overall position across the full board · '
+        'Team Rank = position among hitters on his team · '
+        'Game Rank = position among hitters in this matchup.'
+        '</div>'
+        '</div>'
+    )
+
 def render_player_card(row: pd.Series, rank_override=None):
     rank = rank_override if rank_override is not None else row.get("Rank", "—")
     player = _display_value(row.get("Player"))
@@ -8184,6 +8329,7 @@ def render_player_card(row: pd.Series, rank_override=None):
     _render_bf_html(_bf_v2_card_html(row, rank, early=False))
 
     with st.expander(f"Full research — {player} vs {pitcher}", expanded=False):
+        _render_bf_html(_bf_research_signal_strip_html(row))
         _render_bf_html(_match_card_html(row, rank_override=rank))
 
 def render_card_grid(df: pd.DataFrame, max_cards: int = 24, columns: int = 3, title: str | None = None):
