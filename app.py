@@ -925,11 +925,240 @@ div[data-testid="stExpander"] summary{min-height:29px !important;padding:.24rem 
     .bf-research-signals .signal{font-size:.49rem !important;padding:3px 6px !important}
 }
 
+/* ================================================================
+   BF DATA PRO PLATFORM POLISH
+   Visual/UX only — no prediction, tracker, combo, lineup, lock,
+   ranking, probability, or historical-storage logic is changed.
+   ================================================================ */
+:root{
+    --bf-bg:#07101b;
+    --bf-bg-deep:#040912;
+    --bf-surface:#0d1724;
+    --bf-surface-2:#111d2c;
+    --bf-surface-3:#152235;
+    --bf-line:rgba(145,174,216,.17);
+    --bf-line-strong:rgba(145,174,216,.28);
+    --bf-blue:#78aefc;
+    --bf-blue-bright:#9bc5ff;
+    --bf-text:#f4f7fb;
+    --bf-muted:#9eabc0;
+    --bf-green:#35d07f;
+    --bf-yellow:#ffd166;
+    --bf-red:#ff6b6b;
+}
+.stApp{
+    background:
+      radial-gradient(circle at 12% 0%,rgba(73,126,208,.12),transparent 28rem),
+      linear-gradient(180deg,var(--bf-bg-deep) 0%,var(--bf-bg) 48%,#050b13 100%) !important;
+}
+.block-container{padding-top:.38rem !important}
+header[data-testid="stHeader"]{background:rgba(6,12,21,.94) !important;border-bottom:1px solid rgba(145,174,216,.10)}
+#MainMenu{visibility:hidden}
+
+/* Premium hero/header */
+.bf-hero{
+    background:
+      linear-gradient(135deg,rgba(18,35,56,.98),rgba(9,18,30,.98)) !important;
+    border:1px solid rgba(120,174,252,.28) !important;
+    border-radius:15px !important;
+    box-shadow:0 14px 36px rgba(0,0,0,.24),inset 0 1px 0 rgba(255,255,255,.025) !important;
+    padding:12px 15px !important;
+}
+.bf-kicker{color:var(--bf-blue-bright) !important}
+.bf-title{
+    color:#f7faff !important;
+    letter-spacing:-.025em !important;
+    text-shadow:0 1px 0 rgba(255,255,255,.04);
+}
+.bf-subtitle{color:#aebbd0 !important}
+
+/* Streamlit controls */
+button[kind="secondary"],.stButton>button{
+    background:linear-gradient(180deg,#152235,#101a28) !important;
+    border:1px solid rgba(120,174,252,.25) !important;
+    color:#f3f7ff !important;
+    border-radius:9px !important;
+    box-shadow:0 4px 12px rgba(0,0,0,.14) !important;
+    transition:transform .12s ease,border-color .12s ease,background .12s ease !important;
+}
+button[kind="secondary"]:hover,.stButton>button:hover{
+    transform:translateY(-1px);
+    border-color:rgba(120,174,252,.58) !important;
+    background:linear-gradient(180deg,#1a2b42,#132135) !important;
+}
+[data-testid="stMetric"]{
+    background:linear-gradient(145deg,#111c2b,#0d1622) !important;
+    border:1px solid var(--bf-line) !important;
+    border-radius:10px !important;
+    box-shadow:0 7px 18px rgba(0,0,0,.13) !important;
+}
+[data-testid="stMetricLabel"] p{color:#91a1ba !important}
+[data-testid="stMetricValue"]{color:#f8fbff !important}
+
+/* Cleaner navigation: blue active state instead of the generic red underline */
+.stTabs [data-baseweb="tab-list"]{
+    border-bottom:1px solid rgba(145,174,216,.13) !important;
+}
+.stTabs [data-baseweb="tab"]{
+    background:transparent !important;
+    border:0 !important;
+    border-radius:7px 7px 0 0 !important;
+    color:#aeb9ca !important;
+}
+.stTabs [aria-selected="true"]{
+    color:#fff !important;
+    background:rgba(120,174,252,.10) !important;
+    border-bottom:2px solid var(--bf-blue) !important;
+}
+.stTabs [data-baseweb="tab-highlight"]{background-color:var(--bf-blue) !important}
+
+/* Section headings */
+h1,h2,h3{color:#f4f8ff !important;letter-spacing:-.015em}
+.bf-team-header{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+    margin:3px 0 5px;
+    padding:7px 9px;
+    border:1px solid rgba(120,174,252,.20);
+    border-left:3px solid var(--bf-blue);
+    border-radius:8px;
+    background:linear-gradient(90deg,rgba(120,174,252,.10),rgba(120,174,252,.025));
+}
+.bf-team-header strong{font-size:.88rem;color:#f5f8ff}
+.bf-team-header span{font-size:.56rem;color:#92a5c2;font-weight:800;letter-spacing:.06em}
+
+/* Premium compact player cards */
+.bf-scan-card{
+    position:relative;
+    background:linear-gradient(145deg,#0e1927,#0a131f) !important;
+    border-color:rgba(145,174,216,.20) !important;
+    box-shadow:0 8px 22px rgba(0,0,0,.16),inset 0 1px 0 rgba(255,255,255,.018) !important;
+    overflow:hidden;
+    transition:transform .14s ease,border-color .14s ease,box-shadow .14s ease;
+}
+.bf-scan-card:hover{
+    transform:translateY(-1px);
+    border-color:rgba(120,174,252,.46) !important;
+    box-shadow:0 11px 28px rgba(0,0,0,.22),0 0 0 1px rgba(120,174,252,.07) !important;
+}
+.bf-scan-card.primary{
+    border-color:rgba(53,208,127,.56) !important;
+    box-shadow:0 8px 22px rgba(0,0,0,.16),0 0 18px rgba(53,208,127,.045) !important;
+}
+.bf-scan-card.strong{
+    border-color:rgba(120,174,252,.48) !important;
+    box-shadow:0 8px 22px rgba(0,0,0,.16),0 0 18px rgba(120,174,252,.045) !important;
+}
+.bf-scan-card.sleeper{border-color:rgba(187,123,255,.46) !important}
+.bf-scan-name{color:#f8fbff !important;letter-spacing:-.012em}
+.bf-scan-matchup{color:#93a3ba !important}
+.bf-scan-action{
+    background:linear-gradient(180deg,#162338,#111b2a) !important;
+    border-color:rgba(120,174,252,.16) !important;
+}
+.bf-scan-action small{color:#81b3ff !important}
+.bf-scan-rank{color:#9eb0c9 !important}
+.bf-scan-metric{
+    background:linear-gradient(180deg,#121e2e,#0f1926) !important;
+    border-color:rgba(145,174,216,.12) !important;
+}
+.bf-scan-metric small{color:#8ea1bd !important}
+.bf-scan-track{
+    height:7px !important;
+    background:#202c3d !important;
+    box-shadow:inset 0 1px 2px rgba(0,0,0,.35);
+}
+.bf-scan-badges{gap:5px !important}
+.bf-scan-badge{
+    background:#111d2c !important;
+    border-color:rgba(145,174,216,.16) !important;
+}
+.bf-scan-badge.good{box-shadow:inset 0 0 0 1px rgba(53,208,127,.035)}
+.bf-scan-badge.weather{box-shadow:inset 0 0 0 1px rgba(120,174,252,.04)}
+.bf-scan-badge.hot{box-shadow:inset 0 0 0 1px rgba(255,209,102,.04)}
+.bf-scan-bottom{
+    background:rgba(120,174,252,.045);
+    border:1px solid rgba(120,174,252,.15) !important;
+    border-radius:7px;
+    padding:5px 7px !important;
+    margin-top:6px !important;
+}
+.bf-scan-pair b{color:#91bdff !important}
+.bf-scan-pair-score{color:#9bc5ff !important}
+.bf-scan-why{
+    margin-top:5px;
+    color:#b3bfd0;
+    font-size:.53rem;
+    line-height:1.24;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+.bf-scan-why b{
+    color:#7fb2ff;
+    letter-spacing:.07em;
+    font-size:.46rem;
+}
+
+/* Research expanders should feel connected to the card */
+div[data-testid="stExpander"]{
+    border:1px solid rgba(145,174,216,.14) !important;
+    background:rgba(10,18,29,.66) !important;
+    box-shadow:none !important;
+}
+div[data-testid="stExpander"] summary:hover{background:rgba(120,174,252,.05) !important}
+.bf-research-signals{
+    background:linear-gradient(145deg,#101c2b,#0c1521) !important;
+    border-color:rgba(120,174,252,.26) !important;
+}
+.bf-research-signals .label{color:#85b7ff !important}
+
+/* Matchup research surfaces */
+.bf-match-card{
+    background:#09131f !important;
+    border-color:rgba(120,174,252,.24) !important;
+    box-shadow:0 10px 26px rgba(0,0,0,.20) !important;
+}
+.bf-match-topline{background:linear-gradient(90deg,#16243a,#111c2d) !important}
+.bf-pitch-tile,.bf-bvp-cell{
+    background:linear-gradient(145deg,#101c2a,#0c1622) !important;
+    border-color:rgba(145,174,216,.14) !important;
+}
+
+/* Tables */
+div[data-testid="stDataFrame"]{
+    border-color:rgba(120,174,252,.20) !important;
+    box-shadow:0 8px 20px rgba(0,0,0,.14);
+}
+
+/* Weather page uses the same premium surface language */
+.bf-weather-card{
+    background:linear-gradient(145deg,#0d1826,#09121d) !important;
+    border-color:rgba(120,174,252,.25) !important;
+    box-shadow:0 12px 30px rgba(0,0,0,.18) !important;
+}
+.bf-weather-head{background:linear-gradient(90deg,#17263c,#101a29) !important}
+.bf-weather-summary>div,.bf-dim-panel,.bf-env-card{
+    background:linear-gradient(145deg,#121f30,#0e1825) !important;
+    border-color:rgba(145,174,216,.13) !important;
+}
+
+/* Mobile: retain density, improve touch feel */
+@media(max-width:640px){
+    .bf-hero{padding:9px 10px !important}
+    .bf-scan-card{box-shadow:0 5px 14px rgba(0,0,0,.14) !important}
+    .bf-scan-why{font-size:.47rem}
+    .bf-scan-bottom{padding:4px 5px !important}
+    .stTabs [data-baseweb="tab"]{min-height:30px !important}
+}
+
 </style>
 <div class="bf-hero">
     <div class="bf-kicker">BF DATA PRO LAB</div>
     <div class="bf-title">JR Daily HR Predictions</div>
-    <div class="bf-subtitle">Powered by BF Data — compact MLB home run research board with green/yellow/red matchup signals and locked accuracy tracking.</div>
+    <div class="bf-subtitle">Premium MLB home run intelligence — fast slate scanning, matchup signals, lineup awareness, and locked accuracy tracking.</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -8002,8 +8231,9 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
     <div class="bf-scan-metric"><small>PITCHER LEAK</small><strong>{pitcher_leak:.0f}</strong></div>
     <div class="bf-scan-metric"><small>FORM</small><strong>{recent_form:.0f}</strong></div>
   </div>
+  <div class="bf-scan-why"><b>WHY BF LIKES HIM</b> · {reason_html}</div>
   <div class="bf-scan-bottom">
-    <div class="bf-scan-pair"><b>{escape(pair_role)}</b> · Best pair: {escape(best_pair)}</div>
+    <div class="bf-scan-pair"><b>🤝 {escape(pair_role)}</b> · Best pair: {escape(best_pair)}</div>
     <div class="bf-scan-pair-score">PAIR {pair_score:.0f}</div>
   </div>
 </div>"""
@@ -8320,6 +8550,18 @@ def _bf_research_signal_strip_html(row: pd.Series) -> str:
         '</div>'
         '</div>'
     )
+
+
+def render_team_section_header(team: str, confirmed_count: int, pool_status: str):
+    status = str(pool_status or "PROJECTED").upper()
+    status_text = "OFFICIAL LINEUP" if status == "CONFIRMED" else status
+    html = (
+        '<div class="bf-team-header">'
+        f'<strong>{escape(str(team))}</strong>'
+        f'<span>{safe_int(confirmed_count, 0)}/9 CONFIRMED · {escape(status_text)}</span>'
+        '</div>'
+    )
+    _render_bf_html(html)
 
 def render_player_card(row: pd.Series, rank_override=None):
     rank = rank_override if rank_override is not None else row.get("Rank", "—")
@@ -9682,9 +9924,8 @@ for idx, game in enumerate(schedule, start=12):
         left, right = st.columns(2)
 
         with left:
-            st.markdown(f"### {away_team}")
             away_source = gdf[gdf["Team"] == away_team]["Lineup Source"].iloc[0] if not gdf[gdf["Team"] == away_team].empty else "N/A"
-            st.caption(f"Confirmed hitters: {game.get('away_confirmed_count', 0)}/9 | Pool status: {away_source}")
+            render_team_section_header(away_team, game.get("away_confirmed_count", 0), away_source)
             live_team_hr, team_hrr = get_team_game_view(gdf, game["game_key"], away_team, game.get("game_pk"), doubleheader_assignment_map)
             saved_team_hr = get_saved_game_hr_board(today_str(), game.get("game_pk"), away_team, schedule, doubleheader_assignment_map)
             team_hr = saved_team_hr if not saved_team_hr.empty else live_team_hr
@@ -9719,9 +9960,8 @@ for idx, game in enumerate(schedule, start=12):
                 st.caption("No HRR bats surfaced.")
 
         with right:
-            st.markdown(f"### {home_team}")
             home_source = gdf[gdf["Team"] == home_team]["Lineup Source"].iloc[0] if not gdf[gdf["Team"] == home_team].empty else "N/A"
-            st.caption(f"Confirmed hitters: {game.get('home_confirmed_count', 0)}/9 | Pool status: {home_source}")
+            render_team_section_header(home_team, game.get("home_confirmed_count", 0), home_source)
             live_team_hr, team_hrr = get_team_game_view(gdf, game["game_key"], home_team, game.get("game_pk"), doubleheader_assignment_map)
             saved_team_hr = get_saved_game_hr_board(today_str(), game.get("game_pk"), home_team, schedule, doubleheader_assignment_map)
             team_hr = saved_team_hr if not saved_team_hr.empty else live_team_hr
