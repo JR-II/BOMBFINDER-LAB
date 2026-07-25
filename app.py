@@ -4890,17 +4890,17 @@ def resolve_pitcher_name(team_id: int, team_block: dict) -> str:
     return "Starter Pending"
 
 
-@st.cache_data(ttl=30, max_entries=80)
 @st.cache_data(ttl=15, max_entries=80)
 def fetch_authoritative_starting_lineups(game_pk: int) -> dict:
-    """Return MLB's current official starting 1-9 for each team.
+    """Return MLB's exact current official starting batting orders.
 
-    The authoritative rule is:
-      battingOrder is present
-      AND gameStatus.isSubstitute is explicitly False
+    Primary source:
+        liveData.boxscore.teams.{away|home}.battingOrder
 
-    This prevents projected players, bench players, late scratches, and
-    replacement history from being treated as official starters.
+    MLB's battingOrder array is the current ordered starter list. Requiring
+    gameStatus.isSubstitute == False is intentionally avoided because that
+    field is often absent before first pitch even after an official lineup
+    has posted.
     """
     empty = {
         "away_ids": [],
@@ -4908,11 +4908,16 @@ def fetch_authoritative_starting_lineups(game_pk: int) -> dict:
         "away_signature": "",
         "home_signature": "",
     }
+
     try:
         response = requests.get(
             f"https://statsapi.mlb.com/api/v1.1/game/{int(game_pk)}/feed/live",
-            params={"_bf_ts": int(time.time() // 15)},
-            headers={"Cache-Control": "no-cache"},
+            params={"_bf_ts": int(time.time())},
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
             timeout=20,
         )
         response.raise_for_status()
@@ -4922,22 +4927,38 @@ def fetch_authoritative_starting_lineups(game_pk: int) -> dict:
             .get("teams") or {}
         )
 
-        def _official_side(side: str) -> list[int]:
+        def _ordered_starting_ids(side: str) -> list[int]:
             team_block = teams.get(side) or {}
+
+            # This array is MLB's current batting order and is the primary truth.
+            raw_order = team_block.get("battingOrder") or []
+            ordered_ids = []
+            seen = set()
+            for raw_id in raw_order:
+                player_id = safe_int(raw_id, -1)
+                if player_id <= 0 or player_id in seen:
+                    continue
+                seen.add(player_id)
+                ordered_ids.append(player_id)
+
+            if len(ordered_ids) >= 9:
+                return ordered_ids[:9]
+
+            # Truthful fallback for feeds that have not populated the array yet.
+            # Use one player per batting slot and reject players explicitly marked
+            # as substitutes. A missing substitute flag is allowed pregame.
             players = team_block.get("players") or {}
             by_spot = {}
 
             for pdata in players.values():
                 person = pdata.get("person") or {}
-                player_id = person.get("id")
+                player_id = safe_int(person.get("id"), -1)
                 batting_order = str(pdata.get("battingOrder") or "").strip()
                 game_status = pdata.get("gameStatus") or {}
 
-                # Critical truth gate: starters only.
-                is_substitute = game_status.get("isSubstitute")
-                if is_substitute is not False:
+                if player_id <= 0 or not batting_order:
                     continue
-                if player_id is None or not batting_order:
+                if game_status.get("isSubstitute") is True:
                     continue
 
                 try:
@@ -4950,7 +4971,7 @@ def fetch_authoritative_starting_lineups(game_pk: int) -> dict:
                     continue
 
                 previous = by_spot.get(spot)
-                candidate = (order_value, int(player_id))
+                candidate = (order_value, player_id)
                 if previous is None or candidate[0] < previous[0]:
                     by_spot[spot] = candidate
 
@@ -4959,14 +4980,16 @@ def fetch_authoritative_starting_lineups(game_pk: int) -> dict:
 
             return [by_spot[spot][1] for spot in range(1, 10)]
 
-        away_ids = _official_side("away")
-        home_ids = _official_side("home")
+        away_ids = _ordered_starting_ids("away")
+        home_ids = _ordered_starting_ids("home")
+
         return {
             "away_ids": away_ids,
             "home_ids": home_ids,
             "away_signature": "|".join(map(str, away_ids)) if len(away_ids) == 9 else "",
             "home_signature": "|".join(map(str, home_ids)) if len(home_ids) == 9 else "",
         }
+
     except Exception:
         return empty
 
@@ -4983,7 +5006,7 @@ def extract_official_lineup_signature_from_players(players: dict) -> tuple[list[
         batting_order = str(pdata.get("battingOrder") or "").strip()
         person_id = ((pdata.get("person") or {}).get("id"))
         game_status = pdata.get("gameStatus") or {}
-        if game_status.get("isSubstitute") is not False:
+        if game_status.get("isSubstitute") is True:
             continue
         if not batting_order or person_id is None:
             continue
@@ -10865,6 +10888,7 @@ with c1:
     if st.button("Update Board", use_container_width=True):
         st.session_state.manual_refresh_trigger = True
         st.session_state.deep_l10_bbe = False
+        st.cache_data.clear()
         st.rerun()
     if st.button("Deep L10 Refresh", use_container_width=True):
         st.session_state.manual_refresh_trigger = True
@@ -10915,6 +10939,23 @@ if not schedule:
     st.session_state.manual_refresh_trigger = False
     render_off_day_mode(load_tracker())
     st.stop()
+
+# Refresh only official lineup IDs immediately before resolving locks.
+# This does not recalculate predictions; it only updates who is eligible to
+# remain visible on confirmed-team boards.
+for _game in schedule:
+    _fresh_lineups = fetch_authoritative_starting_lineups(
+        safe_int(_game.get("game_pk"), -1)
+    )
+    for _side in ("away", "home"):
+        _ids = [
+            safe_int(pid, -1)
+            for pid in (_fresh_lineups.get(f"{_side}_ids") or [])
+        ]
+        if len(_ids) == 9:
+            _game[f"{_side}_lineup_ids"] = _ids
+            _game[f"{_side}_lineup_signature"] = "|".join(map(str, _ids))
+            _game[f"{_side}_confirmed_count"] = 9
 
 locked_df_raw = ensure_daily_board_lock(live_df, schedule)
 
