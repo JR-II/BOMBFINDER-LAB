@@ -3174,6 +3174,23 @@ def ensure_daily_board_lock(live_df: pd.DataFrame, schedule: list[dict]) -> pd.D
             row_pks.eq(game_pk)
             & live_df["Team"].astype(str).eq(team)
         ].copy()
+
+        # Defense-in-depth: a confirmed lock may contain only the player IDs
+        # encoded in the team's current official lineup signature.
+        signature_ids = {
+            safe_int(value, -1)
+            for value in str(
+                current_signatures.get((game_pk, team), "") or ""
+            ).split("|")
+            if safe_int(value, -1) > 0
+        }
+        if len(signature_ids) == 9 and "Player ID" in team_rows.columns:
+            team_rows = team_rows[
+                pd.to_numeric(
+                    team_rows["Player ID"], errors="coerce"
+                ).fillna(-1).astype(int).isin(signature_ids)
+            ].copy()
+
         if team_rows.empty:
             # No replacement qualifies: the stale player stays removed and the
             # team board is intentionally allowed to contain fewer hitters.
@@ -4890,17 +4907,17 @@ def resolve_pitcher_name(team_id: int, team_block: dict) -> str:
     return "Starter Pending"
 
 
-@st.cache_data(ttl=15, max_entries=80)
+@st.cache_data(ttl=10, max_entries=120)
 def fetch_authoritative_starting_lineups(game_pk: int) -> dict:
-    """Return MLB's exact current official starting batting orders.
+    """Return MLB's current official starting nine for both teams.
 
-    Primary source:
-        liveData.boxscore.teams.{away|home}.battingOrder
+    The live-feed battingOrder array is useful, but it is not accepted blindly:
+    MLB can temporarily retain a scratched/replaced player's ID in that array.
+    Every ID is validated against the current player object and any player
+    explicitly marked as a substitute is rejected.
 
-    MLB's battingOrder array is the current ordered starter list. Requiring
-    gameStatus.isSubstitute == False is intentionally avoided because that
-    field is often absent before first pitch even after an official lineup
-    has posted.
+    The final lineup is reconstructed as exactly one current player for each
+    batting slot 1 through 9.
     """
     empty = {
         "away_ids": [],
@@ -4912,7 +4929,7 @@ def fetch_authoritative_starting_lineups(game_pk: int) -> dict:
     try:
         response = requests.get(
             f"https://statsapi.mlb.com/api/v1.1/game/{int(game_pk)}/feed/live",
-            params={"_bf_ts": int(time.time())},
+            params={"_bf_lineup_nonce": int(time.time())},
             headers={
                 "Cache-Control": "no-cache, no-store, must-revalidate",
                 "Pragma": "no-cache",
@@ -4927,38 +4944,41 @@ def fetch_authoritative_starting_lineups(game_pk: int) -> dict:
             .get("teams") or {}
         )
 
-        def _ordered_starting_ids(side: str) -> list[int]:
+        def _current_starting_ids(side: str) -> list[int]:
             team_block = teams.get(side) or {}
-
-            # This array is MLB's current batting order and is the primary truth.
-            raw_order = team_block.get("battingOrder") or []
-            ordered_ids = []
-            seen = set()
-            for raw_id in raw_order:
-                player_id = safe_int(raw_id, -1)
-                if player_id <= 0 or player_id in seen:
-                    continue
-                seen.add(player_id)
-                ordered_ids.append(player_id)
-
-            if len(ordered_ids) >= 9:
-                return ordered_ids[:9]
-
-            # Truthful fallback for feeds that have not populated the array yet.
-            # Use one player per batting slot and reject players explicitly marked
-            # as substitutes. A missing substitute flag is allowed pregame.
             players = team_block.get("players") or {}
-            by_spot = {}
 
+            player_by_id = {}
             for pdata in players.values():
                 person = pdata.get("person") or {}
-                player_id = safe_int(person.get("id"), -1)
-                batting_order = str(pdata.get("battingOrder") or "").strip()
-                game_status = pdata.get("gameStatus") or {}
+                pid = safe_int(person.get("id"), -1)
+                if pid > 0:
+                    player_by_id[pid] = pdata
 
-                if player_id <= 0 or not batting_order:
+            # Candidate IDs from MLB's ordered array, validated against the
+            # current player status. A scratched player marked substitute is
+            # never allowed to survive merely because the old ID remains here.
+            validated_array_ids = []
+            for raw_id in (team_block.get("battingOrder") or []):
+                pid = safe_int(raw_id, -1)
+                pdata = player_by_id.get(pid) or {}
+                status = pdata.get("gameStatus") or {}
+                if pid <= 0 or status.get("isSubstitute") is True:
                     continue
-                if game_status.get("isSubstitute") is True:
+                if pid not in validated_array_ids:
+                    validated_array_ids.append(pid)
+
+            # Reconstruct the present lineup from batting slots. Prefer a
+            # non-substitute x00 starter. If MLB supplies multiple records for
+            # the same slot, the lowest valid order sequence wins.
+            by_spot = {}
+            for pid, pdata in player_by_id.items():
+                status = pdata.get("gameStatus") or {}
+                if status.get("isSubstitute") is True:
+                    continue
+
+                batting_order = str(pdata.get("battingOrder") or "").strip()
+                if not batting_order:
                     continue
 
                 try:
@@ -4970,18 +4990,28 @@ def fetch_authoritative_starting_lineups(game_pk: int) -> dict:
                 if not 1 <= spot <= 9:
                     continue
 
+                # Prefer IDs still present in the current array, then prefer
+                # the lowest batting-order sequence for the slot.
+                candidate = (
+                    0 if pid in validated_array_ids else 1,
+                    order_value,
+                    pid,
+                )
                 previous = by_spot.get(spot)
-                candidate = (order_value, player_id)
-                if previous is None or candidate[0] < previous[0]:
+                if previous is None or candidate < previous:
                     by_spot[spot] = candidate
 
             if set(by_spot) != set(range(1, 10)):
                 return []
 
-            return [by_spot[spot][1] for spot in range(1, 10)]
+            ordered_ids = [by_spot[spot][2] for spot in range(1, 10)]
+            if len(set(ordered_ids)) != 9:
+                return []
 
-        away_ids = _ordered_starting_ids("away")
-        home_ids = _ordered_starting_ids("home")
+            return ordered_ids
+
+        away_ids = _current_starting_ids("away")
+        home_ids = _current_starting_ids("home")
 
         return {
             "away_ids": away_ids,
@@ -10888,6 +10918,7 @@ with c1:
     if st.button("Update Board", use_container_width=True):
         st.session_state.manual_refresh_trigger = True
         st.session_state.deep_l10_bbe = False
+        st.session_state.pop("bf_official_lineup_snapshot", None)
         st.cache_data.clear()
         st.rerun()
     if st.button("Deep L10 Refresh", use_container_width=True):
@@ -10957,7 +10988,107 @@ for _game in schedule:
             _game[f"{_side}_lineup_signature"] = "|".join(map(str, _ids))
             _game[f"{_side}_confirmed_count"] = 9
 
+
+def gate_live_predictions_to_official_starters(
+    live_board: pd.DataFrame,
+    schedule_rows: list[dict],
+) -> pd.DataFrame:
+    """Remove non-starters from confirmed teams before any lock is created.
+
+    Projected teams are left untouched. For a confirmed team, membership in
+    MLB's exact official nine is mandatory. This gate changes eligibility only;
+    it does not recalculate or rerank any prediction.
+    """
+    if live_board is None or live_board.empty:
+        return live_board.copy() if isinstance(live_board, pd.DataFrame) else pd.DataFrame()
+    if not {"game_pk", "Team"}.issubset(live_board.columns):
+        return live_board.copy().reset_index(drop=True)
+
+    allowed_ids = {}
+    allowed_names = {}
+
+    for game in schedule_rows or []:
+        game_pk = safe_int(game.get("game_pk"), -1)
+
+        for side, team_name, ids_field, signature_field, count_field in (
+            (
+                "away",
+                game.get("away_team", ""),
+                "away_lineup_ids",
+                "away_lineup_signature",
+                "away_confirmed_count",
+            ),
+            (
+                "home",
+                game.get("home_team", ""),
+                "home_lineup_ids",
+                "home_lineup_signature",
+                "home_confirmed_count",
+            ),
+        ):
+            ordered = [
+                safe_int(pid, -1)
+                for pid in (game.get(ids_field) or [])
+                if safe_int(pid, -1) > 0
+            ]
+            if len(ordered) != 9 or len(set(ordered)) != 9:
+                continue
+
+            key = (game_pk, team_abbr(str(team_name)))
+            allowed_ids[key] = set(ordered)
+
+            exact_rows = build_exact_official_candidate_hitters(
+                game_pk,
+                side,
+                ordered,
+            )
+            allowed_names[key] = {
+                normalize_name(row.get("player_name", ""))
+                for row in exact_rows
+                if normalize_name(row.get("player_name", ""))
+            }
+
+            # Keep schedule truth synchronized with the exact gate.
+            game[ids_field] = ordered
+            game[signature_field] = "|".join(map(str, ordered))
+            game[count_field] = 9
+
+    if not allowed_ids:
+        return live_board.copy().reset_index(drop=True)
+
+    keep = []
+    for _, row in live_board.iterrows():
+        key = (
+            safe_int(row.get("game_pk"), -1),
+            team_abbr(str(row.get("Team", ""))),
+        )
+        team_allowed_ids = allowed_ids.get(key)
+
+        # No complete official nine yet: preserve projected behavior.
+        if team_allowed_ids is None:
+            keep.append(True)
+            continue
+
+        player_id = safe_int(row.get("Player ID"), -1)
+        player_name = normalize_name(row.get("Player", ""))
+
+        keep.append(
+            player_id in team_allowed_ids
+            or (
+                player_id <= 0
+                and player_name in allowed_names.get(key, set())
+            )
+        )
+
+    return live_board.loc[keep].reset_index(drop=True)
+
+
+# ABSOLUTE UPSTREAM LINEUP GATE:
+# A confirmed-team non-starter is removed before the lock system sees live_df.
+live_df = gate_live_predictions_to_official_starters(live_df, schedule)
+
 locked_df_raw = ensure_daily_board_lock(live_df, schedule)
+
 
 
 def hard_filter_board_to_current_official_lineups(
