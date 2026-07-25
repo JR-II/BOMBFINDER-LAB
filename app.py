@@ -4890,6 +4890,64 @@ def resolve_pitcher_name(team_id: int, team_block: dict) -> str:
     return "Starter Pending"
 
 
+@st.cache_data(ttl=30, max_entries=80)
+def fetch_authoritative_starting_lineups(game_pk: int) -> dict:
+    """Return MLB's current official starting batting orders.
+
+    Primary source:
+        /api/v1.1/game/{gamePk}/feed/live
+        liveData.boxscore.teams.{side}.battingOrder
+
+    That battingOrder array is safer than scanning every player object because
+    player objects may retain batting-order metadata for projected players,
+    substitutes, or earlier lineup versions.
+    """
+    empty = {
+        "away_ids": [],
+        "home_ids": [],
+        "away_signature": "",
+        "home_signature": "",
+    }
+    try:
+        response = requests.get(
+            f"https://statsapi.mlb.com/api/v1.1/game/{int(game_pk)}/feed/live",
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload = response.json() or {}
+        teams = (
+            ((payload.get("liveData") or {}).get("boxscore") or {})
+            .get("teams") or {}
+        )
+
+        def _side_ids(side: str) -> list[int]:
+            raw_ids = ((teams.get(side) or {}).get("battingOrder") or [])
+            ordered = []
+            seen = set()
+            for value in raw_ids:
+                try:
+                    player_id = int(value)
+                except Exception:
+                    continue
+                if player_id in seen:
+                    continue
+                seen.add(player_id)
+                ordered.append(player_id)
+            # Only call it official when MLB exposes a complete starting 1-9.
+            return ordered[:9] if len(ordered) >= 9 else []
+
+        away_ids = _side_ids("away")
+        home_ids = _side_ids("home")
+        return {
+            "away_ids": away_ids,
+            "home_ids": home_ids,
+            "away_signature": "|".join(map(str, away_ids)) if len(away_ids) == 9 else "",
+            "home_signature": "|".join(map(str, home_ids)) if len(home_ids) == 9 else "",
+        }
+    except Exception:
+        return empty
+
+
 def extract_official_lineup_signature_from_players(players: dict) -> tuple[list[int], str]:
     """Return MLB's exact current starting 1-9 and a stable signature.
 
@@ -4945,10 +5003,21 @@ def get_today_schedule():
             away_players = (((box.get("teams") or {}).get("away") or {}).get("players") or {})
             home_players = (((box.get("teams") or {}).get("home") or {}).get("players") or {})
 
-            away_lineup_ids, away_lineup_signature = extract_official_lineup_signature_from_players(away_players)
-            home_lineup_ids, home_lineup_signature = extract_official_lineup_signature_from_players(home_players)
-            away_confirmed = len(away_lineup_ids)
-            home_confirmed = len(home_lineup_ids)
+            authoritative_lineups = fetch_authoritative_starting_lineups(game.get("gamePk"))
+
+            away_lineup_ids = authoritative_lineups.get("away_ids") or []
+            home_lineup_ids = authoritative_lineups.get("home_ids") or []
+            away_lineup_signature = authoritative_lineups.get("away_signature", "")
+            home_lineup_signature = authoritative_lineups.get("home_signature", "")
+
+            # Fallback only when the live feed has not published a complete 1-9.
+            if len(away_lineup_ids) != 9:
+                away_lineup_ids, away_lineup_signature = extract_official_lineup_signature_from_players(away_players)
+            if len(home_lineup_ids) != 9:
+                home_lineup_ids, home_lineup_signature = extract_official_lineup_signature_from_players(home_players)
+
+            away_confirmed = len(away_lineup_ids) if len(away_lineup_ids) == 9 else 0
+            home_confirmed = len(home_lineup_ids) if len(home_lineup_ids) == 9 else 0
 
             status = game.get("status", {})
             game_state = status.get("abstractGameState", "Preview")
@@ -7353,6 +7422,31 @@ def build_daily_dataset(deep_bbe: bool = False):
         home_candidates, home_source = get_team_candidate_hitters(
             game["game_pk"], game["home_team_id"], "home", savant_batter_map, deep_bbe=deep_bbe
         )
+
+        # FINAL CANDIDATE-POOL GATE:
+        # Once MLB publishes an official 1-9, no projected/non-starting player
+        # is allowed into that team's model pool. Projected teams remain
+        # completely unchanged until a full official lineup exists.
+        away_official_ids = {
+            safe_int(pid, -1) for pid in (game.get("away_lineup_ids") or [])
+        }
+        home_official_ids = {
+            safe_int(pid, -1) for pid in (game.get("home_lineup_ids") or [])
+        }
+
+        if len(away_official_ids) == 9:
+            away_candidates = [
+                h for h in away_candidates
+                if safe_int(h.get("player_id"), -1) in away_official_ids
+            ]
+            away_source = "CONFIRMED"
+
+        if len(home_official_ids) == 9:
+            home_candidates = [
+                h for h in home_candidates
+                if safe_int(h.get("player_id"), -1) in home_official_ids
+            ]
+            home_source = "CONFIRMED"
 
         candidate_map[(game["game_pk"], "away")] = (away_candidates, away_source)
         candidate_map[(game["game_pk"], "home")] = (home_candidates, home_source)
@@ -10727,6 +10821,87 @@ if not schedule:
     st.stop()
 
 locked_df_raw = ensure_daily_board_lock(live_df, schedule)
+
+
+def hard_filter_board_to_current_official_lineups(
+    board_df: pd.DataFrame,
+    schedule_rows: list[dict],
+) -> pd.DataFrame:
+    """Remove non-starters from confirmed teams after all locks are loaded.
+
+    Projected teams are untouched. Confirmed teams are filtered by exact MLBAM
+    player ID from MLB's current official battingOrder array.
+    """
+    if board_df is None or board_df.empty:
+        return board_df.copy() if isinstance(board_df, pd.DataFrame) else pd.DataFrame()
+    if not {"game_pk", "Team", "Player ID"}.issubset(board_df.columns):
+        return board_df.copy().reset_index(drop=True)
+
+    allowed_by_key = {}
+    for game in schedule_rows or []:
+        game_pk = safe_int(game.get("game_pk"), -1)
+        away_team = team_abbr(game.get("away_team", ""))
+        home_team = team_abbr(game.get("home_team", ""))
+
+        away_ids = {
+            safe_int(pid, -1) for pid in (game.get("away_lineup_ids") or [])
+        }
+        home_ids = {
+            safe_int(pid, -1) for pid in (game.get("home_lineup_ids") or [])
+        }
+
+        if len(away_ids) == 9:
+            allowed_by_key[(game_pk, away_team)] = away_ids
+        if len(home_ids) == 9:
+            allowed_by_key[(game_pk, home_team)] = home_ids
+
+    if not allowed_by_key:
+        return board_df.copy().reset_index(drop=True)
+
+    keep = []
+    for _, row in board_df.iterrows():
+        key = (
+            safe_int(row.get("game_pk"), -1),
+            str(row.get("Team", "")),
+        )
+        allowed_ids = allowed_by_key.get(key)
+        if allowed_ids is None:
+            keep.append(True)
+            continue
+        keep.append(safe_int(row.get("Player ID"), -1) in allowed_ids)
+
+    return board_df.loc[keep].reset_index(drop=True)
+
+
+# The final gate runs AFTER lock resolution and BEFORE tracker/combo creation.
+# Therefore a stale locked player cannot remain visible or enter a new combo.
+locked_df_raw = hard_filter_board_to_current_official_lineups(
+    locked_df_raw,
+    schedule,
+)
+
+# Persist only the corrected version of today's locks. Historical dates are
+# never edited. This prevents a stale projected player from returning.
+_current_locks = load_board_locks()
+if (
+    _current_locks is not None
+    and not _current_locks.empty
+    and "date" in _current_locks.columns
+):
+    _today_mask = _current_locks["date"].astype(str).eq(today_str())
+    if _today_mask.any():
+        _today_locks = hard_filter_board_to_current_official_lineups(
+            _current_locks.loc[_today_mask].copy(),
+            schedule,
+        )
+        _other_locks = _current_locks.loc[~_today_mask].copy()
+        save_board_locks(
+            pd.concat(
+                [_other_locks, _today_locks],
+                ignore_index=True,
+                sort=False,
+            )
+        )
 
 lineup_mode = get_lineup_mode(schedule) if schedule else "PROJECTED"
 
