@@ -4891,16 +4891,16 @@ def resolve_pitcher_name(team_id: int, team_block: dict) -> str:
 
 
 @st.cache_data(ttl=30, max_entries=80)
+@st.cache_data(ttl=15, max_entries=80)
 def fetch_authoritative_starting_lineups(game_pk: int) -> dict:
-    """Return MLB's current official starting batting orders.
+    """Return MLB's current official starting 1-9 for each team.
 
-    Primary source:
-        /api/v1.1/game/{gamePk}/feed/live
-        liveData.boxscore.teams.{side}.battingOrder
+    The authoritative rule is:
+      battingOrder is present
+      AND gameStatus.isSubstitute is explicitly False
 
-    That battingOrder array is safer than scanning every player object because
-    player objects may retain batting-order metadata for projected players,
-    substitutes, or earlier lineup versions.
+    This prevents projected players, bench players, late scratches, and
+    replacement history from being treated as official starters.
     """
     empty = {
         "away_ids": [],
@@ -4911,6 +4911,8 @@ def fetch_authoritative_starting_lineups(game_pk: int) -> dict:
     try:
         response = requests.get(
             f"https://statsapi.mlb.com/api/v1.1/game/{int(game_pk)}/feed/live",
+            params={"_bf_ts": int(time.time() // 15)},
+            headers={"Cache-Control": "no-cache"},
             timeout=20,
         )
         response.raise_for_status()
@@ -4920,24 +4922,45 @@ def fetch_authoritative_starting_lineups(game_pk: int) -> dict:
             .get("teams") or {}
         )
 
-        def _side_ids(side: str) -> list[int]:
-            raw_ids = ((teams.get(side) or {}).get("battingOrder") or [])
-            ordered = []
-            seen = set()
-            for value in raw_ids:
+        def _official_side(side: str) -> list[int]:
+            team_block = teams.get(side) or {}
+            players = team_block.get("players") or {}
+            by_spot = {}
+
+            for pdata in players.values():
+                person = pdata.get("person") or {}
+                player_id = person.get("id")
+                batting_order = str(pdata.get("battingOrder") or "").strip()
+                game_status = pdata.get("gameStatus") or {}
+
+                # Critical truth gate: starters only.
+                is_substitute = game_status.get("isSubstitute")
+                if is_substitute is not False:
+                    continue
+                if player_id is None or not batting_order:
+                    continue
+
                 try:
-                    player_id = int(value)
+                    order_value = int(batting_order)
+                    spot = order_value // 100
                 except Exception:
                     continue
-                if player_id in seen:
-                    continue
-                seen.add(player_id)
-                ordered.append(player_id)
-            # Only call it official when MLB exposes a complete starting 1-9.
-            return ordered[:9] if len(ordered) >= 9 else []
 
-        away_ids = _side_ids("away")
-        home_ids = _side_ids("home")
+                if not 1 <= spot <= 9:
+                    continue
+
+                previous = by_spot.get(spot)
+                candidate = (order_value, int(player_id))
+                if previous is None or candidate[0] < previous[0]:
+                    by_spot[spot] = candidate
+
+            if set(by_spot) != set(range(1, 10)):
+                return []
+
+            return [by_spot[spot][1] for spot in range(1, 10)]
+
+        away_ids = _official_side("away")
+        home_ids = _official_side("home")
         return {
             "away_ids": away_ids,
             "home_ids": home_ids,
@@ -4959,6 +4982,9 @@ def extract_official_lineup_signature_from_players(players: dict) -> tuple[list[
     for pdata in (players or {}).values():
         batting_order = str(pdata.get("battingOrder") or "").strip()
         person_id = ((pdata.get("person") or {}).get("id"))
+        game_status = pdata.get("gameStatus") or {}
+        if game_status.get("isSubstitute") is not False:
+            continue
         if not batting_order or person_id is None:
             continue
         try:
@@ -5611,6 +5637,79 @@ def extract_boxscore_team_hitters(game_pk: int, side: str):
 
     return list(dedup.values())
 
+
+
+def build_exact_official_candidate_hitters(
+    game_pk: int,
+    side: str,
+    official_ids: list[int],
+) -> list[dict]:
+    """Build the team candidate pool directly from MLB's official starter IDs."""
+    if len(official_ids or []) != 9:
+        return []
+
+    box = fetch_boxscore(game_pk)
+    players = (
+        (((box.get("teams") or {}).get(side) or {}).get("players") or {})
+    )
+
+    by_id = {}
+    for pdata in players.values():
+        person = pdata.get("person") or {}
+        player_id = safe_int(person.get("id"), -1)
+        if player_id <= 0:
+            continue
+        by_id[player_id] = pdata
+
+    result = []
+    missing_ids = []
+    for spot, raw_id in enumerate(official_ids, start=1):
+        player_id = safe_int(raw_id, -1)
+        pdata = by_id.get(player_id) or {}
+        person = pdata.get("person") or {}
+        player_name = str(person.get("fullName") or "").strip()
+
+        if not player_name:
+            missing_ids.append(player_id)
+            continue
+
+        result.append({
+            "player_id": player_id,
+            "player_name": player_name,
+            "lineup_spot": spot,
+            "confirmed": True,
+        })
+
+    # Resolve a rare missing name without changing the official ID list.
+    if missing_ids:
+        try:
+            response = requests.get(
+                "https://statsapi.mlb.com/api/v1/people",
+                params={"personIds": ",".join(map(str, missing_ids))},
+                timeout=15,
+            )
+            response.raise_for_status()
+            names = {
+                safe_int(person.get("id"), -1): str(person.get("fullName") or "").strip()
+                for person in (response.json() or {}).get("people", [])
+            }
+            existing = {safe_int(row["player_id"], -1) for row in result}
+            for spot, raw_id in enumerate(official_ids, start=1):
+                player_id = safe_int(raw_id, -1)
+                if player_id in existing:
+                    continue
+                player_name = names.get(player_id, "")
+                if player_name:
+                    result.append({
+                        "player_id": player_id,
+                        "player_name": player_name,
+                        "lineup_spot": spot,
+                        "confirmed": True,
+                    })
+        except Exception:
+            pass
+
+    return sorted(result, key=lambda row: row.get("lineup_spot", 99))
 
 def get_team_candidate_hitters(game_pk: int, team_id: int, side: str, savant_batter_map: dict, deep_bbe: bool = False):
     boxscore_hitters = extract_boxscore_team_hitters(game_pk, side)
@@ -7416,45 +7515,42 @@ def build_daily_dataset(deep_bbe: bool = False):
     all_pitcher_ids = set()
 
     for game in schedule:
-        away_candidates, away_source = get_team_candidate_hitters(
-            game["game_pk"], game["away_team_id"], "away", savant_batter_map, deep_bbe=deep_bbe
-        )
-        home_candidates, home_source = get_team_candidate_hitters(
-            game["game_pk"], game["home_team_id"], "home", savant_batter_map, deep_bbe=deep_bbe
-        )
-
-        # FINAL CANDIDATE-POOL GATE:
-        # Once MLB publishes an official 1-9, no projected/non-starting player
-        # is allowed into that team's model pool. Projected teams remain
-        # completely unchanged until a full official lineup exists.
-        away_official_ids = {
+        away_official_ids = [
             safe_int(pid, -1) for pid in (game.get("away_lineup_ids") or [])
-        }
-        home_official_ids = {
+        ]
+        home_official_ids = [
             safe_int(pid, -1) for pid in (game.get("home_lineup_ids") or [])
-        }
+        ]
 
         if len(away_official_ids) == 9:
-            away_candidates = [
-                h for h in away_candidates
-                if safe_int(h.get("player_id"), -1) in away_official_ids
-            ]
+            away_candidates = build_exact_official_candidate_hitters(
+                game["game_pk"], "away", away_official_ids
+            )
             away_source = "CONFIRMED"
+        else:
+            away_candidates, away_source = get_team_candidate_hitters(
+                game["game_pk"], game["away_team_id"], "away",
+                savant_batter_map, deep_bbe=deep_bbe
+            )
 
         if len(home_official_ids) == 9:
-            home_candidates = [
-                h for h in home_candidates
-                if safe_int(h.get("player_id"), -1) in home_official_ids
-            ]
+            home_candidates = build_exact_official_candidate_hitters(
+                game["game_pk"], "home", home_official_ids
+            )
             home_source = "CONFIRMED"
+        else:
+            home_candidates, home_source = get_team_candidate_hitters(
+                game["game_pk"], game["home_team_id"], "home",
+                savant_batter_map, deep_bbe=deep_bbe
+            )
 
         candidate_map[(game["game_pk"], "away")] = (away_candidates, away_source)
         candidate_map[(game["game_pk"], "home")] = (home_candidates, home_source)
 
         if away_source == "CONFIRMED":
-            game["away_confirmed_count"] = min(9, len(away_candidates))
+            game["away_confirmed_count"] = 9
         if home_source == "CONFIRMED":
-            game["home_confirmed_count"] = min(9, len(home_candidates))
+            game["home_confirmed_count"] = 9
 
         for h in away_candidates + home_candidates:
             if h.get("player_id") is not None:
@@ -10827,50 +10923,65 @@ def hard_filter_board_to_current_official_lineups(
     board_df: pd.DataFrame,
     schedule_rows: list[dict],
 ) -> pd.DataFrame:
-    """Remove non-starters from confirmed teams after all locks are loaded.
-
-    Projected teams are untouched. Confirmed teams are filtered by exact MLBAM
-    player ID from MLB's current official battingOrder array.
-    """
+    """Hard-remove every non-starter from confirmed teams after lock loading."""
     if board_df is None or board_df.empty:
         return board_df.copy() if isinstance(board_df, pd.DataFrame) else pd.DataFrame()
-    if not {"game_pk", "Team", "Player ID"}.issubset(board_df.columns):
+    if not {"game_pk", "Team"}.issubset(board_df.columns):
         return board_df.copy().reset_index(drop=True)
 
     allowed_by_key = {}
+    allowed_names_by_key = {}
+
     for game in schedule_rows or []:
         game_pk = safe_int(game.get("game_pk"), -1)
-        away_team = team_abbr(game.get("away_team", ""))
-        home_team = team_abbr(game.get("home_team", ""))
+        for side, team_name, lineup_field in (
+            ("away", game.get("away_team", ""), "away_lineup_ids"),
+            ("home", game.get("home_team", ""), "home_lineup_ids"),
+        ):
+            ordered_ids = [
+                safe_int(pid, -1) for pid in (game.get(lineup_field) or [])
+            ]
+            if len(ordered_ids) != 9:
+                continue
 
-        away_ids = {
-            safe_int(pid, -1) for pid in (game.get("away_lineup_ids") or [])
-        }
-        home_ids = {
-            safe_int(pid, -1) for pid in (game.get("home_lineup_ids") or [])
-        }
+            key = (game_pk, team_abbr(str(team_name)))
+            allowed_by_key[key] = set(ordered_ids)
 
-        if len(away_ids) == 9:
-            allowed_by_key[(game_pk, away_team)] = away_ids
-        if len(home_ids) == 9:
-            allowed_by_key[(game_pk, home_team)] = home_ids
+            exact_rows = build_exact_official_candidate_hitters(
+                game_pk, side, ordered_ids
+            )
+            allowed_names_by_key[key] = {
+                normalize_name(row.get("player_name", ""))
+                for row in exact_rows
+                if normalize_name(row.get("player_name", ""))
+            }
 
     if not allowed_by_key:
         return board_df.copy().reset_index(drop=True)
 
-    keep = []
+    keep_mask = []
     for _, row in board_df.iterrows():
         key = (
             safe_int(row.get("game_pk"), -1),
-            str(row.get("Team", "")),
+            team_abbr(str(row.get("Team", ""))),
         )
         allowed_ids = allowed_by_key.get(key)
         if allowed_ids is None:
-            keep.append(True)
+            keep_mask.append(True)
             continue
-        keep.append(safe_int(row.get("Player ID"), -1) in allowed_ids)
 
-    return board_df.loc[keep].reset_index(drop=True)
+        row_player_id = safe_int(row.get("Player ID"), -1)
+        row_player_name = normalize_name(row.get("Player", ""))
+
+        keep_mask.append(
+            row_player_id in allowed_ids
+            or (
+                row_player_id <= 0
+                and row_player_name in allowed_names_by_key.get(key, set())
+            )
+        )
+
+    return board_df.loc[keep_mask].reset_index(drop=True)
 
 
 # The final gate runs AFTER lock resolution and BEFORE tracker/combo creation.
