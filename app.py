@@ -3038,11 +3038,10 @@ def get_locked_board_for_date(date_key: str) -> pd.DataFrame:
 
 
 def ensure_daily_board_lock(live_df: pd.DataFrame, schedule: list[dict]) -> pd.DataFrame:
-    """Freeze confirmed teams independently for each MLB game_pk.
+    """Freeze confirmed teams, but repair a lock when MLB changes its official 1-9.
 
-    Doubleheaders must never share locks merely because the team matchup text is
-    identical. Every lock identity is (game_pk, team), with Game retained only
-    as a display label.
+    Only the affected (game_pk, team) lock is replaced. Other games, teams,
+    prediction formulas, rankings, and historical dates remain untouched.
     """
     if live_df.empty:
         return live_df.copy()
@@ -3051,86 +3050,189 @@ def ensure_daily_board_lock(live_df: pd.DataFrame, schedule: list[dict]) -> pd.D
     locks = load_board_locks()
     if "game_pk" not in locks.columns:
         locks["game_pk"] = pd.NA
+    if "lineup_signature" not in locks.columns:
+        locks["lineup_signature"] = ""
 
     if not locks.empty and "lock_scope" in locks.columns:
         locks_today = locks[locks["date"].astype(str) == str(date_key)].copy()
     else:
-        locks_today = pd.DataFrame(columns=list(live_df.columns) + ["lock_created_at", "lock_scope"])
+        locks_today = pd.DataFrame(
+            columns=list(live_df.columns)
+            + ["lock_created_at", "lock_scope", "lineup_signature"]
+        )
 
     confirmed_keys = set()
     pregame_confirmed_keys = set()
+    current_signatures = {}
+
     for game in schedule:
         game_pk = safe_int(game.get("game_pk"), -1)
         game_state = str(game.get("game_state", "Preview"))
         away_team = team_abbr(game["away_team"])
         home_team = team_abbr(game["home_team"])
-        if game.get("away_confirmed_count", 0) >= 9:
-            confirmed_keys.add((game_pk, away_team))
+
+        away_signature = str(game.get("away_lineup_signature", "") or "")
+        home_signature = str(game.get("home_lineup_signature", "") or "")
+
+        if game.get("away_confirmed_count", 0) >= 9 and away_signature:
+            key = (game_pk, away_team)
+            confirmed_keys.add(key)
+            current_signatures[key] = away_signature
             if game_state == "Preview":
-                pregame_confirmed_keys.add((game_pk, away_team))
-        if game.get("home_confirmed_count", 0) >= 9:
-            confirmed_keys.add((game_pk, home_team))
+                pregame_confirmed_keys.add(key)
+
+        if game.get("home_confirmed_count", 0) >= 9 and home_signature:
+            key = (game_pk, home_team)
+            confirmed_keys.add(key)
+            current_signatures[key] = home_signature
             if game_state == "Preview":
-                pregame_confirmed_keys.add((game_pk, home_team))
+                pregame_confirmed_keys.add(key)
 
     rebuild_confirmed = bool(st.session_state.get("manual_refresh_trigger", False))
 
     def _row_lock_key(r):
         return (safe_int(r.get("game_pk"), -1), str(r.get("Team", "")))
 
+    # Existing manual behavior remains: a manual refresh can rebuild confirmed
+    # pregame teams. This block is unchanged in purpose.
     if rebuild_confirmed and not locks_today.empty:
-        locks_today = locks_today[~locks_today.apply(lambda r: _row_lock_key(r) in pregame_confirmed_keys, axis=1)].copy()
+        locks_today = locks_today[
+            ~locks_today.apply(
+                lambda r: _row_lock_key(r) in pregame_confirmed_keys,
+                axis=1,
+            )
+        ].copy()
         if not locks.empty:
             date_mask = locks["date"].astype(str).eq(str(date_key))
-            drop_mask = date_mask & locks.apply(lambda r: _row_lock_key(r) in pregame_confirmed_keys, axis=1)
+            drop_mask = date_mask & locks.apply(
+                lambda r: _row_lock_key(r) in pregame_confirmed_keys,
+                axis=1,
+            )
             locks = locks[~drop_mask].copy()
+
+    # NEW, LINEUP-ONLY REPAIR:
+    # When MLB's official starting 1-9 changes, remove only that team's stale
+    # lock. The current live team rows will be inserted below. A legacy lock
+    # without a signature is rebuilt once so old projected hitters cannot stay.
+    changed_lineup_keys = set()
+    if not locks_today.empty:
+        for key in confirmed_keys:
+            game_pk, team = key
+            lock_pks = pd.to_numeric(
+                locks_today.get("game_pk"), errors="coerce"
+            ).fillna(-1).astype(int)
+            team_locked = locks_today[
+                lock_pks.eq(game_pk)
+                & locks_today["Team"].astype(str).eq(team)
+            ].copy()
+            if team_locked.empty:
+                continue
+
+            saved_signatures = {
+                str(value or "").strip()
+                for value in team_locked.get(
+                    "lineup_signature",
+                    pd.Series(dtype=str),
+                ).tolist()
+                if str(value or "").strip()
+            }
+            current_signature = current_signatures.get(key, "")
+            if saved_signatures != {current_signature}:
+                changed_lineup_keys.add(key)
+
+    if changed_lineup_keys:
+        locks_today = locks_today[
+            ~locks_today.apply(
+                lambda r: _row_lock_key(r) in changed_lineup_keys,
+                axis=1,
+            )
+        ].copy()
+        if not locks.empty:
+            date_mask = locks["date"].astype(str).eq(str(date_key))
+            changed_mask = locks.apply(
+                lambda r: _row_lock_key(r) in changed_lineup_keys,
+                axis=1,
+            )
+            locks = locks[~(date_mask & changed_mask)].copy()
 
     existing_locked_keys = set()
     if not locks_today.empty:
-        existing_locked_keys = {_row_lock_key(r) for _, r in locks_today.iterrows()}
+        existing_locked_keys = {
+            _row_lock_key(r) for _, r in locks_today.iterrows()
+        }
 
     new_lock_frames = []
+    row_pks = pd.to_numeric(
+        live_df.get("game_pk"), errors="coerce"
+    ).fillna(-1).astype(int)
+
     for game_pk, team in confirmed_keys:
         if (game_pk, team) in existing_locked_keys:
             continue
-        row_pks = pd.to_numeric(live_df.get("game_pk"), errors="coerce").fillna(-1).astype(int)
-        team_rows = live_df[row_pks.eq(game_pk) & live_df["Team"].astype(str).eq(team)].copy()
+
+        team_rows = live_df[
+            row_pks.eq(game_pk)
+            & live_df["Team"].astype(str).eq(team)
+        ].copy()
         if team_rows.empty:
+            # No replacement qualifies: the stale player stays removed and the
+            # team board is intentionally allowed to contain fewer hitters.
             continue
+
         team_rows["lock_created_at"] = now_et_string()
         team_rows["lock_scope"] = "CONFIRMED_TEAM"
+        team_rows["lineup_signature"] = current_signatures.get(
+            (game_pk, team), ""
+        )
         new_lock_frames.append(team_rows)
+
+    locks_were_changed = bool(changed_lineup_keys or rebuild_confirmed)
 
     if new_lock_frames:
         append_df = pd.concat(new_lock_frames, ignore_index=True)
         locks = pd.concat([locks, append_df], ignore_index=True)
-        locks_today = pd.concat([locks_today, append_df], ignore_index=True)
-        save_board_locks(locks)
-    elif rebuild_confirmed:
+        locks_today = pd.concat(
+            [locks_today, append_df], ignore_index=True
+        )
+        locks_were_changed = True
+
+    if locks_were_changed:
         save_board_locks(locks)
 
     output_frames = []
     used_locked_keys = set()
     if not locks_today.empty:
-        lock_pks = pd.to_numeric(locks_today.get("game_pk"), errors="coerce").fillna(-1).astype(int)
+        lock_pks = pd.to_numeric(
+            locks_today.get("game_pk"), errors="coerce"
+        ).fillna(-1).astype(int)
         for game_pk, team in confirmed_keys:
-            locked_rows = locks_today[lock_pks.eq(game_pk) & locks_today["Team"].astype(str).eq(team)].copy()
+            locked_rows = locks_today[
+                lock_pks.eq(game_pk)
+                & locks_today["Team"].astype(str).eq(team)
+            ].copy()
             if not locked_rows.empty:
                 output_frames.append(locked_rows)
                 used_locked_keys.add((game_pk, team))
 
     live_rows = []
     for _, row in live_df.iterrows():
-        key = (safe_int(row.get("game_pk"), -1), str(row.get("Team", "")))
+        key = (
+            safe_int(row.get("game_pk"), -1),
+            str(row.get("Team", "")),
+        )
         if key in confirmed_keys and key in used_locked_keys:
             continue
         live_rows.append(row)
+
     if live_rows:
         output_frames.append(pd.DataFrame(live_rows))
 
     if not output_frames:
         return live_df.copy().reset_index(drop=True)
-    return pd.concat(output_frames, ignore_index=True).reset_index(drop=True)
+
+    return pd.concat(
+        output_frames, ignore_index=True
+    ).reset_index(drop=True)
 
 
 def isolate_primary_pitch(pitch_mix: dict):
@@ -4788,6 +4890,42 @@ def resolve_pitcher_name(team_id: int, team_block: dict) -> str:
     return "Starter Pending"
 
 
+def extract_official_lineup_signature_from_players(players: dict) -> tuple[list[int], str]:
+    """Return MLB's exact current starting 1-9 and a stable signature.
+
+    MLB battingOrder values use the hundreds digit as the lineup slot. This
+    helper accepts only one player for each slot 1 through 9. A signature is
+    returned only when the complete official lineup is present.
+    """
+    by_spot = {}
+    for pdata in (players or {}).values():
+        batting_order = str(pdata.get("battingOrder") or "").strip()
+        person_id = ((pdata.get("person") or {}).get("id"))
+        if not batting_order or person_id is None:
+            continue
+        try:
+            spot = int(batting_order) // 100
+            order_value = int(batting_order)
+        except Exception:
+            continue
+        if not 1 <= spot <= 9:
+            continue
+
+        # A pregame starter normally has x00. If MLB later supplies multiple
+        # entries for a slot, keep the lowest batting-order sequence.
+        previous = by_spot.get(spot)
+        candidate = (order_value, int(person_id))
+        if previous is None or candidate[0] < previous[0]:
+            by_spot[spot] = candidate
+
+    if set(by_spot) != set(range(1, 10)):
+        return [], ""
+
+    ordered_ids = [by_spot[spot][1] for spot in range(1, 10)]
+    signature = "|".join(str(player_id) for player_id in ordered_ids)
+    return ordered_ids, signature
+
+
 @st.cache_data(ttl=60, max_entries=4)
 def get_today_schedule():
     data = fetch_schedule_payload()
@@ -4806,8 +4944,11 @@ def get_today_schedule():
             box = fetch_boxscore(game.get("gamePk"))
             away_players = (((box.get("teams") or {}).get("away") or {}).get("players") or {})
             home_players = (((box.get("teams") or {}).get("home") or {}).get("players") or {})
-            away_confirmed = sum(1 for p in away_players.values() if str(p.get("battingOrder") or "").strip())
-            home_confirmed = sum(1 for p in home_players.values() if str(p.get("battingOrder") or "").strip())
+
+            away_lineup_ids, away_lineup_signature = extract_official_lineup_signature_from_players(away_players)
+            home_lineup_ids, home_lineup_signature = extract_official_lineup_signature_from_players(home_players)
+            away_confirmed = len(away_lineup_ids)
+            home_confirmed = len(home_lineup_ids)
 
             status = game.get("status", {})
             game_state = status.get("abstractGameState", "Preview")
@@ -4833,6 +4974,10 @@ def get_today_schedule():
                 "game_time": game.get("gameDate", ""),
                 "away_confirmed_count": away_confirmed,
                 "home_confirmed_count": home_confirmed,
+                "away_lineup_ids": away_lineup_ids,
+                "home_lineup_ids": home_lineup_ids,
+                "away_lineup_signature": away_lineup_signature,
+                "home_lineup_signature": home_lineup_signature,
                 "game_state": game_state,
                 "detailed_state": detailed_state,
             })
