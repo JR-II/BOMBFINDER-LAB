@@ -9435,16 +9435,18 @@ def render_today_card(
             ("HIGHEST UPSIDE", upside, "Highest existing combined score."),
             ("SMALL-STAKES LONGSHOT", longshot, "Higher variance; keep exposure small."),
         ]
+        # Keep this HTML continuous and left-aligned. Indented multiline HTML
+        # can be interpreted by Streamlit Markdown as a code block after the
+        # first card, which exposed the raw <div> tags on Today's Card.
         html = ['<div class="bf-today-combos">']
         for label, row, note in combo_cards:
             html.append(
-                f"""
-                <div>
-                  <small>{escape(label)}</small>
-                  <strong>{escape(str(row.get('Combo Label','—')))}</strong>
-                  <span>{escape(note)} Weakest leg {safe_float(row.get('Weakest Leg HR %'),0):.0f}%.</span>
-                </div>
-                """
+                '<div>'
+                f'<small>{escape(label)}</small>'
+                f'<strong>{escape(str(row.get("Combo Label", "—")))}</strong>'
+                f'<span>{escape(note)} Weakest leg '
+                f'{safe_float(row.get("Weakest Leg HR %"), 0):.0f}%.</span>'
+                '</div>'
             )
         html.append("</div>")
         st.markdown("".join(html), unsafe_allow_html=True)
