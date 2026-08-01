@@ -2154,11 +2154,58 @@ st.markdown(
     .bf-why-score{text-align:right;white-space:nowrap}
     .bf-why-score strong{font-size:.92rem;color:var(--bf-accent)}
 
-    .bf-today-combos{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
-    .bf-today-combos>div{padding:9px 10px;border:1px solid var(--bf-border);border-radius:10px;background:var(--bf-panel)}
-    .bf-today-combos small{display:block;color:var(--bf-accent);font-size:.45rem;font-weight:950;letter-spacing:.09em}
-    .bf-today-combos strong{display:block;color:var(--bf-text);font-size:.66rem;line-height:1.3;margin-top:4px}
-    .bf-today-combos span{display:block;color:var(--bf-muted);font-size:.51rem;line-height:1.3;margin-top:5px}
+    .bf-today-combos{
+        display:grid;
+        grid-template-columns:repeat(3,minmax(0,1fr));
+        gap:10px;
+        width:100%;
+        align-items:stretch;
+        margin-bottom:8px;
+    }
+    .bf-today-combos>div{
+        box-sizing:border-box;
+        min-width:0;
+        width:100%;
+        height:100%;
+        overflow:hidden;
+        padding:10px 11px;
+        border:1px solid var(--bf-border);
+        border-radius:10px;
+        background:var(--bf-panel);
+    }
+    .bf-today-combos small{
+        display:block;
+        color:var(--bf-accent);
+        font-size:.45rem;
+        font-weight:950;
+        letter-spacing:.09em;
+    }
+    .bf-today-combos strong{
+        display:block;
+        min-width:0;
+        color:var(--bf-text);
+        font-size:.66rem;
+        line-height:1.35;
+        margin-top:4px;
+        white-space:normal;
+        overflow-wrap:anywhere;
+        word-break:normal;
+    }
+    .bf-today-combos span{
+        display:block;
+        min-width:0;
+        color:var(--bf-muted);
+        font-size:.51rem;
+        line-height:1.35;
+        margin-top:6px;
+        white-space:normal;
+        overflow-wrap:anywhere;
+    }
+
+    /* Keep the help expander visually separate from the combo cards. */
+    .bf-today-combos + div[data-testid="stExpander"]{
+        margin-top:4px !important;
+    }
 
     @media(max-width:760px){
         .bf-decision-hero{grid-template-columns:1fr}
