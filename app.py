@@ -2089,6 +2089,97 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
+st.markdown(
+    """
+    <style>
+    /* BF DATA DECISION SUPPORT LAYER — presentation only */
+    .bf-conviction-chip{
+        display:inline-flex;align-items:center;border-radius:999px;
+        padding:3px 7px;font-size:.45rem;font-weight:950;letter-spacing:.04em;
+        border:1px solid var(--bf-border-strong);white-space:nowrap;
+    }
+    .bf-conviction-chip.hammer{color:#35d07f;border-color:rgba(53,208,127,.55);background:rgba(53,208,127,.09)}
+    .bf-conviction-chip.strong{color:var(--bf-accent);border-color:var(--bf-accent-line);background:var(--bf-accent-soft)}
+    .bf-conviction-chip.consider{color:#ffd166;border-color:rgba(255,209,102,.45);background:rgba(255,209,102,.08)}
+    .bf-conviction-chip.pair{color:#c7b5ff;border-color:rgba(173,139,255,.42);background:rgba(173,139,255,.08)}
+    .bf-conviction-chip.pass{color:#ff8f8f;border-color:rgba(255,107,107,.42);background:rgba(255,107,107,.07)}
+
+    .bf-decision-hero{
+        display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:center;
+        padding:13px 14px;margin:7px 0 11px;border:1px solid var(--bf-border-strong);
+        border-radius:13px;background:linear-gradient(135deg,var(--bf-panel-2),var(--bf-panel));
+    }
+    .bf-decision-hero.easy{border-left:4px solid #35d07f}
+    .bf-decision-hero.medium{border-left:4px solid #ffd166}
+    .bf-decision-hero.hard{border-left:4px solid #ff6b6b}
+    .bf-decision-hero small,.bf-trust-ring small{
+        display:block;color:var(--bf-muted);font-size:.53rem;font-weight:950;letter-spacing:.11em;
+    }
+    .bf-decision-hero>div>strong{display:block;color:var(--bf-text);font-size:1.02rem;margin-top:4px}
+    .bf-decision-hero>div>span{display:block;color:var(--bf-muted);font-size:.67rem;margin-top:4px;line-height:1.35}
+    .bf-trust-ring{
+        min-width:90px;text-align:center;padding:8px 10px;border:1px solid var(--bf-accent-line);
+        border-radius:10px;background:var(--bf-accent-soft);
+    }
+    .bf-trust-ring strong{font-size:1.42rem !important;color:var(--bf-accent) !important}
+    .bf-trust-ring span{display:inline !important;font-size:.58rem !important}
+
+    .bf-today-pick{
+        display:grid;grid-template-columns:36px minmax(0,1fr) 78px;gap:10px;align-items:center;
+        padding:10px 11px;margin:5px 0;border:1px solid var(--bf-border);
+        border-radius:10px;background:var(--bf-panel);
+    }
+    .bf-today-pick.hammer{border-color:rgba(53,208,127,.48)}
+    .bf-today-pick.strong{border-color:var(--bf-accent-line)}
+    .bf-today-rank{font-size:1.05rem;font-weight:950;color:var(--bf-accent);text-align:center}
+    .bf-today-main small{display:block;font-size:.50rem;color:var(--bf-accent);font-weight:950;letter-spacing:.06em}
+    .bf-today-main strong{display:block;color:var(--bf-text);font-size:.86rem;margin-top:3px}
+    .bf-today-main span{display:block;color:var(--bf-muted);font-size:.56rem;margin-top:2px}
+    .bf-today-main p{margin:4px 0 0 !important;color:var(--bf-muted) !important;font-size:.55rem !important;line-height:1.3}
+    .bf-today-score{text-align:center;padding:7px;border:1px solid var(--bf-border);border-radius:8px;background:var(--bf-panel-2)}
+    .bf-today-score small{display:block;font-size:.40rem;color:var(--bf-muted);font-weight:950}
+    .bf-today-score strong{display:block;font-size:1rem;color:var(--bf-text);margin-top:3px}
+
+    .bf-why-one{
+        display:grid;grid-template-columns:minmax(150px,.7fr) minmax(0,1.5fr) auto;
+        gap:10px;align-items:center;padding:10px 11px;border:1px solid var(--bf-accent-line);
+        border-radius:10px;background:linear-gradient(135deg,var(--bf-panel-2),var(--bf-panel));
+    }
+    .bf-why-one small{display:block;color:var(--bf-accent);font-size:.46rem;font-weight:950;letter-spacing:.09em}
+    .bf-why-one strong{display:block;color:var(--bf-text);font-size:.84rem;margin-top:3px}
+    .bf-why-one p{margin:2px 0 0 !important;color:var(--bf-muted) !important;font-size:.54rem !important}
+    .bf-why-chips{display:flex;flex-wrap:wrap;gap:5px}
+    .bf-why-chips span{border:1px solid var(--bf-border);border-radius:999px;padding:4px 7px;color:var(--bf-text);background:var(--bf-panel-3);font-size:.49rem;font-weight:850}
+    .bf-why-score{text-align:right;white-space:nowrap}
+    .bf-why-score strong{font-size:.92rem;color:var(--bf-accent)}
+
+    .bf-today-combos{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+    .bf-today-combos>div{padding:9px 10px;border:1px solid var(--bf-border);border-radius:10px;background:var(--bf-panel)}
+    .bf-today-combos small{display:block;color:var(--bf-accent);font-size:.45rem;font-weight:950;letter-spacing:.09em}
+    .bf-today-combos strong{display:block;color:var(--bf-text);font-size:.66rem;line-height:1.3;margin-top:4px}
+    .bf-today-combos span{display:block;color:var(--bf-muted);font-size:.51rem;line-height:1.3;margin-top:5px}
+
+    @media(max-width:760px){
+        .bf-decision-hero{grid-template-columns:1fr}
+        .bf-trust-ring{width:100%}
+        .bf-today-combos{grid-template-columns:1fr}
+        .bf-why-one{grid-template-columns:1fr}
+        .bf-why-score{text-align:left}
+    }
+    @media(max-width:640px){
+        .bf-conviction-chip{font-size:.38rem;padding:2px 5px}
+        .bf-today-pick{grid-template-columns:28px minmax(0,1fr) 60px;padding:8px 7px;gap:6px}
+        .bf-today-main strong{font-size:.75rem}
+        .bf-today-main span,.bf-today-main p{font-size:.48rem !important}
+        .bf-today-score{padding:5px}
+        .bf-today-score strong{font-size:.82rem}
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 AUTO_REFRESH_SECONDS = 120
 
 # Speed control: regular board loads avoid the heavy play-by-play L10 BBE pull.
@@ -9046,6 +9137,332 @@ def add_comparative_card_context(df: pd.DataFrame) -> pd.DataFrame:
     return view
 
 
+
+def bf_conviction_from_row(row: pd.Series) -> dict:
+    """Interpret existing BF Data outputs without changing any prediction.
+
+    This is a presentation-only read of scores already produced by the engine.
+    It never feeds back into ranking, eligibility, tracking, locks, or combos.
+    """
+    wager = safe_float(
+        row.get("Wager Priority", row.get("Matchup Advantage Score")),
+        0.0,
+    )
+    confidence = safe_float(
+        row.get("Slate Confidence", row.get("BF Confidence")),
+        0.0,
+    )
+    if confidence <= 0:
+        confidence = _bf_v2_confidence(row, early=False)
+
+    quality = safe_float(row.get("Prediction Quality Score"), 0.0)
+    attack = safe_float(
+        row.get(
+            "HR Attackability %",
+            _attackability_pct(row.get("HR Attackability Score", 0)),
+        ),
+        0.0,
+    )
+    matchup = safe_float(
+        row.get("Display Matchup Fit", row.get("Matchup Advantage Score")),
+        0.0,
+    )
+    form = safe_float(row.get("Display Recent Form"), confidence)
+    grade = str(row.get("Prediction Quality Grade", "")).strip().upper()
+    eligible = bool(row.get("HR Eligible", True))
+
+    # Existing outputs only. No new baseball inputs or model weights.
+    available = [v for v in [wager, confidence, quality, attack, matchup, form] if v > 0]
+    interpreted = sum(available) / len(available) if available else 0.0
+
+    # Grade is used only as a display guardrail.
+    if grade in {"A+", "A"}:
+        interpreted += 3.0
+    elif grade in {"B-", "C+", "C", "D", "F"}:
+        interpreted -= 5.0
+    if not eligible:
+        interpreted = min(interpreted, 38.0)
+
+    interpreted = clip(interpreted, 0, 99)
+
+    if interpreted >= 90 and attack >= 70:
+        return {
+            "stars": 5,
+            "label": "BF HAMMER",
+            "short": "HAMMER",
+            "class": "hammer",
+            "score": round(interpreted, 1),
+            "note": "Highest-conviction interpretation of the existing BF model.",
+        }
+    if interpreted >= 82:
+        return {
+            "stars": 4,
+            "label": "STRONG PLAY",
+            "short": "STRONG",
+            "class": "strong",
+            "score": round(interpreted, 1),
+            "note": "Strong model agreement with usable separation.",
+        }
+    if interpreted >= 72:
+        return {
+            "stars": 3,
+            "label": "WORTH CONSIDERING",
+            "short": "CONSIDER",
+            "class": "consider",
+            "score": round(interpreted, 1),
+            "note": "Qualified look, but not a must-play.",
+        }
+    if interpreted >= 60:
+        return {
+            "stars": 2,
+            "label": "PAIR ONLY",
+            "short": "PAIR ONLY",
+            "class": "pair",
+            "score": round(interpreted, 1),
+            "note": "Better used as a supporting leg than a primary decision.",
+        }
+    return {
+        "stars": 1,
+        "label": "PASS",
+        "short": "PASS",
+        "class": "pass",
+        "score": round(interpreted, 1),
+        "note": "Existing BF signals do not show enough agreement.",
+    }
+
+
+def bf_slate_decision_read(board_df: pd.DataFrame) -> dict:
+    """Describe slate clarity using separation among existing ranked outputs."""
+    if board_df is None or board_df.empty:
+        return {
+            "label": "NO CARD",
+            "class": "hard",
+            "score": 0,
+            "note": "No qualified BF Data card is available.",
+        }
+
+    work = board_df.copy().head(12)
+    conviction_scores = [
+        bf_conviction_from_row(row)["score"]
+        for _, row in work.iterrows()
+    ]
+    conviction_scores = sorted(conviction_scores, reverse=True)
+
+    if not conviction_scores:
+        return {
+            "label": "NO CARD",
+            "class": "hard",
+            "score": 0,
+            "note": "No qualified BF Data card is available.",
+        }
+
+    top = conviction_scores[0]
+    fifth = conviction_scores[min(4, len(conviction_scores) - 1)]
+    spread = top - fifth
+    elite_count = sum(score >= 82 for score in conviction_scores)
+
+    # This is a slate-read label only. It does not alter bets or projections.
+    clarity = clip(48 + spread * 2.2 + min(elite_count, 4) * 5, 0, 99)
+
+    if clarity >= 78 and elite_count >= 2:
+        return {
+            "label": "EASY / CLEAR",
+            "class": "easy",
+            "score": round(clarity),
+            "note": "The existing rankings show useful separation. Keep the card small and trust the order.",
+        }
+    if clarity >= 60:
+        return {
+            "label": "MEDIUM",
+            "class": "medium",
+            "score": round(clarity),
+            "note": "Several hitters grade similarly. Use fewer combinations and avoid unnecessary swaps.",
+        }
+    return {
+        "label": "HARD / FLAT",
+        "class": "hard",
+        "score": round(clarity),
+        "note": "The slate is tightly grouped. Reduce exposure rather than forcing extra selections.",
+    }
+
+
+def _bf_card_reason_summary(row: pd.Series, max_items: int = 4) -> list[str]:
+    reasons = _bf_v2_reason_items(row, early=False)
+    cleaned = []
+    for reason in reasons:
+        value = str(reason).strip()
+        if value and value not in cleaned:
+            cleaned.append(value)
+    return cleaned[:max_items]
+
+
+def render_today_card(
+    locked_board: pd.DataFrame,
+    combo_board_local: pd.DataFrame,
+):
+    """Render a decision layer over the frozen BF engine outputs."""
+    st.subheader("Today's Card")
+    st.caption(
+        "Decision-support only. This page interprets the existing BF rankings and "
+        "combos without recalculating, reranking, replacing, or tracking anything."
+    )
+
+    ranked = get_top12_hybrid(locked_board.copy())
+    if ranked is None or ranked.empty:
+        st.info("No qualified BF Data selections are available.")
+        return
+
+    ranked = ranked.head(12).copy().reset_index(drop=True)
+    ranked["_conviction"] = ranked.apply(
+        lambda row: bf_conviction_from_row(row)["score"],
+        axis=1,
+    )
+    ranked["_conviction_stars"] = ranked.apply(
+        lambda row: bf_conviction_from_row(row)["stars"],
+        axis=1,
+    )
+
+    slate_read = bf_slate_decision_read(ranked)
+    trust_score = safe_float(slate_read.get("score"), 0.0)
+    top_row = ranked.iloc[0]
+    top_conv = bf_conviction_from_row(top_row)
+    top_reasons = _bf_card_reason_summary(top_row)
+
+    st.markdown(
+        f"""
+        <div class="bf-decision-hero {slate_read['class']}">
+          <div>
+            <small>DECISION DIFFICULTY</small>
+            <strong>{escape(slate_read['label'])}</strong>
+            <span>{escape(slate_read['note'])}</span>
+          </div>
+          <div class="bf-trust-ring">
+            <small>TRUST METER</small>
+            <strong>{trust_score:.0f}</strong>
+            <span>/100</span>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("### Straight-Play Shortlist")
+    shortlist = ranked[
+        ranked["_conviction_stars"].ge(4)
+    ].copy().head(3)
+    if shortlist.empty:
+        shortlist = ranked.head(2).copy()
+
+    cards = []
+    for idx, (_, row) in enumerate(shortlist.iterrows(), start=1):
+        conviction = bf_conviction_from_row(row)
+        reasons = _bf_card_reason_summary(row, 3)
+        reason_text = " · ".join(reasons) if reasons else "Existing BF scores support this position."
+        cards.append(
+            f"""
+            <div class="bf-today-pick {conviction['class']}">
+              <div class="bf-today-rank">#{idx}</div>
+              <div class="bf-today-main">
+                <small>{'★' * conviction['stars']}{'☆' * (5-conviction['stars'])} · {escape(conviction['label'])}</small>
+                <strong>{escape(str(row.get('Player','—')))}</strong>
+                <span>{escape(str(row.get('Team','')))} · {escape(str(row.get('Game','')))} · vs {escape(str(row.get('Pitcher','—')))}</span>
+                <p>{escape(reason_text)}</p>
+              </div>
+              <div class="bf-today-score">
+                <small>CONVICTION</small>
+                <strong>{conviction['score']:.0f}</strong>
+              </div>
+            </div>
+            """
+        )
+    st.markdown("".join(cards), unsafe_allow_html=True)
+
+    st.markdown("### Why BF's #1 Is #1")
+    reason_chips = "".join(
+        f'<span>{escape(reason)}</span>' for reason in top_reasons
+    )
+    st.markdown(
+        f"""
+        <div class="bf-why-one">
+          <div>
+            <small>MODEL LEADER</small>
+            <strong>{escape(str(top_row.get('Player','—')))}</strong>
+            <p>{escape(str(top_row.get('Team','')))} · vs {escape(str(top_row.get('Pitcher','—')))}</p>
+          </div>
+          <div class="bf-why-chips">{reason_chips}</div>
+          <div class="bf-why-score">
+            <small>{escape(top_conv['label'])}</small>
+            <strong>{top_conv['score']:.0f}/100</strong>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("### Existing Combo Recommendations")
+    if combo_board_local is None or combo_board_local.empty:
+        st.caption("No existing BF combo currently clears the engine requirements.")
+    else:
+        combos = combo_board_local.copy()
+        combos["_legs"] = (
+            combos["Combo Type"].astype(str).str.extract(r"(\d+)")[0]
+            .pipe(pd.to_numeric, errors="coerce").fillna(99)
+        )
+        for col in ["Weakest Leg HR %", "Weakest Leg Quality", "Combined Score"]:
+            combos[col] = pd.to_numeric(combos.get(col), errors="coerce").fillna(0.0)
+        combos["_floor"] = (
+            combos["Weakest Leg HR %"] * .55
+            + combos["Weakest Leg Quality"] * .45
+        )
+        two = combos[combos["_legs"].eq(2)].copy()
+        practical_pool = two if not two.empty else combos
+        practical = practical_pool.sort_values(
+            ["_floor", "Combined Score"], ascending=[False, False]
+        ).iloc[0]
+        upside = combos.sort_values(
+            ["Combined Score", "Weakest Leg Quality"], ascending=[False, False]
+        ).iloc[0]
+        longshot_pool = combos[combos["_legs"].ge(3)].copy()
+        longshot = (
+            longshot_pool.sort_values(
+                ["_floor", "Combined Score"], ascending=[False, False]
+            ).iloc[0]
+            if not longshot_pool.empty else upside
+        )
+
+        combo_cards = [
+            ("MOST PRACTICAL", practical, "Best existing two-leg/floor combination."),
+            ("HIGHEST UPSIDE", upside, "Highest existing combined score."),
+            ("SMALL-STAKES LONGSHOT", longshot, "Higher variance; keep exposure small."),
+        ]
+        html = ['<div class="bf-today-combos">']
+        for label, row, note in combo_cards:
+            html.append(
+                f"""
+                <div>
+                  <small>{escape(label)}</small>
+                  <strong>{escape(str(row.get('Combo Label','—')))}</strong>
+                  <span>{escape(note)} Weakest leg {safe_float(row.get('Weakest Leg HR %'),0):.0f}%.</span>
+                </div>
+                """
+            )
+        html.append("</div>")
+        st.markdown("".join(html), unsafe_allow_html=True)
+
+    with st.expander("How to use Today's Card", expanded=False):
+        st.markdown(
+            """
+            **The anti-overthinking rule:** start with the straight-play shortlist, use
+            no more than one practical two-leg, and treat every 3–5 leg combination
+            as a small-stakes longshot. A large slate does not require a large card.
+
+            Conviction labels are interpretations of scores the app already calculated.
+            They do not change predictions, board order, combo generation, tracking,
+            lineup handling, or historical records.
+            """
+        )
+
+
 def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
     player = _display_value(row.get("Player"))
     team = _display_value(row.get("Team"))
@@ -9061,6 +9478,10 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
 
     role_text, role_class = _bf_v2_role(rank, quality, grade, early=early)
     confidence = _bf_v2_confidence(row, early=early)
+    conviction = (
+        {"stars": 0, "short": "EARLY", "class": "consider", "score": confidence}
+        if early else bf_conviction_from_row(row)
+    )
     verdict_label, verdict_note, verdict_color = (
         ("EARLY RESEARCH", "Probable-pitcher and expected-lineup research only.", "#ffd166")
         if early else _bf_active_verdict(row)
@@ -9137,6 +9558,7 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
         <span class="bf-scan-role {role_class}">{escape(role_text)}</span>
         <span class="bf-scan-grade">{escape(grade)}</span>
         <span class="bf-scan-confidence">CONF {confidence:.0f}%</span>
+        <span class="bf-conviction-chip {conviction['class']}">{'★' * conviction['stars']} {escape(conviction['short'])}</span>
         <span class="bf-scan-rank">SLATE RANK #{slate_rank} · TEAM RANK #{team_rank} · GAME RANK #{game_rank}</span>
       </div>
       <div class="bf-scan-badges">{compact_badge_html}</div>
@@ -10630,7 +11052,7 @@ if locked_df.empty:
     st.warning("No games or hitter data loaded.")
     st.stop()
 
-base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker", "Lineup Watch", "Live Weather", "Tomorrow Preview", "BF Guide"]
+base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker", "Lineup Watch", "Live Weather", "Tomorrow Preview", "BF Guide", "Today's Card"]
 schedule = sort_schedule_rows(schedule)
 game_tabs = [f"{format_game_time_et(g.get('game_time', ''))} | {g['game_key']}" for g in schedule]
 tabs = st.tabs(base_tabs + game_tabs)
@@ -10969,8 +11391,11 @@ with tabs[10]:
 with tabs[11]:
     render_bf_knowledge_center()
 
+with tabs[12]:
+    render_today_card(locked_df, combo_board)
 
-for idx, game in enumerate(schedule, start=12):
+
+for idx, game in enumerate(schedule, start=13):
     with tabs[idx]:
         st.subheader(f"{game['game_key']} — {format_game_time_et(game.get('game_time', ''))}")
         st.caption(
