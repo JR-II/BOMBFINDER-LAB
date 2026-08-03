@@ -2279,6 +2279,28 @@ st.markdown(
         .bf-market-grid{grid-template-columns:1fr}
     }
 
+
+    .bf-market-move{
+        margin-top:7px;padding:5px 7px;border-radius:7px;
+        border:1px solid var(--bf-border);font-size:.50rem;font-weight:900;
+    }
+    .bf-market-move.steam{color:#35d07f;border-color:rgba(53,208,127,.35);background:rgba(53,208,127,.06)}
+    .bf-market-move.drift{color:#ffd166;border-color:rgba(255,209,102,.35);background:rgba(255,209,102,.06)}
+    .bf-market-move.flat{color:var(--bf-muted)}
+    .bf-market-books{
+        display:grid;grid-template-columns:repeat(5,minmax(0,1fr));
+        gap:4px;margin-top:7px;
+    }
+    .bf-market-books>div{
+        min-width:0;text-align:center;padding:5px 3px;border:1px solid var(--bf-border);
+        border-radius:7px;background:var(--bf-panel-2);
+    }
+    .bf-market-books small{
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+        font-size:.36rem;
+    }
+    .bf-market-books strong{display:block;color:var(--bf-text);font-size:.63rem;margin-top:2px}
+
     /* Keep the help expander visually separate from the combo cards. */
     .bf-today-combos + div[data-testid="stExpander"]{
         margin-top:4px !important;
@@ -2298,6 +2320,86 @@ st.markdown(
         .bf-today-main span,.bf-today-main p{font-size:.48rem !important}
         .bf-today-score{padding:5px}
         .bf-today-score strong{font-size:.82rem}
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# Final BF Data compact-fit correction.
+# UI-only: restores the smaller 100%-zoom laptop/iPhone layout.
+st.markdown(
+    """
+    <style>
+    html,body,.stApp{font-size:14px !important}
+    .block-container{
+        width:100% !important;
+        max-width:1680px !important;
+        padding:.28rem clamp(.42rem,.85vw,.82rem) 1.15rem !important;
+    }
+    [data-testid="stVerticalBlock"]{gap:.34rem !important}
+    [data-testid="stHorizontalBlock"]{gap:.44rem !important}
+
+    .bf-hero{padding:8px 10px !important;margin-bottom:4px !important}
+    .bf-title{font-size:clamp(1.25rem,2vw,1.90rem) !important}
+    .bf-subtitle{font-size:.68rem !important}
+    .bf-kicker{font-size:.48rem !important}
+
+    .stTabs [data-baseweb="tab"]{padding:4px 7px !important;min-height:27px !important}
+    .stTabs [data-baseweb="tab"] p{font-size:.60rem !important}
+
+    h1{font-size:1.32rem !important}
+    h2{font-size:1.08rem !important}
+    h3{font-size:.88rem !important}
+
+    .bf-scan-card{padding:6px 7px !important;margin:3px 0 4px !important}
+    .bf-scan-name{font-size:.82rem !important}
+    .bf-scan-matchup{font-size:.50rem !important}
+    .bf-scan-actions{grid-template-columns:repeat(3,44px) !important}
+    .bf-scan-action small{font-size:.31rem !important}
+    .bf-scan-action strong{font-size:.63rem !important}
+    .bf-scan-role{font-size:.39rem !important;padding:2px 5px !important}
+    .bf-scan-grade,.bf-scan-confidence,.bf-scan-rank{font-size:.39rem !important}
+    .bf-scan-badge{font-size:.37rem !important;padding:2px 5px !important}
+    .bf-scan-attack-label{font-size:.39rem !important}
+    .bf-scan-attack-score{font-size:.46rem !important}
+    .bf-scan-metric small{font-size:.27rem !important}
+    .bf-scan-metric strong{font-size:.52rem !important}
+    .bf-scan-why{font-size:.41rem !important}
+    .bf-scan-pair{font-size:.40rem !important}
+    .bf-scan-pair-score{font-size:.48rem !important}
+
+    div[data-testid="stExpander"] summary{
+        min-height:28px !important;padding:.20rem .48rem !important;font-size:.67rem !important;
+    }
+
+    .bf-market-audit{margin:5px 0 7px !important;gap:6px !important}
+    .bf-market-audit>div{padding:7px 8px !important}
+    .bf-market-grid{gap:6px !important}
+    .bf-market-card{padding:7px 8px !important}
+    .bf-market-head strong{font-size:.69rem !important}
+    .bf-market-stats{margin-top:6px !important}
+    .bf-market-stats>div{padding:4px !important}
+    .bf-market-stats strong{font-size:.58rem !important}
+    .bf-market-books>div{padding:4px 2px !important}
+    .bf-market-books strong{font-size:.56rem !important}
+
+    @media(min-width:901px) and (max-width:1450px){
+        .block-container{padding-left:.46rem !important;padding-right:.46rem !important}
+        .bf-market-grid{grid-template-columns:repeat(3,minmax(0,1fr)) !important}
+    }
+    @media(max-width:900px){
+        .bf-market-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important}
+    }
+    @media(max-width:640px){
+        html,body,.stApp{font-size:13px !important}
+        .block-container{padding:.20rem .30rem .95rem !important}
+        .bf-market-grid{grid-template-columns:1fr !important}
+        .bf-market-books{grid-template-columns:repeat(3,minmax(0,1fr)) !important}
+        .bf-market-audit{grid-template-columns:1fr !important}
+        .bf-title{font-size:1.12rem !important}
+        .stTabs [data-baseweb="tab"] p{font-size:.56rem !important}
     }
     </style>
     """,
@@ -9270,7 +9372,9 @@ def add_comparative_card_context(df: pd.DataFrame) -> pd.DataFrame:
 def _market_odds_columns() -> list[str]:
     return [
         "date", "player", "team", "game", "sportsbook",
-        "opening_odds", "current_odds", "captured_at", "source_note",
+        "opening_odds", "previous_odds", "current_odds",
+        "first_seen_at", "captured_at", "book_last_update",
+        "source_note",
     ]
 
 
@@ -9282,9 +9386,12 @@ def _coerce_market_odds_frame(df: pd.DataFrame) -> pd.DataFrame:
     for col in cols:
         if col not in work.columns:
             work[col] = pd.NA
-    for col in ["date", "player", "team", "game", "sportsbook", "captured_at", "source_note"]:
+    for col in [
+        "date", "player", "team", "game", "sportsbook",
+        "first_seen_at", "captured_at", "book_last_update", "source_note",
+    ]:
         work[col] = work[col].fillna("").astype(str)
-    for col in ["opening_odds", "current_odds"]:
+    for col in ["opening_odds", "previous_odds", "current_odds"]:
         work[col] = pd.to_numeric(work[col], errors="coerce")
     return work[cols]
 
@@ -9299,18 +9406,232 @@ def load_market_odds() -> pd.DataFrame:
 
 
 def save_market_odds(df: pd.DataFrame):
-    """Persist odds separately from every BF prediction/tracker file."""
+    """Persist the latest price while preserving BF Data's first observed price."""
     _backup_file_before_write(MARKET_ODDS_FILE, "market_odds")
     work = _coerce_market_odds_frame(df)
-    if not work.empty:
-        work["_player_key"] = work["player"].map(normalize_name)
-        work["_book_key"] = work["sportsbook"].str.strip().str.lower()
-        work = work.sort_values("captured_at", ascending=False)
-        work = work.drop_duplicates(
-            subset=["date", "_player_key", "team", "game", "_book_key"],
-            keep="first",
-        ).drop(columns=["_player_key", "_book_key"])
-    _atomic_write_csv(work, MARKET_ODDS_FILE)
+    if work.empty:
+        _atomic_write_csv(work, MARKET_ODDS_FILE)
+        return
+
+    work["_player_key"] = work["player"].map(normalize_name)
+    work["_book_key"] = work["sportsbook"].str.strip().str.lower()
+    work["_captured_sort"] = pd.to_datetime(work["captured_at"], errors="coerce", utc=True)
+
+    key_cols = ["date", "_player_key", "team", "game", "_book_key"]
+    saved_rows = []
+    for _, group in work.groupby(key_cols, dropna=False, sort=False):
+        group = group.sort_values("_captured_sort", ascending=True)
+        first = group.iloc[0].copy()
+        latest = group.iloc[-1].copy()
+
+        first_price = pd.to_numeric(group["opening_odds"], errors="coerce").dropna()
+        if first_price.empty:
+            first_price = pd.to_numeric(group["current_odds"], errors="coerce").dropna()
+        opening = first_price.iloc[0] if not first_price.empty else pd.NA
+
+        current_series = pd.to_numeric(group["current_odds"], errors="coerce").dropna()
+        current = current_series.iloc[-1] if not current_series.empty else pd.NA
+        previous = current_series.iloc[-2] if len(current_series) >= 2 else opening
+
+        latest["opening_odds"] = opening
+        latest["previous_odds"] = previous
+        latest["current_odds"] = current
+        latest["first_seen_at"] = (
+            str(first.get("first_seen_at", "") or "")
+            or str(first.get("captured_at", "") or "")
+        )
+        saved_rows.append(latest)
+
+    result = pd.DataFrame(saved_rows)
+    result = result.drop(
+        columns=["_player_key", "_book_key", "_captured_sort"],
+        errors="ignore",
+    )
+    result = _coerce_market_odds_frame(result)
+    _atomic_write_csv(result, MARKET_ODDS_FILE)
+
+
+def _get_odds_api_key() -> str:
+    """Read the odds key without exposing it in the interface or repository."""
+    key = str(os.environ.get("THE_ODDS_API_KEY", "") or "").strip()
+    if key:
+        return key
+    try:
+        key = str(st.secrets.get("THE_ODDS_API_KEY", "") or "").strip()
+    except Exception:
+        key = ""
+    return key
+
+
+BF_ODDS_BOOKMAKERS = {
+    "fanduel": "FanDuel",
+    "draftkings": "DraftKings",
+    "betmgm": "BetMGM",
+    "caesars": "Caesars",
+    "bet365": "bet365",
+    "bet365_usa": "bet365",
+}
+
+
+def _event_is_today_et(event: dict) -> bool:
+    dt = parse_game_time_et(str((event or {}).get("commence_time", "") or ""))
+    return bool(dt and dt.strftime("%Y-%m-%d") == today_str())
+
+
+@st.cache_data(ttl=180, max_entries=8, show_spinner=False)
+def fetch_live_hr_odds_from_provider(api_key: str) -> tuple[list[dict], dict]:
+    """Fetch current MLB batter HR prices from The Odds API.
+
+    The API is queried one MLB event at a time because batter_home_runs is an
+    additional player-prop market. Only the requested books are retained.
+    """
+    if not api_key:
+        return [], {"status": "NO_KEY", "remaining": None, "used": None}
+
+    headers = {"User-Agent": "BF-Data/1.0"}
+    base = "https://api.the-odds-api.com/v4"
+    wanted_keys = ",".join(BF_ODDS_BOOKMAKERS.keys())
+
+    try:
+        events_response = requests.get(
+            f"{base}/sports/baseball_mlb/events",
+            params={"apiKey": api_key, "dateFormat": "iso"},
+            headers=headers,
+            timeout=20,
+        )
+        events_response.raise_for_status()
+        events = [
+            event for event in (events_response.json() or [])
+            if _event_is_today_et(event)
+        ]
+    except Exception as exc:
+        return [], {"status": f"EVENT_ERROR: {exc}", "remaining": None, "used": None}
+
+    def _fetch_event(event):
+        response = requests.get(
+            f"{base}/sports/baseball_mlb/events/{event.get('id')}/odds",
+            params={
+                "apiKey": api_key,
+                "bookmakers": wanted_keys,
+                "markets": "batter_home_runs",
+                "oddsFormat": "american",
+                "dateFormat": "iso",
+            },
+            headers=headers,
+            timeout=22,
+        )
+        response.raise_for_status()
+        return event, response.json(), {
+            "remaining": response.headers.get("x-requests-remaining"),
+            "used": response.headers.get("x-requests-used"),
+        }
+
+    payloads = []
+    quota = {"remaining": None, "used": None}
+    workers = min(4, max(1, len(events)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(_fetch_event, event) for event in events]
+        for future in as_completed(futures):
+            try:
+                event, payload, response_quota = future.result()
+                payloads.append((event, payload))
+                quota = response_quota or quota
+            except Exception:
+                continue
+
+    rows = []
+    captured = now_et_string()
+    for event, payload in payloads:
+        away_name = str(payload.get("away_team") or event.get("away_team") or "")
+        home_name = str(payload.get("home_team") or event.get("home_team") or "")
+        away_abbr = team_abbr(away_name)
+        home_abbr = team_abbr(home_name)
+        game_label = f"{away_abbr} @ {home_abbr}"
+
+        for book in payload.get("bookmakers", []) or []:
+            book_key = str(book.get("key", "") or "")
+            book_title = BF_ODDS_BOOKMAKERS.get(
+                book_key,
+                str(book.get("title", "") or book_key),
+            )
+            if book_key not in BF_ODDS_BOOKMAKERS:
+                continue
+
+            for market in book.get("markets", []) or []:
+                if market.get("key") != "batter_home_runs":
+                    continue
+                market_update = str(
+                    market.get("last_update")
+                    or book.get("last_update")
+                    or ""
+                )
+                for outcome in market.get("outcomes", []) or []:
+                    if str(outcome.get("name", "")).strip().lower() != "over":
+                        continue
+                    point = safe_float(outcome.get("point"), 0.5)
+                    if abs(point - 0.5) > 0.01:
+                        continue
+                    player = str(outcome.get("description", "") or "").strip()
+                    price = safe_int(outcome.get("price"), 0)
+                    if not player or price == 0:
+                        continue
+                    rows.append({
+                        "date": today_str(),
+                        "player": player,
+                        "team": "",
+                        "game": game_label,
+                        "sportsbook": book_title,
+                        "opening_odds": pd.NA,
+                        "previous_odds": pd.NA,
+                        "current_odds": price,
+                        "first_seen_at": "",
+                        "captured_at": captured,
+                        "book_last_update": market_update,
+                        "source_note": "Automatic live batter HR odds",
+                    })
+
+    return rows, {
+        "status": "OK" if rows else "NO_ODDS",
+        "remaining": quota.get("remaining"),
+        "used": quota.get("used"),
+        "events": len(events),
+    }
+
+
+def refresh_automatic_market_odds(locked_board: pd.DataFrame) -> dict:
+    """Attach automatic sportsbook prices to visible BF Data players only."""
+    api_key = _get_odds_api_key()
+    if not api_key:
+        return {"status": "NO_KEY", "saved": 0}
+
+    rows, meta = fetch_live_hr_odds_from_provider(api_key)
+    if not rows:
+        return {**meta, "saved": 0}
+
+    board = locked_board.copy()
+    if board.empty or "Player" not in board.columns:
+        return {**meta, "saved": 0}
+    board["_player_key"] = board["Player"].astype(str).map(normalize_name)
+
+    attached = []
+    for row in rows:
+        matches = board[board["_player_key"].eq(normalize_name(row["player"]))]
+        if matches.empty:
+            continue
+        # Exact MLB player-name match controls eligibility; sportsbook odds never
+        # add a player to BF Data or alter a ranking.
+        bf_row = matches.iloc[0]
+        row["team"] = str(bf_row.get("Team", "") or "")
+        row["game"] = str(bf_row.get("Game", "") or row["game"])
+        attached.append(row)
+
+    if not attached:
+        return {**meta, "saved": 0}
+
+    existing = load_market_odds()
+    save_market_odds(pd.concat([existing, pd.DataFrame(attached)], ignore_index=True))
+    return {**meta, "saved": len(attached)}
+
 
 
 def american_odds_to_implied_probability(odds) -> float | None:
@@ -9477,7 +9798,15 @@ def build_market_edge_table(board_df: pd.DataFrame, odds_df: pd.DataFrame) -> pd
 
         current_value = safe_float(market["current_odds"], 0.0)
         opening_value = safe_float(market["opening_odds"], 0.0)
+        previous_value = safe_float(market.get("previous_odds"), 0.0)
         line_move = current_value - opening_value if current_value and opening_value else None
+        recent_move = current_value - previous_value if current_value and previous_value else None
+        if line_move is None or abs(line_move) < 0.5:
+            movement = "UNCHANGED"
+        elif line_move < 0:
+            movement = "SHORTENING"
+        else:
+            movement = "DRIFTING"
         label, label_class = _market_value_label(edge_points, ev_pct)
 
         rows.append({
@@ -9486,8 +9815,11 @@ def build_market_edge_table(board_df: pd.DataFrame, odds_df: pd.DataFrame) -> pd
             "Game": player_row.get("Game", market["game"]),
             "Sportsbook": market["sportsbook"],
             "Opening Odds": opening_value if opening_value else pd.NA,
+            "Previous Odds": previous_value if previous_value else pd.NA,
             "Current Odds": current_value if current_value else pd.NA,
             "Line Move": line_move,
+            "Recent Move": recent_move,
+            "Movement": movement,
             "BF HR Estimate %": round(bf_p * 100.0, 2) if bf_p is not None else pd.NA,
             "Book Implied %": round(implied * 100.0, 2) if implied is not None else pd.NA,
             "Probability Edge": round(edge_points, 2) if edge_points is not None else pd.NA,
@@ -9496,7 +9828,9 @@ def build_market_edge_table(board_df: pd.DataFrame, odds_df: pd.DataFrame) -> pd
             "EV %": round(ev_pct, 2) if ev_pct is not None else pd.NA,
             "Price Status": label,
             "_status_class": label_class,
+            "First Seen": market.get("first_seen_at", ""),
             "Captured": market["captured_at"],
+            "Book Updated": market.get("book_last_update", ""),
         })
 
     if not rows:
@@ -9510,12 +9844,38 @@ def build_market_edge_table(board_df: pd.DataFrame, odds_df: pd.DataFrame) -> pd
 
 
 def render_market_edge_tab(locked_board: pd.DataFrame, tracker_df: pd.DataFrame):
-    """Additive sportsbook-price comparison; never changes BF selections."""
+    """Automatic multi-book sportsbook-price comparison; prediction logic stays frozen."""
     st.subheader("Market Edge")
     st.caption(
-        "Compare real sportsbook prices with BF Data's existing HR estimate. "
-        "Odds are a value layer only—they never rerank players or alter predictions."
+        "Live batter home-run prices from FanDuel, DraftKings, bet365, Caesars, and BetMGM. "
+        "Odds never rerank players, change lineups, or alter BF Data predictions."
     )
+
+    api_key = _get_odds_api_key()
+    refresh_meta = {"status": "NO_KEY", "saved": 0}
+    if api_key:
+        with st.spinner("Refreshing live home-run prices..."):
+            refresh_meta = refresh_automatic_market_odds(locked_board)
+
+    if not api_key:
+        st.warning(
+            "Automatic odds are ready, but the API key is not configured. "
+            "Add THE_ODDS_API_KEY to Streamlit Secrets. Do not place the key in app.py."
+        )
+        with st.expander("One-time Streamlit Secrets setup", expanded=True):
+            st.code('THE_ODDS_API_KEY = "paste_your_key_here"', language="toml")
+            st.caption(
+                "Streamlit Community Cloud → Manage app → Settings → Secrets. "
+                "After saving, reboot the app once."
+            )
+    else:
+        q1, q2, q3 = st.columns(3)
+        q1.metric("Live prices matched", safe_int(refresh_meta.get("saved"), 0))
+        q2.metric("API events checked", safe_int(refresh_meta.get("events"), 0))
+        q3.metric(
+            "API requests remaining",
+            str(refresh_meta.get("remaining") or "—"),
+        )
 
     audit = bf_hr_probability_calibration_audit(tracker_df)
     status_class = (
@@ -9534,169 +9894,116 @@ def render_market_edge_tab(locked_board: pd.DataFrame, tracker_df: pd.DataFrame)
         unsafe_allow_html=True,
     )
 
-    board = get_top12_hybrid(locked_board.copy())
-    if board is None or board.empty:
-        st.info("No qualified BF Data players are available for an odds comparison.")
-        return
-    board = board.copy().reset_index(drop=True)
-
-    player_options = []
-    player_lookup = {}
-    for _, row in board.iterrows():
-        label = f"{row.get('Player','—')} ({row.get('Team','')}) · {row.get('Game','')}"
-        player_options.append(label)
-        player_lookup[label] = row
-
-    st.markdown("### Add or update real HR odds")
-    with st.form("bf_market_odds_form", clear_on_submit=False):
-        c1, c2, c3, c4 = st.columns([2.2, 1.0, 1.0, 1.0])
-        with c1:
-            selected = st.selectbox("BF Data player", player_options)
-        with c2:
-            sportsbook = st.selectbox(
-                "Sportsbook",
-                ["FanDuel", "Fanatics", "DraftKings", "bet365", "Other"],
-            )
-        with c3:
-            opening_odds = st.number_input(
-                "Opening odds",
-                min_value=-10000,
-                max_value=50000,
-                value=600,
-                step=5,
-                help="Use American odds, such as +600 or -110.",
-            )
-        with c4:
-            current_odds = st.number_input(
-                "Current odds",
-                min_value=-10000,
-                max_value=50000,
-                value=600,
-                step=5,
-            )
-        source_note = st.text_input(
-            "Optional note",
-            placeholder="Example: FanDuel price checked after confirmed lineup",
-        )
-        submitted = st.form_submit_button("Save Market Price", use_container_width=True)
-
-    if submitted:
-        row = player_lookup[selected]
-        odds = load_market_odds()
-        new_row = pd.DataFrame([{
-            "date": today_str(),
-            "player": row.get("Player", ""),
-            "team": row.get("Team", ""),
-            "game": row.get("Game", ""),
-            "sportsbook": sportsbook,
-            "opening_odds": int(opening_odds),
-            "current_odds": int(current_odds),
-            "captured_at": now_et_string(),
-            "source_note": source_note,
-        }])
-        save_market_odds(pd.concat([odds, new_row], ignore_index=True))
-        st.success("Market price saved. BF rankings and predictions were not changed.")
-
-    with st.expander("Import several sportsbook prices by CSV", expanded=False):
-        st.caption(
-            "Required columns: player, team, sportsbook, current_odds. "
-            "Optional: game, opening_odds, captured_at, source_note."
-        )
-        uploaded = st.file_uploader(
-            "Upload HR odds CSV",
-            type=["csv"],
-            key="bf_market_odds_csv",
-        )
-        if uploaded is not None:
-            try:
-                imported = pd.read_csv(uploaded)
-                required = {"player", "team", "sportsbook", "current_odds"}
-                missing = required.difference(imported.columns)
-                if missing:
-                    st.error("Missing required columns: " + ", ".join(sorted(missing)))
-                else:
-                    if "date" not in imported.columns:
-                        imported["date"] = today_str()
-                    if "game" not in imported.columns:
-                        imported["game"] = ""
-                    if "opening_odds" not in imported.columns:
-                        imported["opening_odds"] = imported["current_odds"]
-                    if "captured_at" not in imported.columns:
-                        imported["captured_at"] = now_et_string()
-                    if "source_note" not in imported.columns:
-                        imported["source_note"] = "CSV import"
-                    if st.button("Import These Prices", key="bf_import_market_prices"):
-                        existing = load_market_odds()
-                        save_market_odds(pd.concat([existing, imported], ignore_index=True))
-                        st.success(f"Imported {len(imported)} market price rows.")
-            except Exception as exc:
-                st.error(f"Could not read that CSV: {exc}")
-
     market = build_market_edge_table(locked_board, load_market_odds())
-    st.markdown("### Current value board")
+    st.markdown("### Live sportsbook comparison")
     if market.empty:
         st.info(
-            "No real odds have been saved for today's visible BF players. "
-            "Add a price above to activate the value board."
+            "No live HR prices currently match visible BF Data players. "
+            "Sportsbooks may not have posted every game yet, or the API key still needs setup."
         )
         return
 
-    top_market = market.head(12)
+    # Best price and book across the requested sportsbooks.
+    market["Current Odds Num"] = pd.to_numeric(market["Current Odds"], errors="coerce")
+    best_rows = (
+        market.sort_values(
+            ["Player", "Current Odds Num"],
+            ascending=[True, False],
+            na_position="last",
+        )
+        .drop_duplicates(subset=["Player"], keep="first")
+        .sort_values(
+            ["EV %", "Probability Edge", "BF HR Estimate %"],
+            ascending=[False, False, False],
+            na_position="last",
+        )
+        .reset_index(drop=True)
+    )
+
     cards = ['<div class="bf-market-grid">']
-    for _, row in top_market.iterrows():
+    for _, row in best_rows.head(12).iterrows():
+        player_name = str(row.get("Player", "—"))
+        player_books = market[market["Player"].astype(str).eq(player_name)].copy()
+        player_books = player_books.sort_values("Current Odds Num", ascending=False)
+
         status_class = str(row.get("_status_class", "neutral"))
         opening = _format_american_odds(row.get("Opening Odds"))
         current = _format_american_odds(row.get("Current Odds"))
         fair = _format_american_odds(row.get("BF Fair Odds"))
         edge = safe_float(row.get("Probability Edge"), 0.0)
         ev10 = safe_float(row.get("EV per $10"), 0.0)
+        movement = str(row.get("Movement", "UNCHANGED"))
+        move_class = (
+            "steam" if movement == "SHORTENING"
+            else "drift" if movement == "DRIFTING"
+            else "flat"
+        )
+        move_text = (
+            "▼ SHORTENING" if movement == "SHORTENING"
+            else "▲ DRIFTING" if movement == "DRIFTING"
+            else "— UNCHANGED"
+        )
+
+        book_cells = []
+        for _, book_row in player_books.head(5).iterrows():
+            book_cells.append(
+                '<div>'
+                f'<small>{escape(str(book_row.get("Sportsbook", "")))}</small>'
+                f'<strong>{_format_american_odds(book_row.get("Current Odds"))}</strong>'
+                '</div>'
+            )
+
         cards.append(
             '<div class="bf-market-card">'
-            f'<div class="bf-market-head"><div><small>{escape(str(row.get("Sportsbook","")))}</small>'
-            f'<strong>{escape(str(row.get("Player","—")))}</strong>'
+            f'<div class="bf-market-head"><div><small>BEST PRICE · {escape(str(row.get("Sportsbook","")))}</small>'
+            f'<strong>{escape(player_name)}</strong>'
             f'<span>{escape(str(row.get("Team","")))} · {escape(str(row.get("Game","")))}</span></div>'
             f'<b class="{status_class}">{escape(str(row.get("Price Status","UNVERIFIED")))}</b></div>'
+            f'<div class="bf-market-move {move_class}">{move_text} · FIRST SEEN {opening} → NOW {current}</div>'
+            '<div class="bf-market-books">' + "".join(book_cells) + '</div>'
             '<div class="bf-market-stats">'
-            f'<div><small>OPEN</small><strong>{opening}</strong></div>'
-            f'<div><small>CURRENT</small><strong>{current}</strong></div>'
             f'<div><small>BF EST.</small><strong>{safe_float(row.get("BF HR Estimate %"),0):.1f}%</strong></div>'
-            f'<div><small>IMPLIED</small><strong>{safe_float(row.get("Book Implied %"),0):.1f}%</strong></div>'
+            f'<div><small>BOOK IMPLIED</small><strong>{safe_float(row.get("Book Implied %"),0):.1f}%</strong></div>'
             f'<div><small>FAIR PRICE</small><strong>{fair}</strong></div>'
             f'<div><small>EDGE</small><strong>{edge:+.1f} pts</strong></div>'
+            f'<div><small>BEST ODDS</small><strong>{current}</strong></div>'
+            f'<div><small>BEST BOOK</small><strong>{escape(str(row.get("Sportsbook","—")))}</strong></div>'
             '</div>'
-            f'<div class="bf-market-ev"><span>Research EV per $10</span><strong>{ev10:+.2f}</strong></div>'
+            f'<div class="bf-market-ev"><span>Research EV per $10 at best price</span><strong>{ev10:+.2f}</strong></div>'
             '</div>'
         )
     cards.append("</div>")
     st.markdown("".join(cards), unsafe_allow_html=True)
 
     display_cols = [
-        "Player", "Team", "Sportsbook", "Opening Odds", "Current Odds",
-        "BF HR Estimate %", "Book Implied %", "Probability Edge",
-        "BF Fair Odds", "EV per $10", "EV %", "Price Status", "Captured",
+        "Player", "Team", "Sportsbook", "Opening Odds", "Previous Odds",
+        "Current Odds", "Movement", "Line Move", "BF HR Estimate %",
+        "Book Implied %", "Probability Edge", "BF Fair Odds",
+        "EV per $10", "EV %", "Price Status", "First Seen",
+        "Captured", "Book Updated",
     ]
-    with st.expander("Full Market Edge table", expanded=False):
+    with st.expander("All books and all matched BF Data players", expanded=False):
         st.dataframe(
             market[display_cols],
             use_container_width=True,
             hide_index=True,
         )
 
-    with st.expander("How BF Data uses odds", expanded=False):
+    with st.expander("How price movement is measured", expanded=False):
         st.markdown(
             """
-            **Prediction and price are separate decisions.** BF Data first chooses
-            and ranks its hitters without sportsbook input. This page then asks
-            whether the available price is favorable relative to BF Data's existing
-            HR estimate.
+            **First Seen** is the first real price BF Data captured from the provider
+            for that player and sportsbook today. **Current** is the latest real price.
 
-            A shorter price can confirm market interest while simultaneously becoming
-            a worse wager. For example, +600 requires roughly 14.3% to break even,
-            while +400 requires 20.0%. The player may remain an excellent prediction
-            even after the price becomes too expensive.
+            - **Shortening:** the positive American price became smaller, such as +600 → +400.
+              The market is pricing the player as more likely, but the wager is now more expensive.
+            - **Drifting:** the price became larger, such as +400 → +550.
+              The market is pricing the player as less likely, while the payout improved.
+            - **Unchanged:** no meaningful movement since BF Data first captured the price.
 
-            EV is shown as **research EV** until the tracker contains a sufficiently
-            large resolved sample proving the displayed BF HR percentages are calibrated.
+            Official historical market-opening snapshots require a provider plan that includes
+            historical player-prop data. BF Data never labels its first observation as the
+            sportsbook's official opening line.
             """
         )
 
