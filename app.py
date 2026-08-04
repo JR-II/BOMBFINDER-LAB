@@ -9615,24 +9615,28 @@ def save_market_odds(df: pd.DataFrame):
 
 
 def _get_odds_api_key() -> str:
-    """Read the odds key without exposing it in the interface or repository."""
-    key = str(os.environ.get("THE_ODDS_API_KEY", "") or "").strip()
-    if key:
-        return key
-    try:
-        key = str(st.secrets.get("THE_ODDS_API_KEY", "") or "").strip()
-    except Exception:
-        key = ""
-    return key
+    """Read The Odds API V4 key without exposing it in the app or repository."""
+    for secret_name in ("THE_ODDS_API_V4_KEY", "THE_ODDS_API_KEY"):
+        key = str(os.environ.get(secret_name, "") or "").strip()
+        if key:
+            return key
+        try:
+            key = str(st.secrets.get(secret_name, "") or "").strip()
+        except Exception:
+            key = ""
+        if key:
+            return key
+    return ""
 
 
 BF_ODDS_BOOKMAKERS = {
     "fanduel": "FanDuel",
     "draftkings": "DraftKings",
     "betmgm": "BetMGM",
+    "williamhill_us": "Caesars",
     "caesars": "Caesars",
     "bet365": "bet365",
-    "bet365_usa": "bet365",
+    "bet365_us": "bet365",
 }
 
 
@@ -9641,308 +9645,197 @@ def _event_is_today_et(event: dict) -> bool:
     return bool(dt and dt.strftime("%Y-%m-%d") == today_str())
 
 
-@st.cache_data(ttl=3600, max_entries=8, show_spinner=False)
-def fetch_odds_provider_account(api_key: str) -> dict:
-    """Verify the configured TheOddsAPI key and return plan/usage information."""
-    if not api_key:
-        return {"status": "NO_KEY", "tier": "", "remaining": None, "message": "No API key configured."}
+def _odds_v4_error(response, payload) -> dict:
+    status_code = safe_int(getattr(response, "status_code", 0), 0)
+    message = ""
+    if isinstance(payload, dict):
+        message = str(
+            payload.get("message")
+            or payload.get("error")
+            or payload.get("error_code")
+            or ""
+        ).strip()
 
-    try:
-        response = requests.get(
-            "https://api.theoddsapi.com/me/usage",
-            headers={
-                "x-api-key": api_key,
-                "User-Agent": "BF-Data/1.0",
-                "Accept": "application/json",
-            },
-            timeout=15,
-        )
-        payload = response.json() if response.content else {}
-        if response.status_code == 401:
-            return {
-                "status": "INVALID_KEY",
-                "tier": "",
-                "remaining": None,
-                "message": str(payload.get("message") or "The API key was not recognized."),
-            }
-        response.raise_for_status()
+    if status_code in (401, 403):
+        status = "INVALID_KEY"
+        fallback = "The Odds API rejected the configured V4 key."
+    elif status_code == 422:
+        status = "MARKET_UNAVAILABLE"
+        fallback = "The requested player-prop market is not currently available for this event."
+    elif status_code == 429:
+        status = "QUOTA_EXHAUSTED"
+        fallback = "The Odds API request quota has been reached."
+    else:
+        status = "HTTP_ERROR"
+        fallback = f"The Odds API returned HTTP {status_code or 'error'}."
 
-        data = payload.get("data", payload) if isinstance(payload, dict) else {}
-        tier = str(data.get("tier") or data.get("plan") or "").strip()
-        remaining = data.get("remaining")
-        if remaining is None:
-            daily_limit = safe_int(data.get("daily_limit"), 0)
-            requests_today = safe_int(data.get("requests_today"), 0)
-            remaining = max(0, daily_limit - requests_today) if daily_limit else None
-
-        return {
-            "status": "OK",
-            "tier": tier,
-            "remaining": remaining,
-            "requests_today": data.get("requests_today"),
-            "daily_limit": data.get("daily_limit"),
-            "monthly_quota": data.get("monthly_quota"),
-            "message": "",
-        }
-    except Exception as exc:
-        return {
-            "status": "ACCOUNT_ERROR",
-            "tier": "",
-            "remaining": None,
-            "message": str(exc),
-        }
-
-
-def _theoddsapi_prop_events(payload) -> list[dict]:
-    """Normalize TheOddsAPI /props response across list and wrapped payloads."""
-    if isinstance(payload, list):
-        return [item for item in payload if isinstance(item, dict)]
-    if not isinstance(payload, dict):
-        return []
-
-    for key in ("data", "events", "results", "odds"):
-        value = payload.get(key)
-        if isinstance(value, list):
-            return [item for item in value if isinstance(item, dict)]
-        if isinstance(value, dict):
-            for nested_key in ("events", "results", "data"):
-                nested = value.get(nested_key)
-                if isinstance(nested, list):
-                    return [item for item in nested if isinstance(item, dict)]
-
-    # A single event response is also accepted.
-    if any(key in payload for key in ("bookmakers", "markets", "event_id", "id")):
-        return [payload]
-    return []
-
-
-def _theoddsapi_event_time(event: dict) -> str:
-    return str(
-        event.get("start_time")
-        or event.get("commence_time")
-        or event.get("commenceTime")
-        or ""
-    )
-
-
-def _theoddsapi_team_name(event: dict, side: str) -> str:
-    candidates = {
-        "away": ("away_team", "awayTeam", "away"),
-        "home": ("home_team", "homeTeam", "home"),
-    }[side]
-    for key in candidates:
-        value = event.get(key)
-        if isinstance(value, dict):
-            value = value.get("name") or value.get("full_name") or value.get("title")
-        if value:
-            return str(value)
-    return ""
-
-
-def _theoddsapi_book_key(book: dict) -> str:
-    return str(
-        book.get("key")
-        or book.get("bookmaker_key")
-        or book.get("slug")
-        or book.get("id")
-        or ""
-    ).strip().lower()
-
-
-def _theoddsapi_book_title(book: dict) -> str:
-    key = _theoddsapi_book_key(book)
-    return BF_ODDS_BOOKMAKERS.get(
-        key,
-        str(book.get("title") or book.get("name") or key or "Sportsbook"),
-    )
-
-
-def _theoddsapi_market_key(market: dict) -> str:
-    return str(
-        market.get("key")
-        or market.get("market_key")
-        or market.get("name")
-        or ""
-    ).strip().lower()
+    return {
+        "status": status,
+        "message": message or fallback,
+        "remaining": response.headers.get("x-requests-remaining"),
+        "used": response.headers.get("x-requests-used"),
+        "last_cost": response.headers.get("x-requests-last"),
+    }
 
 
 @st.cache_data(ttl=600, max_entries=8, show_spinner=False)
 def fetch_live_hr_odds_from_provider(api_key: str) -> tuple[list[dict], dict]:
-    """Fetch MLB batter-home-run prices from the user's actual provider.
+    """Fetch current MLB batter-home-run prices from The Odds API V4.
 
-    Provider: TheOddsAPI at api.theoddsapi.com
-    Authentication: x-api-key request header
-    Endpoint: /props/
-    Required provider tier: Business (player props are not included on Free).
+    The V4 API requires player props to be queried one event at a time:
+      1. GET /v4/sports/baseball_mlb/events
+      2. GET /v4/sports/baseball_mlb/events/{event_id}/odds
+    Authentication uses the apiKey query parameter.
     """
     if not api_key:
         return [], {
             "status": "NO_KEY",
             "remaining": None,
-            "tier": "",
-            "message": "No API key configured.",
+            "message": "No V4 API key configured.",
         }
 
-    account = fetch_odds_provider_account(api_key)
-    if account.get("status") != "OK":
-        return [], account
-
-    headers = {
-        "x-api-key": api_key,
-        "User-Agent": "BF-Data/1.0",
-        "Accept": "application/json",
-    }
-
-    params = {
-        "sport_key": "baseball_mlb",
-        "markets": "batter_home_runs",
+    base = "https://api.the-odds-api.com/v4"
+    common = {
+        "apiKey": api_key,
         "regions": "us",
+        "oddsFormat": "american",
+        "dateFormat": "iso",
     }
 
     try:
-        response = requests.get(
-            "https://api.theoddsapi.com/props/",
-            params=params,
-            headers=headers,
-            timeout=25,
+        events_response = requests.get(
+            f"{base}/sports/baseball_mlb/events",
+            params={"apiKey": api_key, "dateFormat": "iso"},
+            timeout=18,
         )
+        try:
+            events_payload = events_response.json()
+        except Exception:
+            events_payload = {}
 
-        payload = response.json() if response.content else {}
+        if not events_response.ok:
+            return [], _odds_v4_error(events_response, events_payload)
 
-        if response.status_code == 401:
-            return [], {
-                **account,
-                "status": "INVALID_KEY",
-                "message": str(payload.get("message") or "The API key was not recognized."),
-            }
-
-        if response.status_code == 403:
-            return [], {
-                **account,
-                "status": "PLAN_REQUIRED",
-                "required_tier": "Business",
-                "message": str(
-                    payload.get("message")
-                    or payload.get("detail")
-                    or "MLB player props require the provider's Business tier."
-                ),
-            }
-
-        if response.status_code == 429:
-            return [], {
-                **account,
-                "status": "QUOTA_EXHAUSTED",
-                "message": str(payload.get("message") or "The API request quota has been reached."),
-            }
-
-        response.raise_for_status()
-
-    except requests.HTTPError as exc:
-        return [], {
-            **account,
-            "status": "HTTP_ERROR",
-            "message": str(exc),
-        }
+        events = events_payload if isinstance(events_payload, list) else []
     except Exception as exc:
         return [], {
-            **account,
             "status": "PROVIDER_ERROR",
+            "remaining": None,
             "message": str(exc),
         }
 
-    events = _theoddsapi_prop_events(payload)
+    # Keep today's games and next-day games. Sportsbooks often post tomorrow's
+    # prices before midnight, while BF Data will still only attach prices to
+    # players already visible on its current board.
+    today_key = today_str()
+    tomorrow_key = (
+        datetime.now(ZoneInfo("America/New_York")) + timedelta(days=1)
+    ).strftime("%Y-%m-%d")
+
+    eligible_events = []
+    for event in events:
+        dt = parse_game_time_et(str(event.get("commence_time", "") or ""))
+        if dt is None:
+            continue
+        if dt.strftime("%Y-%m-%d") in {today_key, tomorrow_key}:
+            eligible_events.append(event)
+
     rows = []
     captured = now_et_string()
+    remaining = events_response.headers.get("x-requests-remaining")
+    used = events_response.headers.get("x-requests-used")
+    last_cost = events_response.headers.get("x-requests-last")
+    events_checked = 0
+    unavailable_events = 0
+    request_errors = []
 
-    for event in events:
-        event_time = _theoddsapi_event_time(event)
-        dt = parse_game_time_et(event_time)
-        if dt is not None and dt.strftime("%Y-%m-%d") != today_str():
+    for event in eligible_events:
+        event_id = str(event.get("id", "") or "").strip()
+        if not event_id:
             continue
 
-        away_name = _theoddsapi_team_name(event, "away")
-        home_name = _theoddsapi_team_name(event, "home")
+        try:
+            response = requests.get(
+                f"{base}/sports/baseball_mlb/events/{event_id}/odds",
+                params={
+                    **common,
+                    "markets": "batter_home_runs",
+                },
+                timeout=20,
+            )
+            try:
+                payload = response.json()
+            except Exception:
+                payload = {}
+
+            remaining = response.headers.get("x-requests-remaining", remaining)
+            used = response.headers.get("x-requests-used", used)
+            last_cost = response.headers.get("x-requests-last", last_cost)
+
+            if response.status_code == 422:
+                unavailable_events += 1
+                continue
+            if not response.ok:
+                err = _odds_v4_error(response, payload)
+                if err.get("status") in {"INVALID_KEY", "QUOTA_EXHAUSTED"}:
+                    return [], {
+                        **err,
+                        "events": events_checked,
+                        "saved_raw": len(rows),
+                    }
+                request_errors.append(err.get("message", "Event odds request failed."))
+                continue
+        except Exception as exc:
+            request_errors.append(str(exc))
+            continue
+
+        events_checked += 1
+        event_data = payload if isinstance(payload, dict) else {}
+        away_name = str(event_data.get("away_team") or event.get("away_team") or "")
+        home_name = str(event_data.get("home_team") or event.get("home_team") or "")
         away_abbr = team_abbr(away_name) if away_name else ""
         home_abbr = team_abbr(home_name) if home_name else ""
-        game_label = (
-            f"{away_abbr} @ {home_abbr}"
-            if away_abbr and home_abbr
-            else str(event.get("event_name") or event.get("name") or "")
-        )
+        game_label = f"{away_abbr} @ {home_abbr}" if away_abbr and home_abbr else ""
 
-        bookmakers = event.get("bookmakers") or event.get("books") or []
-        if isinstance(bookmakers, dict):
-            bookmakers = list(bookmakers.values())
-
-        for book in bookmakers:
+        for book in event_data.get("bookmakers", []) or []:
             if not isinstance(book, dict):
                 continue
-            book_key = _theoddsapi_book_key(book)
+            book_key = str(book.get("key", "") or "").strip().lower()
             if book_key not in BF_ODDS_BOOKMAKERS:
                 continue
+            book_title = BF_ODDS_BOOKMAKERS[book_key]
 
-            book_title = _theoddsapi_book_title(book)
-            markets = book.get("markets") or book.get("odds") or []
-            if isinstance(markets, dict):
-                markets = [
-                    {"key": key, **(value if isinstance(value, dict) else {"outcomes": value})}
-                    for key, value in markets.items()
-                ]
-
-            for market in markets:
-                if not isinstance(market, dict):
-                    continue
-                if _theoddsapi_market_key(market) != "batter_home_runs":
+            for market in book.get("markets", []) or []:
+                if str(market.get("key", "") or "").strip().lower() != "batter_home_runs":
                     continue
 
                 market_update = str(
                     market.get("last_update")
-                    or market.get("updated_at")
                     or book.get("last_update")
-                    or book.get("updated_at")
                     or ""
                 )
 
-                outcomes = market.get("outcomes") or market.get("prices") or []
-                if isinstance(outcomes, dict):
-                    outcomes = list(outcomes.values())
-
-                for outcome in outcomes:
+                for outcome in market.get("outcomes", []) or []:
                     if not isinstance(outcome, dict):
                         continue
 
-                    direction = str(
-                        outcome.get("name")
-                        or outcome.get("side")
-                        or outcome.get("label")
-                        or ""
-                    ).strip().lower()
-                    if direction not in {"over", "yes", "1+", "to hit a home run"}:
-                        continue
+                    direction = str(outcome.get("name", "") or "").strip().lower()
+                    point = safe_float(outcome.get("point"), 0.5)
 
-                    point = safe_float(
-                        outcome.get("point", outcome.get("line", 0.5)),
-                        0.5,
-                    )
+                    # The standard market is Over/Under 0.5. Keep the Over side,
+                    # which corresponds to the player hitting at least one HR.
+                    if direction not in {"over", "yes"}:
+                        continue
                     if direction == "over" and abs(point - 0.5) > 0.01:
                         continue
 
-                    player = str(
-                        outcome.get("description")
-                        or outcome.get("player")
-                        or outcome.get("participant")
-                        or outcome.get("player_name")
-                        or ""
-                    ).strip()
-                    price = safe_int(
-                        outcome.get("price", outcome.get("odds")),
-                        0,
-                    )
+                    player = str(outcome.get("description", "") or "").strip()
+                    price = safe_int(outcome.get("price"), 0)
                     if not player or price == 0:
                         continue
 
                     rows.append({
-                        "date": today_str(),
+                        "date": today_key,
                         "player": player,
                         "team": "",
                         "game": game_label,
@@ -9953,15 +9846,34 @@ def fetch_live_hr_odds_from_provider(api_key: str) -> tuple[list[dict], dict]:
                         "first_seen_at": "",
                         "captured_at": captured,
                         "book_last_update": market_update,
-                        "source_note": "Automatic live batter HR odds · TheOddsAPI",
+                        "source_note": "Automatic live batter HR odds · The Odds API V4",
                     })
 
+    if rows:
+        status = "OK"
+        message = ""
+    elif eligible_events and unavailable_events >= len(eligible_events):
+        status = "NO_ODDS"
+        message = "MLB games were found, but sportsbooks have not posted the batter_home_runs market yet."
+    elif request_errors:
+        status = "PARTIAL_ERROR"
+        message = request_errors[0]
+    else:
+        status = "NO_ODDS"
+        message = "No current MLB batter-home-run prices were returned."
+
     return rows, {
-        **account,
-        "status": "OK" if rows else "NO_ODDS",
-        "events": len(events),
+        "status": status,
+        "provider": "The Odds API V4",
+        "tier": "V4",
+        "remaining": remaining,
+        "used": used,
+        "last_cost": last_cost,
+        "events": events_checked,
+        "eligible_events": len(eligible_events),
+        "unavailable_events": unavailable_events,
         "saved_raw": len(rows),
-        "message": "" if rows else "The provider returned no posted MLB home-run prices.",
+        "message": message,
     }
 
 
@@ -10276,13 +10188,13 @@ def render_market_edge_tab(locked_board: pd.DataFrame, tracker_df: pd.DataFrame)
             "to Streamlit Secrets, then reboot the app."
         )
         with st.expander("One-time Streamlit Secrets setup", expanded=True):
-            st.code('THE_ODDS_API_KEY = "paste_your_new_key_here"', language="toml")
+            st.code('THE_ODDS_API_V4_KEY = "paste_your_private_v4_key_here"', language="toml")
             st.caption(
                 "Streamlit Community Cloud → Manage app → Settings → Secrets → Save → Reboot app."
             )
     elif provider_status == "INVALID_KEY":
         st.error(
-            "TheOddsAPI rejected the configured key. Regenerate the exposed key, "
+            "The Odds API V4 rejected the configured key. Regenerate the exposed key, "
             "replace it in Streamlit Secrets, save, and reboot."
         )
     elif provider_status == "PLAN_REQUIRED":
@@ -10293,12 +10205,12 @@ def render_market_edge_tab(locked_board: pd.DataFrame, tracker_df: pd.DataFrame)
             "BetMGM, Caesars, or bet365 HR prices with the current free key."
         )
         st.caption(
-            f"Detected provider plan: {provider_tier or 'Free/limited'} · "
+            f"Provider version: {provider_tier or 'Free/limited'} · "
             "Required for batter_home_runs: Business."
         )
     elif provider_status == "QUOTA_EXHAUSTED":
         st.error("The provider request quota has been reached. Live prices are paused until it resets.")
-    elif provider_status not in {"OK", "NO_ODDS", "READY"}:
+    elif provider_status not in {"OK", "NO_ODDS", "READY", "PARTIAL_ERROR", "MARKET_UNAVAILABLE"}:
         st.error(
             "The live-odds provider connection failed: "
             + str(refresh_meta.get("message") or provider_status)
@@ -10307,7 +10219,7 @@ def render_market_edge_tab(locked_board: pd.DataFrame, tracker_df: pd.DataFrame)
     if api_key:
         q1, q2, q3, q4 = st.columns(4)
         q1.metric("Provider connection", "Connected" if provider_status not in {"INVALID_KEY", "NO_KEY"} else "Failed")
-        q2.metric("Detected plan", provider_tier or "—")
+        q2.metric("Provider", "V4" if api_key else "—")
         q3.metric("Live prices matched", safe_int(refresh_meta.get("saved"), 0))
         q4.metric("Requests remaining", str(refresh_meta.get("remaining") if refresh_meta.get("remaining") is not None else "—"))
 
@@ -10331,13 +10243,7 @@ def render_market_edge_tab(locked_board: pd.DataFrame, tracker_df: pd.DataFrame)
     market = build_market_edge_table(locked_board, _automatic_market_rows_only())
     st.markdown("### Live sportsbook comparison")
     if market.empty:
-        if provider_status == "PLAN_REQUIRED":
-            st.info(
-                "No cards are shown because the connected free/limited plan cannot return "
-                "the batter_home_runs market. This is a provider-plan restriction, not a "
-                "player-matching or BF Data card error."
-            )
-        elif provider_status == "NO_ODDS":
+        if provider_status in {"MARKET_UNAVAILABLE", "NO_ODDS"}:
             st.info(
                 "The provider connection is working, but no current MLB home-run prices "
                 "were returned for visible BF Data players."
@@ -10546,8 +10452,8 @@ def player_market_strip_html(row: pd.Series, early: bool = False) -> str:
     provider_status = str(refresh_meta.get("status", "") or "")
     if not context.get("configured"):
         status = "Connect THE_ODDS_API_KEY in Streamlit Secrets"
-    elif provider_status == "PLAN_REQUIRED":
-        status = "HR odds require provider Business plan"
+    elif provider_status == "MARKET_UNAVAILABLE":
+        status = "HR market not posted yet"
     elif provider_status == "INVALID_KEY":
         status = "Provider key rejected · replace Secret"
     elif provider_status == "QUOTA_EXHAUSTED":
