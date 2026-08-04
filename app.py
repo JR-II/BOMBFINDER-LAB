@@ -2481,6 +2481,94 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
+# Final BF Data comfortable-readability layer.
+# UI-only. No prediction, lineup, ranking, tracker, combo, lock,
+# weather, history, or model calculations are changed.
+st.markdown(
+    """
+    <style>
+    html,body,.stApp{font-size:15px !important}
+
+    .block-container{
+        padding-left:clamp(.52rem,.95vw,.92rem) !important;
+        padding-right:clamp(.52rem,.95vw,.92rem) !important;
+    }
+
+    .stTabs [data-baseweb="tab"]{
+        padding:5px 8px !important;
+        min-height:30px !important;
+    }
+    .stTabs [data-baseweb="tab"] p{font-size:.66rem !important}
+
+    .bf-title{font-size:clamp(1.38rem,2.12vw,2.02rem) !important}
+    .bf-subtitle{font-size:.75rem !important}
+    .bf-kicker{font-size:.54rem !important}
+
+    .bf-scan-card{padding:7px 8px !important;margin:4px 0 5px !important}
+    .bf-scan-name{font-size:.91rem !important}
+    .bf-scan-matchup{font-size:.57rem !important}
+    .bf-scan-actions{grid-template-columns:repeat(3,49px) !important}
+    .bf-scan-action small{font-size:.36rem !important}
+    .bf-scan-action strong{font-size:.70rem !important}
+    .bf-scan-role{font-size:.45rem !important;padding:3px 6px !important}
+    .bf-scan-grade,.bf-scan-confidence,.bf-scan-rank{font-size:.45rem !important}
+    .bf-scan-badge{font-size:.43rem !important;padding:3px 6px !important}
+    .bf-scan-attack-label{font-size:.45rem !important}
+    .bf-scan-attack-score{font-size:.53rem !important}
+    .bf-scan-metric small{font-size:.32rem !important}
+    .bf-scan-metric strong{font-size:.60rem !important}
+    .bf-scan-why{font-size:.47rem !important;line-height:1.28 !important}
+    .bf-scan-pair{font-size:.46rem !important}
+    .bf-scan-pair-score{font-size:.55rem !important}
+
+    div[data-testid="stExpander"] summary{
+        min-height:31px !important;
+        padding:.27rem .56rem !important;
+        font-size:.73rem !important;
+    }
+
+    .bf-card-market-label{font-size:.44rem !important}
+    .bf-card-market-book{font-size:.47rem !important}
+    .bf-card-market-price{font-size:.69rem !important}
+    .bf-card-market-move,.bf-card-market-edge{font-size:.41rem !important}
+
+    .bf-combo-cell small{font-size:.47rem !important}
+    .bf-combo-cell strong{font-size:.71rem !important}
+    .bf-combo-label strong{font-size:.76rem !important}
+    .bf-combo-section strong{font-size:.87rem !important}
+    .bf-combo-section span{font-size:.60rem !important}
+
+    @media(max-width:640px){
+        html,body,.stApp{font-size:14px !important}
+        .block-container{padding:.24rem .36rem 1rem !important}
+        .bf-title{font-size:1.20rem !important}
+        .bf-subtitle{font-size:.69rem !important}
+        .stTabs [data-baseweb="tab"] p{font-size:.60rem !important}
+
+        .bf-scan-name{font-size:.91rem !important}
+        .bf-scan-matchup{font-size:.57rem !important}
+        .bf-scan-actions{grid-template-columns:repeat(3,47px) !important}
+        .bf-scan-action strong{font-size:.69rem !important}
+        .bf-scan-role{font-size:.44rem !important}
+        .bf-scan-grade,.bf-scan-confidence,.bf-scan-rank{font-size:.44rem !important}
+        .bf-scan-badge{font-size:.42rem !important}
+        .bf-scan-metric small{font-size:.31rem !important}
+        .bf-scan-metric strong{font-size:.59rem !important}
+        .bf-scan-why{font-size:.46rem !important}
+        .bf-scan-pair{font-size:.45rem !important}
+        .bf-scan-pair-score{font-size:.54rem !important}
+
+        .bf-card-market-label{font-size:.39rem !important}
+        .bf-card-market-book{font-size:.43rem !important}
+        .bf-card-market-price{font-size:.62rem !important}
+        .bf-card-market-move{font-size:.36rem !important}
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 AUTO_REFRESH_SECONDS = 120
 
 # Speed control: regular board loads avoid the heavy play-by-play L10 BBE pull.
@@ -9553,7 +9641,7 @@ def _event_is_today_et(event: dict) -> bool:
     return bool(dt and dt.strftime("%Y-%m-%d") == today_str())
 
 
-@st.cache_data(ttl=180, max_entries=8, show_spinner=False)
+@st.cache_data(ttl=3600, max_entries=8, show_spinner=False)
 def fetch_odds_provider_account(api_key: str) -> dict:
     """Verify the configured TheOddsAPI key and return plan/usage information."""
     if not api_key:
@@ -9678,7 +9766,7 @@ def _theoddsapi_market_key(market: dict) -> str:
     ).strip().lower()
 
 
-@st.cache_data(ttl=180, max_entries=8, show_spinner=False)
+@st.cache_data(ttl=600, max_entries=8, show_spinner=False)
 def fetch_live_hr_odds_from_provider(api_key: str) -> tuple[list[dict], dict]:
     """Fetch MLB batter-home-run prices from the user's actual provider.
 
@@ -9906,11 +9994,19 @@ def refresh_automatic_market_odds(locked_board: pd.DataFrame) -> dict:
         attached.append(row)
 
     if not attached:
-        return {**meta, "saved": 0}
+        return {
+            **meta,
+            "saved": 0,
+            "refreshed_at": now_et_string(),
+        }
 
     existing = load_market_odds()
     save_market_odds(pd.concat([existing, pd.DataFrame(attached)], ignore_index=True))
-    return {**meta, "saved": len(attached)}
+    return {
+        **meta,
+        "saved": len(attached),
+        "refreshed_at": now_et_string(),
+    }
 
 
 
@@ -10141,6 +10237,39 @@ def render_market_edge_tab(locked_board: pd.DataFrame, tracker_df: pd.DataFrame)
     provider_status = str(refresh_meta.get("status", "NO_KEY") or "NO_KEY")
     provider_tier = str(refresh_meta.get("tier", "") or "").strip()
 
+    refresh_col, refresh_note_col = st.columns([0.28, 0.72])
+    with refresh_col:
+        refresh_live_market = st.button(
+            "Refresh Live Odds",
+            key="bf_refresh_live_market_odds",
+            use_container_width=True,
+            disabled=not bool(api_key),
+        )
+    with refresh_note_col:
+        last_market_refresh = str(refresh_meta.get("refreshed_at", "") or "")
+        if last_market_refresh:
+            st.caption(f"Last provider refresh: {last_market_refresh} ET")
+        else:
+            st.caption(
+                "Fast-load mode is active. Live odds refresh only when requested, "
+                "so normal board and tab changes are not delayed."
+            )
+
+    if refresh_live_market:
+        with st.spinner("Checking the live HR market…"):
+            try:
+                refresh_meta = refresh_automatic_market_odds(locked_board)
+            except Exception as market_exc:
+                refresh_meta = {
+                    "status": "APP_REFRESH_ERROR",
+                    "message": str(market_exc),
+                    "saved": 0,
+                    "refreshed_at": now_et_string(),
+                }
+        st.session_state["bf_market_refresh_meta"] = refresh_meta
+        provider_status = str(refresh_meta.get("status", "NO_KEY") or "NO_KEY")
+        provider_tier = str(refresh_meta.get("tier", "") or "").strip()
+
     if not api_key:
         st.warning(
             "No provider key is connected. Add your regenerated TheOddsAPI key "
@@ -10169,7 +10298,7 @@ def render_market_edge_tab(locked_board: pd.DataFrame, tracker_df: pd.DataFrame)
         )
     elif provider_status == "QUOTA_EXHAUSTED":
         st.error("The provider request quota has been reached. Live prices are paused until it resets.")
-    elif provider_status not in {"OK", "NO_ODDS"}:
+    elif provider_status not in {"OK", "NO_ODDS", "READY"}:
         st.error(
             "The live-odds provider connection failed: "
             + str(refresh_meta.get("message") or provider_status)
@@ -12329,21 +12458,20 @@ st.session_state.manual_refresh_trigger = False
 # Display-only live result column.
 locked_df = add_live_homer_counts_to_board(locked_df_raw, schedule)
 
-# Refresh the additive market layer before rendering any board or player card.
-# Cached provider calls keep normal reruns lightweight. Odds never modify the board.
-if _get_odds_api_key():
-    try:
-        st.session_state["bf_market_refresh_meta"] = refresh_automatic_market_odds(locked_df)
-    except Exception as _bf_market_exc:
-        st.session_state["bf_market_refresh_meta"] = {
-            "status": "APP_REFRESH_ERROR",
-            "message": str(_bf_market_exc),
-            "saved": 0,
-        }
-else:
+# FAST-LOAD MARKET LAYER:
+# Do not contact the sportsbook provider during every normal Streamlit rerun.
+# Saved market prices remain available to player cards immediately. A fresh
+# provider request is made only from the Market Edge refresh control.
+if not _get_odds_api_key():
     st.session_state["bf_market_refresh_meta"] = {
         "status": "NO_KEY",
         "message": "No API key configured.",
+        "saved": 0,
+    }
+elif "bf_market_refresh_meta" not in st.session_state:
+    st.session_state["bf_market_refresh_meta"] = {
+        "status": "READY",
+        "message": "Provider refresh is available from Market Edge.",
         "saved": 0,
     }
 
