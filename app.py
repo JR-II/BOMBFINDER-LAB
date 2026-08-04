@@ -2301,6 +2301,71 @@ st.markdown(
     }
     .bf-market-books strong{display:block;color:var(--bf-text);font-size:.63rem;margin-top:2px}
 
+    /* Live sportsbook information embedded directly into every player card. */
+    .bf-card-market{
+        display:grid;
+        grid-template-columns:auto minmax(0,1fr) auto auto;
+        gap:6px;
+        align-items:center;
+        margin-top:5px;
+        padding:5px 7px;
+        border:1px solid var(--bf-border);
+        border-radius:7px;
+        background:var(--bf-panel-2);
+        min-width:0;
+    }
+    .bf-card-market.no-data{
+        grid-template-columns:auto minmax(0,1fr);
+        opacity:.82;
+    }
+    .bf-card-market-label{
+        color:var(--bf-accent);
+        font-size:.40rem;
+        font-weight:950;
+        letter-spacing:.08em;
+        white-space:nowrap;
+    }
+    .bf-card-market-book{
+        min-width:0;
+        color:var(--bf-muted);
+        font-size:.43rem;
+        font-weight:850;
+        white-space:nowrap;
+        overflow:hidden;
+        text-overflow:ellipsis;
+    }
+    .bf-card-market-price{
+        color:var(--bf-text);
+        font-size:.64rem;
+        font-weight:950;
+        white-space:nowrap;
+    }
+    .bf-card-market-move{
+        border-radius:999px;
+        padding:2px 5px;
+        font-size:.37rem;
+        font-weight:950;
+        white-space:nowrap;
+        border:1px solid var(--bf-border);
+    }
+    .bf-card-market-move.steam{
+        color:#35d07f;
+        border-color:rgba(53,208,127,.38);
+        background:rgba(53,208,127,.07);
+    }
+    .bf-card-market-move.drift{
+        color:#ffd166;
+        border-color:rgba(255,209,102,.38);
+        background:rgba(255,209,102,.07);
+    }
+    .bf-card-market-move.flat{color:var(--bf-muted)}
+    .bf-card-market-edge{
+        color:var(--bf-accent);
+        font-size:.43rem;
+        font-weight:950;
+        white-space:nowrap;
+    }
+
     /* Keep the help expander visually separate from the combo cards. */
     .bf-today-combos + div[data-testid="stExpander"]{
         margin-top:4px !important;
@@ -2398,6 +2463,16 @@ st.markdown(
         .bf-market-grid{grid-template-columns:1fr !important}
         .bf-market-books{grid-template-columns:repeat(3,minmax(0,1fr)) !important}
         .bf-market-audit{grid-template-columns:1fr !important}
+        .bf-card-market{
+            grid-template-columns:auto minmax(0,1fr) auto !important;
+            padding:4px 5px !important;
+            gap:4px !important;
+        }
+        .bf-card-market-edge{display:none !important}
+        .bf-card-market-label{font-size:.35rem !important}
+        .bf-card-market-book{font-size:.38rem !important}
+        .bf-card-market-price{font-size:.56rem !important}
+        .bf-card-market-move{font-size:.32rem !important}
         .bf-title{font-size:1.12rem !important}
         .stTabs [data-baseweb="tab"] p{font-size:.56rem !important}
     }
@@ -9852,15 +9927,16 @@ def render_market_edge_tab(locked_board: pd.DataFrame, tracker_df: pd.DataFrame)
     )
 
     api_key = _get_odds_api_key()
-    refresh_meta = {"status": "NO_KEY", "saved": 0}
-    if api_key:
-        with st.spinner("Refreshing live home-run prices..."):
-            refresh_meta = refresh_automatic_market_odds(locked_board)
+    refresh_meta = st.session_state.get(
+        "bf_market_refresh_meta",
+        {"status": "NO_KEY", "saved": 0},
+    )
 
     if not api_key:
         st.warning(
-            "Automatic odds are ready, but the API key is not configured. "
-            "Add THE_ODDS_API_KEY to Streamlit Secrets. Do not place the key in app.py."
+            "Live sportsbook prices cannot appear until the provider key is connected. "
+            "The player cards are already wired for odds; after the one-time Secrets setup, "
+            "each card will automatically show its best book, price, movement, and BF edge."
         )
         with st.expander("One-time Streamlit Secrets setup", expanded=True):
             st.code('THE_ODDS_API_KEY = "paste_your_key_here"', language="toml")
@@ -9894,7 +9970,7 @@ def render_market_edge_tab(locked_board: pd.DataFrame, tracker_df: pd.DataFrame)
         unsafe_allow_html=True,
     )
 
-    market = build_market_edge_table(locked_board, load_market_odds())
+    market = build_market_edge_table(locked_board, _automatic_market_rows_only())
     st.markdown("### Live sportsbook comparison")
     if market.empty:
         st.info(
@@ -10006,6 +10082,109 @@ def render_market_edge_tab(locked_board: pd.DataFrame, tracker_df: pd.DataFrame)
             sportsbook's official opening line.
             """
         )
+
+
+
+def _automatic_market_rows_only() -> pd.DataFrame:
+    """Return today's provider-fed rows; old manual entries never masquerade as live."""
+    odds = load_market_odds()
+    if odds is None or odds.empty:
+        return pd.DataFrame(columns=_market_odds_columns())
+    work = odds[odds["date"].astype(str).eq(today_str())].copy()
+    note = work["source_note"].fillna("").astype(str).str.lower()
+    return work[note.str.contains("automatic live batter hr odds", regex=False)].copy()
+
+
+def player_market_card_context(row: pd.Series) -> dict:
+    """Best real price and movement for one visible BF Data player."""
+    player = normalize_name(str(row.get("Player", "") or ""))
+    if not player:
+        return {"available": False, "configured": bool(_get_odds_api_key())}
+
+    odds = _automatic_market_rows_only()
+    if odds.empty:
+        return {"available": False, "configured": bool(_get_odds_api_key())}
+
+    matched = odds[odds["player"].astype(str).map(normalize_name).eq(player)].copy()
+    if matched.empty:
+        return {"available": False, "configured": bool(_get_odds_api_key())}
+
+    matched["_current"] = pd.to_numeric(matched["current_odds"], errors="coerce")
+    matched["_opening"] = pd.to_numeric(matched["opening_odds"], errors="coerce")
+    matched = matched[matched["_current"].notna()].copy()
+    if matched.empty:
+        return {"available": False, "configured": bool(_get_odds_api_key())}
+
+    best = matched.sort_values("_current", ascending=False).iloc[0]
+    current = safe_int(best.get("_current"), 0)
+    opening = safe_int(best.get("_opening"), 0)
+    move = current - opening if current and opening else 0
+
+    if move < 0:
+        movement = "SHORTENING"
+        move_class = "steam"
+        move_text = f"▼ {abs(move):.0f}"
+    elif move > 0:
+        movement = "DRIFTING"
+        move_class = "drift"
+        move_text = f"▲ {abs(move):.0f}"
+    else:
+        movement = "UNCHANGED"
+        move_class = "flat"
+        move_text = "— FLAT"
+
+    bf_probability = safe_float(row.get("HR Probability %"), 0.0)
+    implied = american_odds_to_implied_probability(current)
+    edge = (
+        bf_probability - implied * 100.0
+        if implied is not None and bf_probability > 0
+        else None
+    )
+
+    return {
+        "available": True,
+        "configured": True,
+        "sportsbook": str(best.get("sportsbook", "—") or "—"),
+        "current": current,
+        "opening": opening,
+        "movement": movement,
+        "move_class": move_class,
+        "move_text": move_text,
+        "edge": edge,
+    }
+
+
+def player_market_strip_html(row: pd.Series, early: bool = False) -> str:
+    if early:
+        return ""
+
+    context = player_market_card_context(row)
+    if context.get("available"):
+        price = _format_american_odds(context.get("current"))
+        edge = context.get("edge")
+        edge_text = f"BF EDGE {edge:+.1f} PTS" if edge is not None else "LIVE PRICE"
+        return (
+            '<div class="bf-card-market">'
+            '<span class="bf-card-market-label">MARKET</span>'
+            f'<span class="bf-card-market-book">BEST · {escape(context["sportsbook"])}</span>'
+            f'<strong class="bf-card-market-price">{price}</strong>'
+            f'<span class="bf-card-market-move {context["move_class"]}">{escape(context["move_text"])}</span>'
+            f'<span class="bf-card-market-edge">{escape(edge_text)}</span>'
+            '</div>'
+        )
+
+    status = (
+        "Connect THE_ODDS_API_KEY in Streamlit Secrets"
+        if not context.get("configured")
+        else "No posted HR price matched this player"
+    )
+    return (
+        '<div class="bf-card-market no-data">'
+        '<span class="bf-card-market-label">MARKET</span>'
+        f'<span class="bf-card-market-book">{escape(status)}</span>'
+        '</div>'
+    )
+
 
 
 def bf_conviction_from_row(row: pd.Series) -> dict:
@@ -10419,6 +10598,8 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
     else:
         red_flag = "No major red flag"
 
+    market_strip_html = player_market_strip_html(row, early=early)
+
     if not early:
         return f"""
 <div class="bf-scan-card {card_class}">
@@ -10434,6 +10615,7 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
         <span class="bf-scan-rank">SLATE RANK #{slate_rank} · TEAM RANK #{team_rank} · GAME RANK #{game_rank}</span>
       </div>
       <div class="bf-scan-badges">{compact_badge_html}</div>
+      {market_strip_html}
     </div>
     <div class="bf-scan-actions">
       <div class="bf-scan-action"><small>WAGER</small><strong>{wager_priority:.1f}</strong></div>
@@ -11897,6 +12079,19 @@ st.session_state.manual_refresh_trigger = False
 
 # Display-only live result column.
 locked_df = add_live_homer_counts_to_board(locked_df_raw, schedule)
+
+# Refresh the additive market layer before rendering any board or player card.
+# Cached provider calls keep normal reruns lightweight. Odds never modify the board.
+if _get_odds_api_key():
+    try:
+        st.session_state["bf_market_refresh_meta"] = refresh_automatic_market_odds(locked_df)
+    except Exception as _bf_market_exc:
+        st.session_state["bf_market_refresh_meta"] = {
+            "status": f"ERROR: {_bf_market_exc}",
+            "saved": 0,
+        }
+else:
+    st.session_state["bf_market_refresh_meta"] = {"status": "NO_KEY", "saved": 0}
 
 save_daily_tracker_snapshot(tracker, today_str())
 
