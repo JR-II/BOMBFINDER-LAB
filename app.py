@@ -9741,6 +9741,10 @@ def fetch_live_hr_odds_from_provider(api_key: str) -> tuple[list[dict], dict]:
             eligible_events.append(event)
 
     rows = []
+    raw_market_count = 0
+    raw_outcome_count = 0
+    raw_bookmakers = set()
+    raw_player_names = []
     captured = now_et_string()
     remaining = events_response.headers.get("x-requests-remaining")
     used = events_response.headers.get("x-requests-used")
@@ -9804,11 +9808,13 @@ def fetch_live_hr_odds_from_provider(api_key: str) -> tuple[list[dict], dict]:
             if book_key not in BF_ODDS_BOOKMAKERS:
                 continue
             book_title = BF_ODDS_BOOKMAKERS[book_key]
+            raw_bookmakers.add(book_title)
 
             for market in book.get("markets", []) or []:
                 if str(market.get("key", "") or "").strip().lower() != "batter_home_runs":
                     continue
 
+                raw_market_count += 1
                 market_update = str(
                     market.get("last_update")
                     or book.get("last_update")
@@ -9819,20 +9825,37 @@ def fetch_live_hr_odds_from_provider(api_key: str) -> tuple[list[dict], dict]:
                     if not isinstance(outcome, dict):
                         continue
 
-                    direction = str(outcome.get("name", "") or "").strip().lower()
+                    outcome_name = str(outcome.get("name", "") or "").strip()
+                    outcome_description = str(outcome.get("description", "") or "").strip()
+                    name_lower = outcome_name.lower()
+                    description_lower = outcome_description.lower()
                     point = safe_float(outcome.get("point"), 0.5)
 
-                    # The standard market is Over/Under 0.5. Keep the Over side,
-                    # which corresponds to the player hitting at least one HR.
-                    if direction not in {"over", "yes"}:
+                    # The Odds API normally returns:
+                    #   name="Over", description="<Player>", point=0.5
+                    # Some bookmaker feeds can invert the fields or use Yes/No.
+                    # Accept only the positive 1+ HR side, but recognize both
+                    # truthful response orientations.
+                    positive_tokens = {"over", "yes"}
+                    if name_lower in positive_tokens:
+                        direction = name_lower
+                        player = outcome_description
+                    elif description_lower in positive_tokens:
+                        direction = description_lower
+                        player = outcome_name
+                    else:
                         continue
+
                     if direction == "over" and abs(point - 0.5) > 0.01:
                         continue
 
-                    player = str(outcome.get("description", "") or "").strip()
                     price = safe_int(outcome.get("price"), 0)
-                    if not player or price == 0:
+                    if not player or player.lower() in positive_tokens or price == 0:
                         continue
+
+                    raw_outcome_count += 1
+                    if player not in raw_player_names and len(raw_player_names) < 40:
+                        raw_player_names.append(player)
 
                     rows.append({
                         "date": today_key,
@@ -9873,53 +9896,126 @@ def fetch_live_hr_odds_from_provider(api_key: str) -> tuple[list[dict], dict]:
         "eligible_events": len(eligible_events),
         "unavailable_events": unavailable_events,
         "saved_raw": len(rows),
+        "raw_market_count": raw_market_count,
+        "raw_outcome_count": raw_outcome_count,
+        "bookmakers_found": sorted(raw_bookmakers),
+        "provider_player_samples": raw_player_names[:20],
         "message": message,
     }
 
 
 
+def _market_player_match_key(name: str) -> str:
+    """Normalize harmless sportsbook/MLB naming differences only."""
+    key = normalize_name(name)
+    # Normalize common suffix formatting without performing fuzzy guessing.
+    key = re.sub(r"\b(jr|sr|ii|iii|iv)\b", "", key)
+    key = re.sub(r"\s+", " ", key).strip()
+    return key
+
+
 def refresh_automatic_market_odds(locked_board: pd.DataFrame) -> dict:
-    """Attach automatic sportsbook prices to visible BF Data players only."""
+    """Attach automatic sportsbook prices to visible BF Data players only.
+
+    This remains strict: provider odds can only attach to a player who already
+    exists on the visible BF Data board. The provider can never add a player,
+    change eligibility, alter a lineup, or rerank a prediction.
+    """
     api_key = _get_odds_api_key()
     if not api_key:
         return {"status": "NO_KEY", "saved": 0}
 
     rows, meta = fetch_live_hr_odds_from_provider(api_key)
-    if not rows:
-        return {**meta, "saved": 0}
-
     board = locked_board.copy()
+
     if board.empty or "Player" not in board.columns:
-        return {**meta, "saved": 0}
-    board["_player_key"] = board["Player"].astype(str).map(normalize_name)
+        return {
+            **meta,
+            "saved": 0,
+            "match_status": "NO_VISIBLE_BOARD",
+            "board_player_count": 0,
+            "provider_player_count": len({str(r.get("player", "")) for r in rows}),
+            "refreshed_at": now_et_string(),
+        }
+
+    board["_player_key"] = board["Player"].astype(str).map(_market_player_match_key)
+    board_players = (
+        board[["Player", "_player_key"]]
+        .drop_duplicates("_player_key")
+        .sort_values("Player")
+    )
+    provider_players = sorted({
+        str(row.get("player", "") or "").strip()
+        for row in rows
+        if str(row.get("player", "") or "").strip()
+    })
+
+    if not rows:
+        return {
+            **meta,
+            "saved": 0,
+            "match_status": "NO_PROVIDER_OUTCOMES",
+            "board_player_count": int(len(board_players)),
+            "provider_player_count": 0,
+            "board_player_samples": board_players["Player"].head(20).tolist(),
+            "provider_player_samples": meta.get("provider_player_samples", []),
+            "unmatched_provider_samples": [],
+            "refreshed_at": now_et_string(),
+        }
 
     attached = []
+    matched_provider_names = set()
+    unmatched_provider_names = []
+
     for row in rows:
-        matches = board[board["_player_key"].eq(normalize_name(row["player"]))]
+        provider_name = str(row.get("player", "") or "").strip()
+        provider_key = _market_player_match_key(provider_name)
+        matches = board[board["_player_key"].eq(provider_key)]
+
         if matches.empty:
+            if provider_name and provider_name not in unmatched_provider_names:
+                unmatched_provider_names.append(provider_name)
             continue
-        # Exact MLB player-name match controls eligibility; sportsbook odds never
-        # add a player to BF Data or alter a ranking.
+
+        # Strict normalized-name match controls eligibility.
         bf_row = matches.iloc[0]
         row["team"] = str(bf_row.get("Team", "") or "")
-        row["game"] = str(bf_row.get("Game", "") or row["game"])
+        row["game"] = str(bf_row.get("Game", "") or row.get("game", ""))
         attached.append(row)
+        matched_provider_names.add(provider_name)
+
+    diagnostic = {
+        "board_player_count": int(len(board_players)),
+        "provider_player_count": int(len(provider_players)),
+        "matched_player_count": int(len(matched_provider_names)),
+        "attached_price_count": int(len(attached)),
+        "board_player_samples": board_players["Player"].head(20).tolist(),
+        "provider_player_samples": provider_players[:20],
+        "matched_player_samples": sorted(matched_provider_names)[:20],
+        "unmatched_provider_samples": unmatched_provider_names[:20],
+        "refreshed_at": now_et_string(),
+    }
 
     if not attached:
         return {
             **meta,
+            **diagnostic,
             "saved": 0,
-            "refreshed_at": now_et_string(),
+            "match_status": (
+                "PROVIDER_RETURNED_PLAYERS_NO_MATCH"
+                if provider_players
+                else "NO_PROVIDER_OUTCOMES"
+            ),
         }
 
     existing = load_market_odds()
     save_market_odds(pd.concat([existing, pd.DataFrame(attached)], ignore_index=True))
     return {
         **meta,
+        **diagnostic,
         "saved": len(attached),
-        "refreshed_at": now_et_string(),
+        "match_status": "MATCHED",
     }
-
 
 
 def american_odds_to_implied_probability(odds) -> float | None:
@@ -10181,6 +10277,49 @@ def render_market_edge_tab(locked_board: pd.DataFrame, tracker_df: pd.DataFrame)
         st.session_state["bf_market_refresh_meta"] = refresh_meta
         provider_status = str(refresh_meta.get("status", "NO_KEY") or "NO_KEY")
         provider_tier = str(refresh_meta.get("tier", "") or "").strip()
+
+    with st.expander("Market connection audit", expanded=False):
+        audit_meta = st.session_state.get("bf_market_refresh_meta", {}) or {}
+        a1, a2, a3, a4 = st.columns(4)
+        a1.metric("Eligible MLB events", safe_int(audit_meta.get("eligible_events"), 0))
+        a2.metric("HR markets returned", safe_int(audit_meta.get("raw_market_count"), 0))
+        a3.metric("Provider players", safe_int(audit_meta.get("provider_player_count"), 0))
+        a4.metric("Players matched", safe_int(audit_meta.get("matched_player_count"), 0))
+
+        st.caption(
+            "This audit does not expose your API key and does not alter predictions. "
+            "It shows whether the provider returned HR markets and whether those player "
+            "names matched players already visible in BF Data."
+        )
+
+        sample_provider = audit_meta.get("provider_player_samples", []) or []
+        sample_board = audit_meta.get("board_player_samples", []) or []
+        sample_matched = audit_meta.get("matched_player_samples", []) or []
+        sample_unmatched = audit_meta.get("unmatched_provider_samples", []) or []
+
+        if sample_provider:
+            st.write("**Provider player sample:** " + ", ".join(map(str, sample_provider[:12])))
+        if sample_board:
+            st.write("**Visible BF Data sample:** " + ", ".join(map(str, sample_board[:12])))
+        if sample_matched:
+            st.write("**Matched sample:** " + ", ".join(map(str, sample_matched[:12])))
+        if sample_unmatched:
+            st.write("**Unmatched provider sample:** " + ", ".join(map(str, sample_unmatched[:12])))
+
+        match_status = str(audit_meta.get("match_status", "") or "")
+        if match_status == "NO_PROVIDER_OUTCOMES":
+            st.info(
+                "The connection worked, but the API returned no positive 1+ HR outcomes. "
+                "That means the market is not posted yet, the selected books did not return it, "
+                "or the provider response contained no supported HR lines."
+            )
+        elif match_status == "PROVIDER_RETURNED_PLAYERS_NO_MATCH":
+            st.warning(
+                "The API returned HR players, but none matched the visible BF Data board. "
+                "Use the samples above to identify the exact naming difference."
+            )
+        elif match_status == "MATCHED":
+            st.success("The provider returned HR odds and matched them to visible BF Data players.")
 
     if not api_key:
         st.warning(
