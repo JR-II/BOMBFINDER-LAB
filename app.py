@@ -12865,193 +12865,6 @@ if not schedule:
     render_off_day_mode(load_tracker())
     st.stop()
 
-locked_df_raw = ensure_daily_board_lock(live_df, schedule)
-
-lineup_mode = get_lineup_mode(schedule) if schedule else "PROJECTED"
-
-# Build and save the prediction/tracker pool BEFORE adding live results.
-# This prevents post-HR result data from rewriting the prediction board.
-doubleheader_assignment_map = build_doubleheader_assignment_map(locked_df_raw, schedule)
-tracked_df = build_visible_tracker_pool(locked_df_raw, schedule, doubleheader_assignment_map)
-save_daily_board_snapshot(tracked_df, today_str())
-
-# Build the independent Top 25 HRR board before live results are attached.
-# These prediction-time rows are locked into their own daily tracker.
-top25_hrr_board = build_top25_hrr_board(locked_df_raw)
-hrr_tracker = sync_hrr_tracker_with_board(top25_hrr_board)
-
-tracker = sync_tracker_with_board(tracked_df)
-tracker = reconcile_today_tracker_with_visible_board(tracker, tracked_df, schedule)
-combo_board = build_combo_board(locked_df_raw)
-combo_tracker = sync_combo_tracker_with_board(combo_board)
-
-# Always update results every run. Refresh/update should not be required for HR counts to move off zero.
-tracker = auto_update_tracker_results(tracker, schedule)
-combo_tracker = auto_update_combo_tracker_results(combo_tracker, schedule)
-hrr_tracker = auto_update_hrr_tracker_results(hrr_tracker, schedule)
-st.session_state.manual_refresh_trigger = False
-
-# Display-only live result column.
-locked_df = add_live_homer_counts_to_board(locked_df_raw, schedule)
-
-# FAST-LOAD MARKET LAYER:
-# Do not contact the sportsbook provider during every normal Streamlit rerun.
-# Saved market prices remain available to player cards immediately. A fresh
-# provider request is made only from the Market Edge refresh control.
-if not _get_odds_api_key():
-    st.session_state["bf_market_refresh_meta"] = {
-        "status": "NO_KEY",
-        "message": "No API key configured.",
-        "saved": 0,
-    }
-elif "bf_market_refresh_meta" not in st.session_state:
-    st.session_state["bf_market_refresh_meta"] = {
-        "status": "READY",
-        "message": "Provider refresh is available from Market Edge.",
-        "saved": 0,
-    }
-
-save_daily_tracker_snapshot(tracker, today_str())
-
-summary = summarize_tracker(tracker)
-source_summary = summarize_tracker_sources(tracker)
-daily_summary = summarize_tracker_by_day(tracker)
-combo_summary = summarize_combo_tracker(combo_tracker)
-
-with c2:
-    st.metric("Games On Slate", len(schedule))
-with c3:
-    st.metric("Lineup Mode", lineup_mode)
-with c4:
-    slate_confidence_value = compute_slate_confidence(tracked_df)
-    st.caption(f"BF Slate Confidence: {slate_confidence_value:.1f}/100")
-    confirmed_locked = 0
-    if not locked_df.empty and "lock_scope" in locked_df.columns:
-        confirmed_locked = int((locked_df["lock_scope"].astype(str) == "CONFIRMED_TEAM").sum())
-    if confirmed_locked > 0:
-        st.caption(f"Projected teams stay live • confirmed teams pregame-rebuild on update • locked confirmed rows: {confirmed_locked}")
-    else:
-        st.caption(f"Projected teams live • update rebuilds pregame confirmed locks • last refresh: {datetime.now().strftime('%Y-%m-%d %I:%M %p')}")
-
-if locked_df.empty:
-    st.warning("No games or hitter data loaded.")
-    st.stop()
-
-
-st.markdown(
-    """
-    <style>
-    .bf-hrr-key{
-        display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 9px;
-    }
-    .bf-hrr-key span{
-        border:1px solid var(--bf-border);border-radius:999px;
-        background:var(--bf-panel-2);color:var(--bf-muted);
-        padding:4px 8px;font-size:.54rem;font-weight:850;
-    }
-    .bf-hrr-key b{color:var(--bf-accent)}
-    .bf-hrr-grid{
-        display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
-        gap:8px;margin-top:5px;
-    }
-    .bf-hrr-card{
-        min-width:0;border:1px solid var(--bf-border);border-radius:10px;
-        background:linear-gradient(145deg,var(--bf-panel-2),var(--bf-panel));
-        padding:9px 10px;box-shadow:0 6px 18px rgba(0,0,0,.12);
-    }
-    .bf-hrr-card.core{border-color:rgba(53,208,127,.58)}
-    .bf-hrr-card.strong{border-left:3px solid var(--bf-accent)}
-    .bf-hrr-card.secondary{border-left:3px solid #8a7bd8}
-    .bf-hrr-card.longshot{border-left:3px solid rgba(255,209,102,.70)}
-    .bf-hrr-head{
-        display:grid;grid-template-columns:minmax(0,1fr) auto;
-        gap:8px;align-items:start;
-    }
-    .bf-hrr-name{color:var(--bf-text);font-size:.92rem;font-weight:950}
-    .bf-hrr-meta{
-        color:var(--bf-muted);font-size:.56rem;margin-top:2px;
-        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-    }
-    .bf-hrr-roleline{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-top:6px}
-    .bf-hrr-tier,.bf-hrr-grade,.bf-hrr-lineup,.bf-hrr-trend{
-        display:inline-flex;align-items:center;border:1px solid var(--bf-border);
-        border-radius:999px;padding:3px 6px;font-size:.43rem;font-weight:950;
-    }
-    .bf-hrr-tier.core{color:#62efaa;border-color:rgba(53,208,127,.52);background:rgba(53,208,127,.08)}
-    .bf-hrr-tier.strong{color:var(--bf-accent);border-color:var(--bf-accent-line);background:var(--bf-accent-soft)}
-    .bf-hrr-tier.secondary{color:#c7b5ff;border-color:rgba(173,139,255,.40);background:rgba(173,139,255,.07)}
-    .bf-hrr-tier.longshot{color:#ffd166;border-color:rgba(255,209,102,.42);background:rgba(255,209,102,.07)}
-    .bf-hrr-grade{color:var(--bf-text);background:var(--bf-panel-3)}
-    .bf-hrr-lineup{color:var(--bf-muted)}
-    .bf-hrr-trend.hot{color:#35d07f;border-color:rgba(53,208,127,.40)}
-    .bf-hrr-trend.up{color:#8fc0ff;border-color:var(--bf-accent-line)}
-    .bf-hrr-trend.cool{color:#ff8f8f;border-color:rgba(255,107,107,.38)}
-    .bf-hrr-trend.steady{color:var(--bf-muted)}
-    .bf-hrr-score{
-        min-width:68px;text-align:center;border:1px solid var(--bf-border);
-        border-radius:8px;background:var(--bf-panel-2);padding:6px 7px;
-    }
-    .bf-hrr-score small{
-        display:block;color:var(--bf-accent);font-size:.38rem;
-        font-weight:950;letter-spacing:.08em;
-    }
-    .bf-hrr-score strong{
-        display:block;color:var(--bf-text);font-size:.96rem;margin-top:2px;
-    }
-    .bf-hrr-form{
-        display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
-        gap:5px;margin-top:8px;
-    }
-    .bf-hrr-form>div,.bf-hrr-metrics>div{
-        min-width:0;text-align:center;border:1px solid var(--bf-border);
-        border-radius:7px;background:var(--bf-panel-2);padding:5px;
-    }
-    .bf-hrr-form small,.bf-hrr-metrics small{
-        display:block;color:var(--bf-muted);font-size:.36rem;
-        font-weight:950;letter-spacing:.07em;
-    }
-    .bf-hrr-form strong,.bf-hrr-metrics strong{
-        display:block;color:var(--bf-text);font-size:.72rem;margin-top:2px;
-    }
-    .bf-hrr-form span{
-        display:block;color:var(--bf-muted);font-size:.34rem;margin-top:1px;
-    }
-    .bf-hrr-metrics{
-        display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
-        gap:5px;margin-top:5px;
-    }
-    .bf-hrr-bar{
-        height:6px;border-radius:999px;overflow:hidden;
-        background:var(--bf-panel-3);margin-top:7px;
-    }
-    .bf-hrr-bar>div{
-        height:100%;border-radius:999px;
-        background:linear-gradient(90deg,var(--bf-accent),#35d07f);
-    }
-    .bf-hrr-why{
-        color:var(--bf-muted);font-size:.48rem;line-height:1.28;
-        margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-    }
-    .bf-hrr-why b{color:var(--bf-accent);font-size:.40rem;letter-spacing:.07em}
-    @media(max-width:900px){
-        .bf-hrr-grid{grid-template-columns:1fr}
-    }
-    @media(max-width:640px){
-        .bf-hrr-card{padding:7px 8px}
-        .bf-hrr-name{font-size:.84rem}
-        .bf-hrr-meta{font-size:.51rem}
-        .bf-hrr-score{min-width:60px;padding:5px}
-        .bf-hrr-tier,.bf-hrr-grade,.bf-hrr-lineup,.bf-hrr-trend{font-size:.38rem;padding:2px 5px}
-        .bf-hrr-form strong,.bf-hrr-metrics strong{font-size:.64rem}
-        .bf-hrr-form small,.bf-hrr-metrics small{font-size:.31rem}
-        .bf-hrr-why{font-size:.43rem}
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-
 # ------------------------------------------------------------------
 # BF DATA TOP 25 HRR BOARD
 # Replaces the discontinued sportsbook Market Edge tab.
@@ -13421,6 +13234,192 @@ def render_top25_hrr_tab(locked_board: pd.DataFrame, prepared_board: pd.DataFram
             use_container_width=True,
             hide_index=True,
         )
+
+locked_df_raw = ensure_daily_board_lock(live_df, schedule)
+
+lineup_mode = get_lineup_mode(schedule) if schedule else "PROJECTED"
+
+# Build and save the prediction/tracker pool BEFORE adding live results.
+# This prevents post-HR result data from rewriting the prediction board.
+doubleheader_assignment_map = build_doubleheader_assignment_map(locked_df_raw, schedule)
+tracked_df = build_visible_tracker_pool(locked_df_raw, schedule, doubleheader_assignment_map)
+save_daily_board_snapshot(tracked_df, today_str())
+
+# Build the independent Top 25 HRR board before live results are attached.
+# These prediction-time rows are locked into their own daily tracker.
+top25_hrr_board = build_top25_hrr_board(locked_df_raw)
+hrr_tracker = sync_hrr_tracker_with_board(top25_hrr_board)
+
+tracker = sync_tracker_with_board(tracked_df)
+tracker = reconcile_today_tracker_with_visible_board(tracker, tracked_df, schedule)
+combo_board = build_combo_board(locked_df_raw)
+combo_tracker = sync_combo_tracker_with_board(combo_board)
+
+# Always update results every run. Refresh/update should not be required for HR counts to move off zero.
+tracker = auto_update_tracker_results(tracker, schedule)
+combo_tracker = auto_update_combo_tracker_results(combo_tracker, schedule)
+hrr_tracker = auto_update_hrr_tracker_results(hrr_tracker, schedule)
+st.session_state.manual_refresh_trigger = False
+
+# Display-only live result column.
+locked_df = add_live_homer_counts_to_board(locked_df_raw, schedule)
+
+# FAST-LOAD MARKET LAYER:
+# Do not contact the sportsbook provider during every normal Streamlit rerun.
+# Saved market prices remain available to player cards immediately. A fresh
+# provider request is made only from the Market Edge refresh control.
+if not _get_odds_api_key():
+    st.session_state["bf_market_refresh_meta"] = {
+        "status": "NO_KEY",
+        "message": "No API key configured.",
+        "saved": 0,
+    }
+elif "bf_market_refresh_meta" not in st.session_state:
+    st.session_state["bf_market_refresh_meta"] = {
+        "status": "READY",
+        "message": "Provider refresh is available from Market Edge.",
+        "saved": 0,
+    }
+
+save_daily_tracker_snapshot(tracker, today_str())
+
+summary = summarize_tracker(tracker)
+source_summary = summarize_tracker_sources(tracker)
+daily_summary = summarize_tracker_by_day(tracker)
+combo_summary = summarize_combo_tracker(combo_tracker)
+
+with c2:
+    st.metric("Games On Slate", len(schedule))
+with c3:
+    st.metric("Lineup Mode", lineup_mode)
+with c4:
+    slate_confidence_value = compute_slate_confidence(tracked_df)
+    st.caption(f"BF Slate Confidence: {slate_confidence_value:.1f}/100")
+    confirmed_locked = 0
+    if not locked_df.empty and "lock_scope" in locked_df.columns:
+        confirmed_locked = int((locked_df["lock_scope"].astype(str) == "CONFIRMED_TEAM").sum())
+    if confirmed_locked > 0:
+        st.caption(f"Projected teams stay live • confirmed teams pregame-rebuild on update • locked confirmed rows: {confirmed_locked}")
+    else:
+        st.caption(f"Projected teams live • update rebuilds pregame confirmed locks • last refresh: {datetime.now().strftime('%Y-%m-%d %I:%M %p')}")
+
+if locked_df.empty:
+    st.warning("No games or hitter data loaded.")
+    st.stop()
+
+
+st.markdown(
+    """
+    <style>
+    .bf-hrr-key{
+        display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 9px;
+    }
+    .bf-hrr-key span{
+        border:1px solid var(--bf-border);border-radius:999px;
+        background:var(--bf-panel-2);color:var(--bf-muted);
+        padding:4px 8px;font-size:.54rem;font-weight:850;
+    }
+    .bf-hrr-key b{color:var(--bf-accent)}
+    .bf-hrr-grid{
+        display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
+        gap:8px;margin-top:5px;
+    }
+    .bf-hrr-card{
+        min-width:0;border:1px solid var(--bf-border);border-radius:10px;
+        background:linear-gradient(145deg,var(--bf-panel-2),var(--bf-panel));
+        padding:9px 10px;box-shadow:0 6px 18px rgba(0,0,0,.12);
+    }
+    .bf-hrr-card.core{border-color:rgba(53,208,127,.58)}
+    .bf-hrr-card.strong{border-left:3px solid var(--bf-accent)}
+    .bf-hrr-card.secondary{border-left:3px solid #8a7bd8}
+    .bf-hrr-card.longshot{border-left:3px solid rgba(255,209,102,.70)}
+    .bf-hrr-head{
+        display:grid;grid-template-columns:minmax(0,1fr) auto;
+        gap:8px;align-items:start;
+    }
+    .bf-hrr-name{color:var(--bf-text);font-size:.92rem;font-weight:950}
+    .bf-hrr-meta{
+        color:var(--bf-muted);font-size:.56rem;margin-top:2px;
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    }
+    .bf-hrr-roleline{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-top:6px}
+    .bf-hrr-tier,.bf-hrr-grade,.bf-hrr-lineup,.bf-hrr-trend{
+        display:inline-flex;align-items:center;border:1px solid var(--bf-border);
+        border-radius:999px;padding:3px 6px;font-size:.43rem;font-weight:950;
+    }
+    .bf-hrr-tier.core{color:#62efaa;border-color:rgba(53,208,127,.52);background:rgba(53,208,127,.08)}
+    .bf-hrr-tier.strong{color:var(--bf-accent);border-color:var(--bf-accent-line);background:var(--bf-accent-soft)}
+    .bf-hrr-tier.secondary{color:#c7b5ff;border-color:rgba(173,139,255,.40);background:rgba(173,139,255,.07)}
+    .bf-hrr-tier.longshot{color:#ffd166;border-color:rgba(255,209,102,.42);background:rgba(255,209,102,.07)}
+    .bf-hrr-grade{color:var(--bf-text);background:var(--bf-panel-3)}
+    .bf-hrr-lineup{color:var(--bf-muted)}
+    .bf-hrr-trend.hot{color:#35d07f;border-color:rgba(53,208,127,.40)}
+    .bf-hrr-trend.up{color:#8fc0ff;border-color:var(--bf-accent-line)}
+    .bf-hrr-trend.cool{color:#ff8f8f;border-color:rgba(255,107,107,.38)}
+    .bf-hrr-trend.steady{color:var(--bf-muted)}
+    .bf-hrr-score{
+        min-width:68px;text-align:center;border:1px solid var(--bf-border);
+        border-radius:8px;background:var(--bf-panel-2);padding:6px 7px;
+    }
+    .bf-hrr-score small{
+        display:block;color:var(--bf-accent);font-size:.38rem;
+        font-weight:950;letter-spacing:.08em;
+    }
+    .bf-hrr-score strong{
+        display:block;color:var(--bf-text);font-size:.96rem;margin-top:2px;
+    }
+    .bf-hrr-form{
+        display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
+        gap:5px;margin-top:8px;
+    }
+    .bf-hrr-form>div,.bf-hrr-metrics>div{
+        min-width:0;text-align:center;border:1px solid var(--bf-border);
+        border-radius:7px;background:var(--bf-panel-2);padding:5px;
+    }
+    .bf-hrr-form small,.bf-hrr-metrics small{
+        display:block;color:var(--bf-muted);font-size:.36rem;
+        font-weight:950;letter-spacing:.07em;
+    }
+    .bf-hrr-form strong,.bf-hrr-metrics strong{
+        display:block;color:var(--bf-text);font-size:.72rem;margin-top:2px;
+    }
+    .bf-hrr-form span{
+        display:block;color:var(--bf-muted);font-size:.34rem;margin-top:1px;
+    }
+    .bf-hrr-metrics{
+        display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+        gap:5px;margin-top:5px;
+    }
+    .bf-hrr-bar{
+        height:6px;border-radius:999px;overflow:hidden;
+        background:var(--bf-panel-3);margin-top:7px;
+    }
+    .bf-hrr-bar>div{
+        height:100%;border-radius:999px;
+        background:linear-gradient(90deg,var(--bf-accent),#35d07f);
+    }
+    .bf-hrr-why{
+        color:var(--bf-muted);font-size:.48rem;line-height:1.28;
+        margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    }
+    .bf-hrr-why b{color:var(--bf-accent);font-size:.40rem;letter-spacing:.07em}
+    @media(max-width:900px){
+        .bf-hrr-grid{grid-template-columns:1fr}
+    }
+    @media(max-width:640px){
+        .bf-hrr-card{padding:7px 8px}
+        .bf-hrr-name{font-size:.84rem}
+        .bf-hrr-meta{font-size:.51rem}
+        .bf-hrr-score{min-width:60px;padding:5px}
+        .bf-hrr-tier,.bf-hrr-grade,.bf-hrr-lineup,.bf-hrr-trend{font-size:.38rem;padding:2px 5px}
+        .bf-hrr-form strong,.bf-hrr-metrics strong{font-size:.64rem}
+        .bf-hrr-form small,.bf-hrr-metrics small{font-size:.31rem}
+        .bf-hrr-why{font-size:.43rem}
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 
