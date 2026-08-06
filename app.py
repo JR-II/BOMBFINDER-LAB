@@ -11021,7 +11021,7 @@ def _bf_v2_card_html(row: pd.Series, rank, early: bool = False) -> str:
     else:
         red_flag = "No major red flag"
 
-    market_strip_html = player_market_strip_html(row, early=early)
+    market_strip_html = ""
 
     if not early:
         return f"""
@@ -12546,7 +12546,494 @@ if locked_df.empty:
     st.warning("No games or hitter data loaded.")
     st.stop()
 
-base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker", "Lineup Watch", "Live Weather", "Tomorrow Preview", "BF Guide", "Today's Card", "Market Edge"]
+
+st.markdown(
+    """
+    <style>
+    .bf-hrr-key{
+        display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 9px;
+    }
+    .bf-hrr-key span{
+        border:1px solid var(--bf-border);border-radius:999px;
+        background:var(--bf-panel-2);color:var(--bf-muted);
+        padding:4px 8px;font-size:.54rem;font-weight:850;
+    }
+    .bf-hrr-key b{color:var(--bf-accent)}
+    .bf-hrr-grid{
+        display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
+        gap:8px;margin-top:5px;
+    }
+    .bf-hrr-card{
+        min-width:0;border:1px solid var(--bf-border);border-radius:10px;
+        background:linear-gradient(145deg,var(--bf-panel-2),var(--bf-panel));
+        padding:9px 10px;box-shadow:0 6px 18px rgba(0,0,0,.12);
+    }
+    .bf-hrr-card.core{border-color:rgba(53,208,127,.58)}
+    .bf-hrr-card.strong{border-left:3px solid var(--bf-accent)}
+    .bf-hrr-card.secondary{border-left:3px solid #8a7bd8}
+    .bf-hrr-card.longshot{border-left:3px solid rgba(255,209,102,.70)}
+    .bf-hrr-head{
+        display:grid;grid-template-columns:minmax(0,1fr) auto;
+        gap:8px;align-items:start;
+    }
+    .bf-hrr-name{color:var(--bf-text);font-size:.92rem;font-weight:950}
+    .bf-hrr-meta{
+        color:var(--bf-muted);font-size:.56rem;margin-top:2px;
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    }
+    .bf-hrr-roleline{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-top:6px}
+    .bf-hrr-tier,.bf-hrr-grade,.bf-hrr-lineup,.bf-hrr-trend{
+        display:inline-flex;align-items:center;border:1px solid var(--bf-border);
+        border-radius:999px;padding:3px 6px;font-size:.43rem;font-weight:950;
+    }
+    .bf-hrr-tier.core{color:#62efaa;border-color:rgba(53,208,127,.52);background:rgba(53,208,127,.08)}
+    .bf-hrr-tier.strong{color:var(--bf-accent);border-color:var(--bf-accent-line);background:var(--bf-accent-soft)}
+    .bf-hrr-tier.secondary{color:#c7b5ff;border-color:rgba(173,139,255,.40);background:rgba(173,139,255,.07)}
+    .bf-hrr-tier.longshot{color:#ffd166;border-color:rgba(255,209,102,.42);background:rgba(255,209,102,.07)}
+    .bf-hrr-grade{color:var(--bf-text);background:var(--bf-panel-3)}
+    .bf-hrr-lineup{color:var(--bf-muted)}
+    .bf-hrr-trend.hot{color:#35d07f;border-color:rgba(53,208,127,.40)}
+    .bf-hrr-trend.up{color:#8fc0ff;border-color:var(--bf-accent-line)}
+    .bf-hrr-trend.cool{color:#ff8f8f;border-color:rgba(255,107,107,.38)}
+    .bf-hrr-trend.steady{color:var(--bf-muted)}
+    .bf-hrr-score{
+        min-width:68px;text-align:center;border:1px solid var(--bf-border);
+        border-radius:8px;background:var(--bf-panel-2);padding:6px 7px;
+    }
+    .bf-hrr-score small{
+        display:block;color:var(--bf-accent);font-size:.38rem;
+        font-weight:950;letter-spacing:.08em;
+    }
+    .bf-hrr-score strong{
+        display:block;color:var(--bf-text);font-size:.96rem;margin-top:2px;
+    }
+    .bf-hrr-form{
+        display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
+        gap:5px;margin-top:8px;
+    }
+    .bf-hrr-form>div,.bf-hrr-metrics>div{
+        min-width:0;text-align:center;border:1px solid var(--bf-border);
+        border-radius:7px;background:var(--bf-panel-2);padding:5px;
+    }
+    .bf-hrr-form small,.bf-hrr-metrics small{
+        display:block;color:var(--bf-muted);font-size:.36rem;
+        font-weight:950;letter-spacing:.07em;
+    }
+    .bf-hrr-form strong,.bf-hrr-metrics strong{
+        display:block;color:var(--bf-text);font-size:.72rem;margin-top:2px;
+    }
+    .bf-hrr-form span{
+        display:block;color:var(--bf-muted);font-size:.34rem;margin-top:1px;
+    }
+    .bf-hrr-metrics{
+        display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+        gap:5px;margin-top:5px;
+    }
+    .bf-hrr-bar{
+        height:6px;border-radius:999px;overflow:hidden;
+        background:var(--bf-panel-3);margin-top:7px;
+    }
+    .bf-hrr-bar>div{
+        height:100%;border-radius:999px;
+        background:linear-gradient(90deg,var(--bf-accent),#35d07f);
+    }
+    .bf-hrr-why{
+        color:var(--bf-muted);font-size:.48rem;line-height:1.28;
+        margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    }
+    .bf-hrr-why b{color:var(--bf-accent);font-size:.40rem;letter-spacing:.07em}
+    @media(max-width:900px){
+        .bf-hrr-grid{grid-template-columns:1fr}
+    }
+    @media(max-width:640px){
+        .bf-hrr-card{padding:7px 8px}
+        .bf-hrr-name{font-size:.84rem}
+        .bf-hrr-meta{font-size:.51rem}
+        .bf-hrr-score{min-width:60px;padding:5px}
+        .bf-hrr-tier,.bf-hrr-grade,.bf-hrr-lineup,.bf-hrr-trend{font-size:.38rem;padding:2px 5px}
+        .bf-hrr-form strong,.bf-hrr-metrics strong{font-size:.64rem}
+        .bf-hrr-form small,.bf-hrr-metrics small{font-size:.31rem}
+        .bf-hrr-why{font-size:.43rem}
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ------------------------------------------------------------------
+# BF DATA TOP 25 HRR BOARD
+# Replaces the discontinued sportsbook Market Edge tab.
+# This is a separate H+R+RBI decision board and does not alter HR rankings,
+# tracker history, combo logic, lineup locks, weather, or HR predictions.
+# ------------------------------------------------------------------
+
+def _hrr_rate_score(rate: float) -> float:
+    """Convert H+R+RBI per-game production to a readable 0-100 display score."""
+    return clip((safe_float(rate, 0.0) / 3.0) * 100.0, 0.0, 100.0)
+
+
+def _hrr_game_value(game_row: dict) -> int:
+    stat = (game_row or {}).get("stat", {}) or {}
+    return (
+        safe_int(stat.get("hits"), 0)
+        + safe_int(stat.get("runs"), 0)
+        + safe_int(stat.get("rbi"), 0)
+    )
+
+
+def _hrr_recent_summary(stats_payload: dict) -> dict:
+    """Return season, L10 and L5 H+R+RBI production from official MLB game logs."""
+    payload = stats_payload or {}
+    season = payload.get("season", {}) or {}
+    gamelog = payload.get("gamelog", []) or []
+
+    # Only completed appearances with an official stat line are counted.
+    game_values = [_hrr_game_value(row) for row in gamelog if isinstance(row, dict)]
+    season_games = safe_int(season.get("gamesPlayed"), len(game_values))
+    season_total = (
+        safe_int(season.get("hits"), 0)
+        + safe_int(season.get("runs"), 0)
+        + safe_int(season.get("rbi"), 0)
+    )
+
+    season_avg = season_total / season_games if season_games > 0 else 0.0
+    l10_values = game_values[:10]
+    l5_values = game_values[:5]
+    l10_avg = sum(l10_values) / len(l10_values) if l10_values else season_avg
+    l5_avg = sum(l5_values) / len(l5_values) if l5_values else l10_avg
+
+    return {
+        "season_games": season_games,
+        "season_total": season_total,
+        "season_avg": round(season_avg, 2),
+        "l10_games": len(l10_values),
+        "l10_total": sum(l10_values),
+        "l10_avg": round(l10_avg, 2),
+        "l5_games": len(l5_values),
+        "l5_total": sum(l5_values),
+        "l5_avg": round(l5_avg, 2),
+    }
+
+
+def build_top25_hrr_board(locked_board: pd.DataFrame) -> pd.DataFrame:
+    """Build a lineup-aware Top 25 H+R+RBI board.
+
+    Weighting:
+      season production 45%
+      last 10 games      30%
+      last 5 games       15%
+      matchup/opportunity 10%
+
+    The score is exclusive to this HRR board. It never feeds back into the
+    existing home-run model, rankings, tracker, or combo engine.
+    """
+    if locked_board is None or locked_board.empty:
+        return pd.DataFrame()
+
+    work = locked_board.copy()
+
+    # Strict visible-board eligibility. Once official lineups exist, the existing
+    # locked_df lineup rules have already removed non-lineup players.
+    if "Player" not in work.columns:
+        return pd.DataFrame()
+
+    work = work.drop_duplicates(subset=["Player", "Team", "Game"], keep="first").copy()
+
+    player_ids = []
+    if "Player ID" in work.columns:
+        player_ids = [
+            int(x) for x in pd.to_numeric(work["Player ID"], errors="coerce").dropna().unique().tolist()
+        ]
+
+    stats_map = fetch_people_stats(tuple(sorted(player_ids)), "hitting") if player_ids else {}
+
+    # Existing HRR score is used only as one part of matchup/context.
+    base_hrr = pd.to_numeric(work.get("HRR Score", 0), errors="coerce").fillna(0.0)
+    if len(work) > 1:
+        context_pct = base_hrr.rank(method="average", pct=True) * 100.0
+    else:
+        context_pct = pd.Series([75.0] * len(work), index=work.index)
+
+    rows = []
+    for idx, row in work.iterrows():
+        pid = safe_int(row.get("Player ID"), 0)
+        recent = _hrr_recent_summary(stats_map.get(pid, {}))
+
+        lineup_spot = safe_int(row.get("Lineup Spot"), 0)
+        lineup_opportunity = (
+            100.0 if lineup_spot in {1, 2, 3, 4}
+            else 86.0 if lineup_spot in {5, 6}
+            else 72.0 if lineup_spot in {7, 8, 9}
+            else 64.0
+        )
+
+        context_score = (
+            safe_float(context_pct.loc[idx], 50.0) * 0.65
+            + lineup_opportunity * 0.35
+        )
+
+        season_component = _hrr_rate_score(recent["season_avg"])
+        l10_component = _hrr_rate_score(recent["l10_avg"])
+        l5_component = _hrr_rate_score(recent["l5_avg"])
+
+        final_score = clip(
+            season_component * 0.45
+            + l10_component * 0.30
+            + l5_component * 0.15
+            + context_score * 0.10,
+            0,
+            99,
+        )
+
+        # Supporting card metrics are transparent display summaries.
+        hits_per_game = (
+            safe_float((stats_map.get(pid, {}).get("season", {}) or {}).get("hits"), 0.0)
+            / max(1, recent["season_games"])
+        )
+        runs_per_game = (
+            safe_float((stats_map.get(pid, {}).get("season", {}) or {}).get("runs"), 0.0)
+            / max(1, recent["season_games"])
+        )
+        rbi_per_game = (
+            safe_float((stats_map.get(pid, {}).get("season", {}) or {}).get("rbi"), 0.0)
+            / max(1, recent["season_games"])
+        )
+
+        hit_floor = clip(
+            hits_per_game * 58
+            + safe_float(row.get("LineDrive%"), 0.0) * 0.8
+            + safe_float(row.get("HardHit%"), 0.0) * 0.35,
+            0,
+            99,
+        )
+        run_path = clip(
+            runs_per_game * 75
+            + (100 - min(max(lineup_spot, 1), 9) * 7 if lineup_spot else 45)
+            + safe_float(row.get("BullpenFatigueScore"), 0.0) * 0.20,
+            0,
+            99,
+        )
+        rbi_path = clip(
+            rbi_per_game * 72
+            + safe_float(row.get("HardHit%"), 0.0) * 0.45
+            + safe_float(row.get("EV"), 0.0) * 0.18,
+            0,
+            99,
+        )
+        opportunity = clip(
+            lineup_opportunity * 0.75
+            + safe_float(row.get("HRR Score"), 0.0) * 0.25,
+            0,
+            99,
+        )
+
+        if final_score >= 88:
+            tier = "CORE HRR TARGET"
+            tier_class = "core"
+            grade = "A+"
+        elif final_score >= 78:
+            tier = "STRONG HRR PLAY"
+            tier_class = "strong"
+            grade = "A"
+        elif final_score >= 68:
+            tier = "SECONDARY TARGET"
+            tier_class = "secondary"
+            grade = "B+"
+        else:
+            tier = "HRR LONGSHOT"
+            tier_class = "longshot"
+            grade = "B"
+
+        recent_direction = (
+            "SURGING" if recent["l5_avg"] >= recent["season_avg"] + 0.55
+            else "UP" if recent["l5_avg"] >= recent["season_avg"] + 0.20
+            else "COOLING" if recent["l5_avg"] <= recent["season_avg"] - 0.55
+            else "STEADY"
+        )
+
+        item = row.to_dict()
+        item.update({
+            "HRR Board Score": round(final_score, 1),
+            "HRR Grade": grade,
+            "HRR Tier": tier,
+            "HRR Tier Class": tier_class,
+            "Season HRR/G": recent["season_avg"],
+            "Season HRR Total": recent["season_total"],
+            "Season Games": recent["season_games"],
+            "L10 HRR/G": recent["l10_avg"],
+            "L10 HRR Total": recent["l10_total"],
+            "L10 Games": recent["l10_games"],
+            "L5 HRR/G": recent["l5_avg"],
+            "L5 HRR Total": recent["l5_total"],
+            "L5 Games": recent["l5_games"],
+            "Hit Floor": round(hit_floor),
+            "Run Path": round(run_path),
+            "RBI Path": round(rbi_path),
+            "Opportunity": round(opportunity),
+            "HRR Trend": recent_direction,
+        })
+        rows.append(item)
+
+    result = pd.DataFrame(rows)
+    if result.empty:
+        return result
+
+    result = result.sort_values(
+        by=[
+            "HRR Board Score",
+            "L5 HRR/G",
+            "L10 HRR/G",
+            "Season HRR/G",
+            "HRR Score",
+        ],
+        ascending=[False, False, False, False, False],
+    ).head(25).reset_index(drop=True)
+    result.insert(0, "HRR Rank", range(1, len(result) + 1))
+    return result
+
+
+def _hrr_card_html(row: pd.Series) -> str:
+    rank = safe_int(row.get("HRR Rank"), 0)
+    player = escape(str(row.get("Player", "—")))
+    team = escape(str(row.get("Team", "—")))
+    game = escape(str(row.get("Game", "—")))
+    pitcher = escape(str(row.get("Pitcher", "—")))
+    lineup_spot = display_lineup_spot(row.get("Lineup Spot"))
+    lineup_source = escape(str(row.get("Lineup Source", "PROJECTED")).upper())
+    score = safe_float(row.get("HRR Board Score"), 0.0)
+    grade = escape(str(row.get("HRR Grade", "—")))
+    tier = escape(str(row.get("HRR Tier", "HRR TARGET")))
+    tier_class = escape(str(row.get("HRR Tier Class", "secondary")))
+    trend = escape(str(row.get("HRR Trend", "STEADY")))
+
+    season_avg = safe_float(row.get("Season HRR/G"), 0.0)
+    l10_avg = safe_float(row.get("L10 HRR/G"), 0.0)
+    l5_avg = safe_float(row.get("L5 HRR/G"), 0.0)
+
+    hit_floor = safe_int(row.get("Hit Floor"), 0)
+    run_path = safe_int(row.get("Run Path"), 0)
+    rbi_path = safe_int(row.get("RBI Path"), 0)
+    opportunity = safe_int(row.get("Opportunity"), 0)
+
+    if trend == "SURGING":
+        trend_class = "hot"
+    elif trend == "UP":
+        trend_class = "up"
+    elif trend == "COOLING":
+        trend_class = "cool"
+    else:
+        trend_class = "steady"
+
+    why_parts = []
+    if safe_int(lineup_spot, 0) in {1, 2, 3, 4}:
+        why_parts.append("premium lineup position")
+    if l5_avg > season_avg + 0.20:
+        why_parts.append("recent production above season level")
+    if hit_floor >= 75:
+        why_parts.append("strong hit floor")
+    if rbi_path >= 75:
+        why_parts.append("strong RBI path")
+    if opportunity >= 80:
+        why_parts.append("high opportunity profile")
+    if not why_parts:
+        why_parts.append("balanced season, recent-form and matchup profile")
+    why_text = " · ".join(why_parts[:3])
+
+    return f"""
+<div class="bf-hrr-card {tier_class}">
+  <div class="bf-hrr-head">
+    <div>
+      <div class="bf-hrr-name">#{rank} {player}</div>
+      <div class="bf-hrr-meta">{team} · {game} · vs {pitcher}</div>
+      <div class="bf-hrr-roleline">
+        <span class="bf-hrr-tier {tier_class}">{tier}</span>
+        <span class="bf-hrr-grade">{grade}</span>
+        <span class="bf-hrr-lineup">SPOT {escape(str(lineup_spot))} · {lineup_source}</span>
+        <span class="bf-hrr-trend {trend_class}">{trend}</span>
+      </div>
+    </div>
+    <div class="bf-hrr-score">
+      <small>HRR SCORE</small>
+      <strong>{score:.1f}</strong>
+    </div>
+  </div>
+
+  <div class="bf-hrr-form">
+    <div><small>SEASON</small><strong>{season_avg:.2f}</strong><span>HRR/G</span></div>
+    <div><small>LAST 10</small><strong>{l10_avg:.2f}</strong><span>HRR/G</span></div>
+    <div><small>LAST 5</small><strong>{l5_avg:.2f}</strong><span>HRR/G</span></div>
+  </div>
+
+  <div class="bf-hrr-metrics">
+    <div><small>HIT FLOOR</small><strong>{hit_floor}</strong></div>
+    <div><small>RUN PATH</small><strong>{run_path}</strong></div>
+    <div><small>RBI PATH</small><strong>{rbi_path}</strong></div>
+    <div><small>OPPORTUNITY</small><strong>{opportunity}</strong></div>
+  </div>
+
+  <div class="bf-hrr-bar">
+    <div style="width:{clip(score,0,100):.1f}%"></div>
+  </div>
+  <div class="bf-hrr-why"><b>WHY HE RANKS</b> {escape(why_text)}</div>
+</div>
+"""
+
+
+def render_top25_hrr_tab(locked_board: pd.DataFrame):
+    st.subheader("Top 25 Hits + Runs + RBIs")
+    st.caption(
+        "Slate-wide H+R+RBI decision board using official season production, "
+        "last 10, last 5, lineup opportunity and BF matchup context. "
+        "Confirmed-lineup rules remain unchanged."
+    )
+
+    board = build_top25_hrr_board(locked_board)
+    if board.empty:
+        st.info("No eligible H+R+RBI candidates are available yet.")
+        return
+
+    core_count = int((board["HRR Tier"] == "CORE HRR TARGET").sum())
+    strong_count = int((board["HRR Tier"] == "STRONG HRR PLAY").sum())
+    confirmed_count = int(board["Lineup Source"].astype(str).str.upper().eq("CONFIRMED").sum())
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Candidates", len(board))
+    m2.metric("Core Targets", core_count)
+    m3.metric("Strong Plays", strong_count)
+    m4.metric("Confirmed", confirmed_count)
+
+    st.markdown(
+        """
+        <div class="bf-hrr-key">
+          <span><b>45%</b> season</span>
+          <span><b>30%</b> last 10</span>
+          <span><b>15%</b> last 5</span>
+          <span><b>10%</b> matchup + opportunity</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    cards = "".join(_hrr_card_html(row) for _, row in board.iterrows())
+    st.markdown(f'<div class="bf-hrr-grid">{cards}</div>', unsafe_allow_html=True)
+
+    with st.expander("Top 25 HRR research table"):
+        cols = [
+            "HRR Rank", "Player", "Team", "Game", "Lineup Spot", "Lineup Source",
+            "HRR Board Score", "HRR Grade", "HRR Tier",
+            "Season HRR/G", "L10 HRR/G", "L5 HRR/G",
+            "Hit Floor", "Run Path", "RBI Path", "Opportunity",
+        ]
+        st.dataframe(
+            board[[c for c in cols if c in board.columns]],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+
+base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker", "Lineup Watch", "Live Weather", "Tomorrow Preview", "BF Guide", "Today's Card", "Top 25 HRR"]
 schedule = sort_schedule_rows(schedule)
 game_tabs = [f"{format_game_time_et(g.get('game_time', ''))} | {g['game_key']}" for g in schedule]
 tabs = st.tabs(base_tabs + game_tabs)
@@ -12889,7 +13376,7 @@ with tabs[12]:
     render_today_card(locked_df, combo_board)
 
 with tabs[13]:
-    render_market_edge_tab(locked_df, tracker)
+    render_top25_hrr_tab(locked_df)
 
 
 for idx, game in enumerate(schedule, start=14):
