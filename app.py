@@ -2569,6 +2569,80 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
+# Final HRR fit + Streamlit chrome correction.
+# UI-only: sidebar controls and app functionality remain available.
+st.markdown(
+    """
+    <style>
+    /* Prevent the odd 25th card and following expander from visually colliding. */
+    .bf-hrr-grid{
+        width:100% !important;
+        min-width:0 !important;
+        align-items:start !important;
+        grid-auto-rows:auto !important;
+        margin-bottom:16px !important;
+        padding-bottom:2px !important;
+        overflow:visible !important;
+        clear:both !important;
+    }
+    .bf-hrr-grid > .bf-hrr-card{
+        width:auto !important;
+        max-width:100% !important;
+        min-width:0 !important;
+        height:auto !important;
+        align-self:start !important;
+        position:relative !important;
+        overflow:hidden !important;
+        isolation:isolate !important;
+        box-sizing:border-box !important;
+    }
+    .bf-hrr-grid + div[data-testid="stExpander"]{
+        clear:both !important;
+        position:relative !important;
+        z-index:1 !important;
+        margin-top:12px !important;
+    }
+    /* Keep the final odd card cleanly in the left column without a phantom line. */
+    .bf-hrr-grid > .bf-hrr-card:last-child:nth-child(odd){
+        grid-column:1 !important;
+    }
+
+    /* Reduce the Streamlit top chrome instead of removing sidebar access. */
+    header[data-testid="stHeader"]{
+        height:2.25rem !important;
+        min-height:2.25rem !important;
+        background:transparent !important;
+        border-bottom:0 !important;
+        box-shadow:none !important;
+    }
+    [data-testid="stToolbar"]{
+        min-height:2.25rem !important;
+        background:transparent !important;
+        box-shadow:none !important;
+    }
+    [data-testid="stDecoration"]{display:none !important}
+    .block-container{padding-top:.08rem !important}
+
+    @media(max-width:900px){
+        .bf-hrr-grid{margin-bottom:12px !important}
+    }
+    @media(max-width:640px){
+        header[data-testid="stHeader"],
+        [data-testid="stToolbar"]{
+            height:2rem !important;
+            min-height:2rem !important;
+        }
+        .bf-hrr-grid + div[data-testid="stExpander"]{
+            margin-top:9px !important;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
 AUTO_REFRESH_SECONDS = 120
 
 # Speed control: regular board loads avoid the heavy play-by-play L10 BBE pull.
@@ -2594,6 +2668,7 @@ LOCK_FILE = os.path.join(BF_DATA_DIR, "daily_hr_board_lock.csv")
 # Additive market layer. Odds never feed the BF prediction engine, rankings,
 # eligibility, lineup locks, tracker, weather, or combo generation.
 MARKET_ODDS_FILE = os.path.join(BF_DATA_DIR, "market_hr_odds.csv")
+HRR_TRACKER_FILE = os.path.join(BF_DATA_DIR, "hrr_top25_tracker.csv")
 CURRENT_SEASON = datetime.now().year
 
 SNAPSHOT_DIR = os.path.join(BF_DATA_DIR, "tracker_snapshots")
@@ -3475,6 +3550,260 @@ def save_tracker(df: pd.DataFrame):
         enforce_bf_local_storage_ceiling()
     except Exception:
         pass
+
+
+# ------------------------------------------------------------------
+# TOP 25 HRR DAILY TRACKER
+# Separate from the home-run tracker because the measured result is
+# official Hits + Runs + RBIs, not home runs.
+# A standard 2+ H+R+RBI outcome is recorded as the tracker win marker,
+# while the exact official H+R+RBI total is always preserved.
+# ------------------------------------------------------------------
+
+def _hrr_tracker_columns() -> list[str]:
+    return [
+        "date", "player", "player_id", "team", "game", "game_pk",
+        "hrr_rank", "hrr_score", "hrr_grade", "hrr_tier",
+        "season_hrr_g", "l10_hrr_g", "l5_hrr_g",
+        "lineup_spot", "lineup_source", "pitcher",
+        "target_line", "actual_hits", "actual_runs", "actual_rbi",
+        "actual_hrr", "result", "result_state", "game_state",
+        "prediction_locked_at", "updated_at",
+    ]
+
+
+def _coerce_hrr_tracker(df: pd.DataFrame) -> pd.DataFrame:
+    cols = _hrr_tracker_columns()
+    if df is None or df.empty:
+        return pd.DataFrame(columns=cols)
+    work = df.copy()
+    for col in cols:
+        if col not in work.columns:
+            work[col] = pd.NA
+    for col in ["actual_hits", "actual_runs", "actual_rbi", "actual_hrr"]:
+        work[col] = pd.to_numeric(work[col], errors="coerce").fillna(0).astype(int)
+    work["target_line"] = pd.to_numeric(
+        work["target_line"], errors="coerce"
+    ).fillna(2).astype(int)
+    return work[cols]
+
+
+def _dedupe_hrr_tracker(df: pd.DataFrame) -> pd.DataFrame:
+    work = _coerce_hrr_tracker(df)
+    if work.empty:
+        return work
+    work["_player_key"] = work["player"].fillna("").astype(str).map(normalize_name)
+    work["_game_pk_key"] = pd.to_numeric(
+        work["game_pk"], errors="coerce"
+    ).fillna(-1).astype(int)
+    work["_result_key"] = pd.to_numeric(
+        work["result"], errors="coerce"
+    ).fillna(0).astype(int)
+    work["_updated_key"] = work["updated_at"].fillna("").astype(str)
+    work = work.sort_values(
+        ["actual_hrr", "_result_key", "_updated_key"],
+        ascending=[False, False, False],
+    )
+    work = work.drop_duplicates(
+        subset=["date", "_player_key", "team", "game", "_game_pk_key"],
+        keep="first",
+    )
+    return work.drop(
+        columns=["_player_key", "_game_pk_key", "_result_key", "_updated_key"]
+    ).reset_index(drop=True)
+
+
+def load_hrr_tracker() -> pd.DataFrame:
+    if not os.path.exists(HRR_TRACKER_FILE):
+        return pd.DataFrame(columns=_hrr_tracker_columns())
+    try:
+        return _dedupe_hrr_tracker(pd.read_csv(HRR_TRACKER_FILE))
+    except Exception:
+        return pd.DataFrame(columns=_hrr_tracker_columns())
+
+
+def save_hrr_tracker(df: pd.DataFrame):
+    _backup_file_before_write(HRR_TRACKER_FILE, "hrr_tracker")
+    _atomic_write_csv(_dedupe_hrr_tracker(df), HRR_TRACKER_FILE)
+
+
+def sync_hrr_tracker_with_board(board: pd.DataFrame) -> pd.DataFrame:
+    tracker = load_hrr_tracker()
+    if board is None or board.empty:
+        save_hrr_tracker(tracker)
+        return tracker
+
+    date_key = today_str()
+    existing_keys = set()
+    if not tracker.empty:
+        today_rows = tracker[tracker["date"].astype(str).eq(date_key)].copy()
+        for _, row in today_rows.iterrows():
+            existing_keys.add((
+                normalize_name(row.get("player", "")),
+                safe_int(row.get("game_pk"), -1),
+            ))
+
+    new_rows = []
+    for _, row in board.iterrows():
+        key = (
+            normalize_name(row.get("Player", "")),
+            safe_int(row.get("game_pk"), -1),
+        )
+        if key in existing_keys:
+            continue
+        new_rows.append({
+            "date": date_key,
+            "player": row.get("Player", ""),
+            "player_id": row.get("Player ID", pd.NA),
+            "team": row.get("Team", ""),
+            "game": row.get("Game", ""),
+            "game_pk": row.get("game_pk", pd.NA),
+            "hrr_rank": row.get("HRR Rank", pd.NA),
+            "hrr_score": row.get("HRR Board Score", pd.NA),
+            "hrr_grade": row.get("HRR Grade", pd.NA),
+            "hrr_tier": row.get("HRR Tier", pd.NA),
+            "season_hrr_g": row.get("Season HRR/G", pd.NA),
+            "l10_hrr_g": row.get("L10 HRR/G", pd.NA),
+            "l5_hrr_g": row.get("L5 HRR/G", pd.NA),
+            "lineup_spot": row.get("Lineup Spot", pd.NA),
+            "lineup_source": row.get("Lineup Source", pd.NA),
+            "pitcher": row.get("Pitcher", pd.NA),
+            "target_line": 2,
+            "actual_hits": 0,
+            "actual_runs": 0,
+            "actual_rbi": 0,
+            "actual_hrr": 0,
+            "result": pd.NA,
+            "result_state": "PREGAME",
+            "game_state": row.get("game_state", "Scheduled"),
+            "prediction_locked_at": now_et_string(),
+            "updated_at": now_et_string(),
+        })
+        existing_keys.add(key)
+
+    if new_rows:
+        tracker = pd.concat([tracker, pd.DataFrame(new_rows)], ignore_index=True)
+    tracker = _dedupe_hrr_tracker(tracker)
+    save_hrr_tracker(tracker)
+    return tracker
+
+
+@st.cache_data(ttl=15, max_entries=64)
+def get_boxscore_hrr_map(game_pk: int) -> dict:
+    """Official current H, R and RBI totals keyed by MLB player ID and full name."""
+    out = {"by_id": {}, "by_name": {}, "available": False}
+    try:
+        response = requests.get(
+            f"https://statsapi.mlb.com/api/v1/game/{int(game_pk)}/boxscore",
+            timeout=15,
+        )
+        response.raise_for_status()
+        payload = response.json() or {}
+    except Exception:
+        return out
+
+    out["available"] = True
+    for side in ("away", "home"):
+        players = ((((payload.get("teams") or {}).get(side) or {}).get("players")) or {})
+        for pdata in players.values():
+            person = pdata.get("person") or {}
+            batting = ((pdata.get("stats") or {}).get("batting") or {})
+            player_id = safe_int(person.get("id"), -1)
+            full_name = str(person.get("fullName", "") or "").strip()
+            stat_line = {
+                "hits": max(0, safe_int(batting.get("hits"), 0)),
+                "runs": max(0, safe_int(batting.get("runs"), 0)),
+                "rbi": max(0, safe_int(batting.get("rbi"), 0)),
+            }
+            stat_line["hrr"] = (
+                stat_line["hits"] + stat_line["runs"] + stat_line["rbi"]
+            )
+            if player_id > 0:
+                out["by_id"][player_id] = stat_line
+            if full_name:
+                out["by_name"][normalize_name(full_name)] = stat_line
+    return out
+
+
+def _hrr_player_result(result_map: dict, player_name: str, player_id=None) -> dict:
+    blank = {"hits": 0, "runs": 0, "rbi": 0, "hrr": 0}
+    if not result_map:
+        return blank
+    pid = safe_int(player_id, -1)
+    if pid > 0 and pid in (result_map.get("by_id") or {}):
+        return (result_map.get("by_id") or {}).get(pid, blank)
+    return (result_map.get("by_name") or {}).get(
+        normalize_name(player_name), blank
+    )
+
+
+def auto_update_hrr_tracker_results(
+    tracker: pd.DataFrame,
+    schedule: list[dict],
+) -> pd.DataFrame:
+    if tracker is None or tracker.empty:
+        return _coerce_hrr_tracker(tracker)
+
+    work = _dedupe_hrr_tracker(tracker.copy())
+    date_key = today_str()
+    today_mask = work["date"].astype(str).eq(date_key)
+    game_pk_num = pd.to_numeric(work["game_pk"], errors="coerce").fillna(-1).astype(int)
+
+    for game in schedule:
+        game_pk = safe_int(game.get("game_pk"), -1)
+        game_state = str(game.get("game_state", "Preview"))
+        detailed_state = str(game.get("detailed_state", game_state))
+        rows_mask = today_mask & game_pk_num.eq(game_pk)
+        if not rows_mask.any():
+            continue
+
+        result_map = (
+            {"by_id": {}, "by_name": {}, "available": False}
+            if game_state == "Preview"
+            else get_boxscore_hrr_map(game_pk)
+        )
+
+        for idx in work.index[rows_mask]:
+            result = _hrr_player_result(
+                result_map,
+                work.at[idx, "player"],
+                work.at[idx, "player_id"],
+            )
+            hits = safe_int(result.get("hits"), 0)
+            runs = safe_int(result.get("runs"), 0)
+            rbi = safe_int(result.get("rbi"), 0)
+            total = hits + runs + rbi
+            target = max(1, safe_int(work.at[idx, "target_line"], 2))
+
+            work.at[idx, "actual_hits"] = hits
+            work.at[idx, "actual_runs"] = runs
+            work.at[idx, "actual_rbi"] = rbi
+            work.at[idx, "actual_hrr"] = total
+            work.at[idx, "game_state"] = detailed_state
+            work.at[idx, "updated_at"] = now_et_string()
+
+            if game_state == "Preview":
+                work.at[idx, "result"] = pd.NA
+                work.at[idx, "result_state"] = "PREGAME"
+            elif game_state == "Final":
+                work.at[idx, "result"] = 1 if total >= target else 0
+                work.at[idx, "result_state"] = (
+                    f"FINAL_{total}_HRR_WIN"
+                    if total >= target
+                    else f"FINAL_{total}_HRR"
+                )
+            else:
+                work.at[idx, "result"] = 1 if total >= target else pd.NA
+                work.at[idx, "result_state"] = (
+                    f"LIVE_{total}_HRR_CASHED"
+                    if total >= target
+                    else f"LIVE_{total}_HRR"
+                )
+
+    work = _dedupe_hrr_tracker(work)
+    save_hrr_tracker(work)
+    return work
+
 
 def load_combo_tracker() -> pd.DataFrame:
     columns = [
@@ -11793,6 +12122,7 @@ def render_full_tracker_panel(tracker: pd.DataFrame, key_prefix: str = "tracker"
 
     tracker = dedupe_tracker_rows(tracker.copy()) if tracker is not None else pd.DataFrame()
     combo_tracker_local = load_combo_tracker()
+    hrr_tracker_local = load_hrr_tracker()
     daily_summary_local = summarize_tracker_by_day(tracker)
 
     def _tracker_stats(frame: pd.DataFrame) -> dict:
@@ -11856,6 +12186,11 @@ def render_full_tracker_panel(tracker: pd.DataFrame, key_prefix: str = "tracker"
             st.metric("Hit Rate", f'{stats["pct"]:.2f}%')
 
     date_options = available_tracker_dates(tracker_work)
+    if hrr_tracker_local is not None and not hrr_tracker_local.empty and "date" in hrr_tracker_local.columns:
+        date_options = sorted(
+            set(date_options) | set(hrr_tracker_local["date"].dropna().astype(str)),
+            reverse=True,
+        )
     selected_tracker_date = st.selectbox(
         "Review slate date",
         options=date_options,
@@ -11962,6 +12297,56 @@ def render_full_tracker_panel(tracker: pd.DataFrame, key_prefix: str = "tracker"
                     "Actual HR Today", "Matchup Advantage",
                     "HR Attackability Score", "EV", "Barrel%", "HardHit%",
                     "AIR%", "Ranking Reasons", "Why",
+                ],
+            )
+
+    st.divider()
+    st.markdown("### Top 25 HRR Results")
+    st.caption(
+        "Tracks the exact official Hits + Runs + RBIs total for every surfaced "
+        "Top 25 HRR player. The win marker uses 2+ H+R+RBI; raw totals remain visible."
+    )
+    if hrr_tracker_local is None or hrr_tracker_local.empty:
+        st.caption("No Top 25 HRR history is available yet.")
+    else:
+        hrr_view = hrr_tracker_local[
+            hrr_tracker_local["date"].astype("string").fillna("")
+            == str(selected_tracker_date)
+        ].copy()
+        if hrr_view.empty:
+            st.caption("No Top 25 HRR players were tracked for the selected date.")
+        else:
+            hrr_view["actual_hrr"] = pd.to_numeric(
+                hrr_view.get("actual_hrr", 0), errors="coerce"
+            ).fillna(0).astype(int)
+            hrr_view["result"] = pd.to_numeric(
+                hrr_view.get("result", 0), errors="coerce"
+            ).fillna(0).astype(int)
+            wins = int(hrr_view["result"].sum())
+            total_hrr = int(hrr_view["actual_hrr"].sum())
+            final_rows = hrr_view[
+                hrr_view["result_state"].astype(str).str.startswith("FINAL_")
+            ]
+            settled = int(len(final_rows))
+            hit_rate = round((wins / settled) * 100, 2) if settled else 0.0
+
+            h1, h2, h3, h4 = st.columns(4)
+            h1.metric("Tracked HRR Players", len(hrr_view))
+            h2.metric("2+ HRR Wins", wins)
+            h3.metric("Official HRR Total", total_hrr)
+            h4.metric("Settled Hit Rate", f"{hit_rate:.2f}%")
+
+            display_existing_columns(
+                hrr_view.sort_values(
+                    by=["result", "actual_hrr", "hrr_rank"],
+                    ascending=[False, False, True],
+                ),
+                [
+                    "hrr_rank", "player", "team", "game", "hrr_score",
+                    "hrr_grade", "hrr_tier", "season_hrr_g", "l10_hrr_g",
+                    "l5_hrr_g", "target_line", "actual_hits", "actual_runs",
+                    "actual_rbi", "actual_hrr", "result", "result_state",
+                    "game_state", "updated_at",
                 ],
             )
 
@@ -12490,6 +12875,11 @@ doubleheader_assignment_map = build_doubleheader_assignment_map(locked_df_raw, s
 tracked_df = build_visible_tracker_pool(locked_df_raw, schedule, doubleheader_assignment_map)
 save_daily_board_snapshot(tracked_df, today_str())
 
+# Build the independent Top 25 HRR board before live results are attached.
+# These prediction-time rows are locked into their own daily tracker.
+top25_hrr_board = build_top25_hrr_board(locked_df_raw)
+hrr_tracker = sync_hrr_tracker_with_board(top25_hrr_board)
+
 tracker = sync_tracker_with_board(tracked_df)
 tracker = reconcile_today_tracker_with_visible_board(tracker, tracked_df, schedule)
 combo_board = build_combo_board(locked_df_raw)
@@ -12498,6 +12888,7 @@ combo_tracker = sync_combo_tracker_with_board(combo_board)
 # Always update results every run. Refresh/update should not be required for HR counts to move off zero.
 tracker = auto_update_tracker_results(tracker, schedule)
 combo_tracker = auto_update_combo_tracker_results(combo_tracker, schedule)
+hrr_tracker = auto_update_hrr_tracker_results(hrr_tracker, schedule)
 st.session_state.manual_refresh_trigger = False
 
 # Display-only live result column.
@@ -12980,7 +13371,7 @@ def _hrr_card_html(row: pd.Series) -> str:
 """
 
 
-def render_top25_hrr_tab(locked_board: pd.DataFrame):
+def render_top25_hrr_tab(locked_board: pd.DataFrame, prepared_board: pd.DataFrame | None = None):
     st.subheader("Top 25 Hits + Runs + RBIs")
     st.caption(
         "Slate-wide H+R+RBI decision board using official season production, "
@@ -12988,7 +13379,7 @@ def render_top25_hrr_tab(locked_board: pd.DataFrame):
         "Confirmed-lineup rules remain unchanged."
     )
 
-    board = build_top25_hrr_board(locked_board)
+    board = prepared_board.copy() if prepared_board is not None else build_top25_hrr_board(locked_board)
     if board.empty:
         st.info("No eligible H+R+RBI candidates are available yet.")
         return
@@ -13376,7 +13767,7 @@ with tabs[12]:
     render_today_card(locked_df, combo_board)
 
 with tabs[13]:
-    render_top25_hrr_tab(locked_df)
+    render_top25_hrr_tab(locked_df, top25_hrr_board)
 
 
 for idx, game in enumerate(schedule, start=14):
