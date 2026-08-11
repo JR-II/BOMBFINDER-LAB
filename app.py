@@ -13926,15 +13926,21 @@ def render_game_handedness_edge(
         park_abbr,
     )
 
+    # Dedicated spacing wrapper prevents Streamlit's compact vertical layout
+    # from letting the title/cards visually collide with one another or with
+    # the team headers that follow.
     st.markdown(
         '<div class="bf-hand-edge-title">HAND TO ATTACK · GAME DECISION SUPPORT</div>',
         unsafe_allow_html=True,
     )
-    c1, c2 = st.columns(2)
+    c1, c2 = st.columns(2, gap="small")
     with c1:
         _render_bf_html(_handedness_edge_card_html(away_team, away_edge))
     with c2:
         _render_bf_html(_handedness_edge_card_html(home_team, home_edge))
+
+    # UI-only breathing room after the two decision cards.
+    st.markdown('<div class="bf-hand-edge-clear" aria-hidden="true"></div>', unsafe_allow_html=True)
 
 
 # Handedness Edge styling — intentionally compact so per-game scanning stays fast.
@@ -13942,19 +13948,42 @@ st.markdown(
     """
     <style>
     .bf-hand-edge-title{
-        margin:5px 0 4px;
+        display:block;
+        position:relative;
+        z-index:2;
+        width:100%;
+        min-height:16px;
+        box-sizing:border-box;
+        margin:7px 0 7px !important;
+        padding:1px 2px 2px !important;
         color:var(--bf-accent);
         font-size:.50rem;
         font-weight:950;
+        line-height:1.45 !important;
         letter-spacing:.10em;
+        overflow:visible;
+        clear:both;
     }
     .bf-hand-edge{
+        position:relative;
+        z-index:1;
         min-width:0;
+        width:100%;
+        box-sizing:border-box;
         border:1px solid var(--bf-border);
         border-radius:9px;
         background:linear-gradient(145deg,var(--bf-panel-2),var(--bf-panel));
         padding:7px 8px;
-        margin:0 0 6px;
+        margin:2px 0 8px !important;
+        overflow:hidden;
+    }
+    .bf-hand-edge-clear{
+        display:block;
+        width:100%;
+        height:8px;
+        min-height:8px;
+        clear:both;
+        pointer-events:none;
     }
     .bf-hand-edge.strong{border-left:3px solid #35d07f}
     .bf-hand-edge.lean{border-left:3px solid var(--bf-accent)}
@@ -14060,7 +14089,13 @@ st.markdown(
         line-height:1.2;
     }
     @media(max-width:640px){
-        .bf-hand-edge{padding:6px}
+        .bf-hand-edge-title{
+            min-height:15px;
+            margin:6px 0 6px !important;
+            line-height:1.4 !important;
+        }
+        .bf-hand-edge{padding:6px;margin:2px 0 7px !important}
+        .bf-hand-edge-clear{height:7px;min-height:7px}
         .bf-hand-edge-head>div>strong{font-size:.70rem}
         .bf-hand-edge-head>div>span{font-size:.43rem}
         .bf-hand-edge-grid{grid-template-columns:1fr 1fr}
