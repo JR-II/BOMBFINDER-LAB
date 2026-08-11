@@ -13423,6 +13423,657 @@ st.markdown(
 
 
 
+
+# ------------------------------------------------------------------
+# PER-GAME HANDEDNESS EDGE
+# Decision-support only. This panel NEVER reranks or removes a player.
+#
+# Inputs:
+#   55% pitcher HR vulnerability by batter side
+#   30% park/pull-side geometry + existing overall HR park factor
+#   15% quality of the currently surfaced hitters from that side
+#
+# Pitcher splits use real Statcast plate appearances/home runs when available.
+# Park handedness is a transparent geometry-based pull-side fit derived from
+# BF Data's existing stadium dimensions; it is not presented as an official
+# third-party handed park-factor feed.
+# ------------------------------------------------------------------
+
+@st.cache_data(ttl=21600, max_entries=100)
+def fetch_pitcher_hr_hand_splits(pitcher_id, cache_version: str = "bf-hand-edge-v1") -> dict:
+    empty_side = {
+        "pa": 0, "hr": 0, "hr_per_100_pa": None,
+        "bbe": 0, "barrel_allowed_pct": None, "hardhit_allowed_pct": None,
+    }
+    empty = {
+        "found": False,
+        "sample": "NONE",
+        "L": dict(empty_side),
+        "R": dict(empty_side),
+    }
+    try:
+        pid = int(pitcher_id)
+    except Exception:
+        return empty
+
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    end_date = (now_et + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # Prefer the current season. If the sample is too small, use the prior
+    # season as a truthful stabilizer rather than manufacturing a split.
+    ranges = [
+        (
+            f"{CURRENT_SEASON}-02-15",
+            end_date,
+            f"{CURRENT_SEASON}|",
+            "CURRENT SEASON",
+        ),
+        (
+            f"{CURRENT_SEASON - 1}-02-15",
+            end_date,
+            f"{CURRENT_SEASON}|{CURRENT_SEASON - 1}|",
+            "CURRENT + PRIOR",
+        ),
+    ]
+
+    chosen = None
+    chosen_label = "NONE"
+
+    for start_date, finish_date, seasons, label in ranges:
+        base = {
+            "all": "true",
+            "player_type": "pitcher",
+            "game_date_gt": start_date,
+            "game_date_lt": finish_date,
+            "hfSea": seasons,
+            "type": "details",
+            "min_pitches": "0",
+            "min_results": "0",
+        }
+        variants = [
+            {**base, "pitcher": str(pid)},
+            {**base, "pitchers_lookup[]": str(pid)},
+            {**base, "pitcher_lookup[]": str(pid)},
+            {**base, "player_lookup[]": str(pid)},
+        ]
+
+        df = pd.DataFrame()
+        for params in variants:
+            df = _read_statcast_csv(params, timeout=15)
+            if not df.empty:
+                break
+
+        if df.empty:
+            continue
+
+        if "pitcher" in df.columns:
+            pitcher_col = pd.to_numeric(df["pitcher"], errors="coerce")
+            df = df[pitcher_col.eq(pid)].copy()
+
+        if df.empty or "stand" not in df.columns:
+            continue
+
+        # Keep only the two batter-side buckets needed for this feature.
+        df["stand"] = df["stand"].astype(str).str.upper().str.strip()
+        df = df[df["stand"].isin(["L", "R"])].copy()
+        if df.empty:
+            continue
+
+        # Count plate appearances by unique game + at-bat number when possible.
+        if "game_pk" in df.columns and "at_bat_number" in df.columns:
+            pa_counts = (
+                df[["stand", "game_pk", "at_bat_number"]]
+                .dropna(subset=["game_pk", "at_bat_number"])
+                .drop_duplicates()
+                .groupby("stand")
+                .size()
+                .to_dict()
+            )
+        else:
+            # Fallback: terminal events are one row per completed PA.
+            events = df.get("events", pd.Series([""] * len(df), index=df.index)).fillna("").astype(str)
+            terminal = df[events.ne("")].copy()
+            pa_counts = terminal.groupby("stand").size().to_dict() if not terminal.empty else {}
+
+        total_pa = sum(safe_int(v, 0) for v in pa_counts.values())
+        chosen = (df, pa_counts)
+        chosen_label = label
+
+        # Current-season sample is good enough for the display once the pitcher
+        # has faced roughly 80 batters. Otherwise stabilize with prior season.
+        if total_pa >= 80 or label == "CURRENT + PRIOR":
+            break
+
+    if chosen is None:
+        return empty
+
+    df, pa_counts = chosen
+    result = {
+        "found": True,
+        "sample": chosen_label,
+        "L": dict(empty_side),
+        "R": dict(empty_side),
+    }
+
+    events = df.get("events", pd.Series([""] * len(df), index=df.index)).fillna("").astype(str).str.lower()
+
+    for side in ("L", "R"):
+        sub = df[df["stand"].eq(side)].copy()
+        if sub.empty:
+            continue
+
+        pa = safe_int(pa_counts.get(side), 0)
+        sub_events = events.loc[sub.index]
+        hr = int(sub_events.eq("home_run").sum())
+
+        bbe = sub[sub.apply(_is_bbe, axis=1)].copy()
+        bbe_n = len(bbe)
+        if bbe_n:
+            launch_speed = pd.to_numeric(bbe.get("launch_speed"), errors="coerce")
+            hard_count = int((launch_speed >= 95.0).sum())
+            barrel_count = int(bbe.apply(_barrel_like, axis=1).sum())
+            hard_pct = round(hard_count / bbe_n * 100.0, 1)
+            barrel_pct = round(barrel_count / bbe_n * 100.0, 1)
+        else:
+            hard_pct = None
+            barrel_pct = None
+
+        result[side] = {
+            "pa": pa,
+            "hr": hr,
+            "hr_per_100_pa": round(hr / pa * 100.0, 2) if pa > 0 else None,
+            "bbe": bbe_n,
+            "barrel_allowed_pct": barrel_pct,
+            "hardhit_allowed_pct": hard_pct,
+        }
+
+    return result
+
+
+def _park_handedness_pull_scores(park_abbr: str) -> dict:
+    """Return transparent LHB/RHB pull-side park scores on a 0-100 scale.
+
+    RHB pull power is influenced most by LF/LCF dimensions.
+    LHB pull power is influenced most by RF/RCF dimensions.
+    Existing PARK_FACTORS supplies the general stadium HR environment.
+    """
+    abbr = str(park_abbr or "").upper()
+    dims = PARK_DIMENSIONS.get(abbr)
+    overall = safe_float(PARK_FACTORS.get(abbr, 1.0), 1.0)
+
+    if not dims or len(dims) != 5:
+        neutral = clip(50.0 + (overall - 1.0) * 180.0, 30.0, 70.0)
+        return {"L": round(neutral, 1), "R": round(neutral, 1), "source": "overall park factor"}
+
+    lf, lcf, cf, rcf, rf = [safe_float(x, 0.0) for x in dims]
+
+    # Weighted pull corridors. Shorter fences create a larger pull-side score.
+    rhb_pull_ft = (lf * 0.62) + (lcf * 0.38)
+    lhb_pull_ft = (rf * 0.62) + (rcf * 0.38)
+
+    # 350 ft is treated as a neutral pull corridor for display purposes.
+    # Overall park environment is blended in so altitude/park context is not lost.
+    def _score(pull_ft):
+        geometry = 50.0 + (350.0 - pull_ft) * 0.55
+        environment = (overall - 1.0) * 180.0
+        return round(clip(geometry + environment, 20.0, 85.0), 1)
+
+    return {
+        "L": _score(lhb_pull_ft),
+        "R": _score(rhb_pull_ft),
+        "source": "BF park factor + pull-side dimensions",
+    }
+
+
+def _effective_batter_side(raw_bats, pitcher_throws: str = "") -> str:
+    bats = normalize_hand_code(raw_bats, "")
+    throws = normalize_hand_code(pitcher_throws, "")
+    if bats in {"L", "R"}:
+        return bats
+    if bats == "S":
+        # Switch hitters normally bat opposite the pitcher's throwing hand.
+        if throws == "R":
+            return "L"
+        if throws == "L":
+            return "R"
+    return ""
+
+
+def _hand_candidate_quality(team_rows: pd.DataFrame, side: str, pitcher_throws: str = "") -> tuple[float, int]:
+    if team_rows is None or team_rows.empty:
+        return 50.0, 0
+
+    vals = []
+    for _, row in team_rows.iterrows():
+        effective_side = _effective_batter_side(row.get("Bats"), pitcher_throws)
+        if effective_side != side:
+            continue
+        vals.append(
+            (
+                safe_float(row.get("HR Probability %"), 0.0) * 0.52
+                + safe_float(row.get("Prediction Quality Score"), 0.0) * 0.22
+                + safe_float(row.get("Matchup Advantage Score"), 0.0) * 0.16
+                + safe_float(row.get("HR Attackability Score"), 0.0) * 0.10
+            )
+        )
+
+    if not vals:
+        return 35.0, 0
+
+    # Use the best two options so one weak bench-like candidate does not drag
+    # down a genuinely useful handedness group.
+    top = sorted(vals, reverse=True)[:2]
+    quality = sum(top) / len(top)
+    return round(clip(quality, 0.0, 100.0), 1), len(vals)
+
+
+def _pitcher_side_vulnerability(split_side: dict, other_side: dict) -> float:
+    """Convert real HR split information into a 0-100 vulnerability score."""
+    pa = safe_int((split_side or {}).get("pa"), 0)
+    hr_rate = (split_side or {}).get("hr_per_100_pa")
+    barrel = (split_side or {}).get("barrel_allowed_pct")
+    hard = (split_side or {}).get("hardhit_allowed_pct")
+
+    other_rate = (other_side or {}).get("hr_per_100_pa")
+
+    if hr_rate is None or pa < 15:
+        return 50.0
+
+    # MLB starter split samples can be noisy, so the raw HR rate is moderated
+    # by contact quality and by the pitcher's opposite-side comparison.
+    rate_score = clip(35.0 + safe_float(hr_rate, 0.0) * 10.0, 20.0, 90.0)
+    barrel_score = clip(35.0 + safe_float(barrel, 7.0) * 3.2, 25.0, 90.0)
+    hard_score = clip(25.0 + safe_float(hard, 38.0) * 1.05, 25.0, 90.0)
+
+    comparative = 50.0
+    if other_rate is not None:
+        diff = safe_float(hr_rate, 0.0) - safe_float(other_rate, 0.0)
+        comparative = clip(50.0 + diff * 12.0, 25.0, 80.0)
+
+    sample_weight = clip(pa / 100.0, 0.20, 1.0)
+    raw = (
+        rate_score * 0.46
+        + barrel_score * 0.20
+        + hard_score * 0.14
+        + comparative * 0.20
+    )
+    # Small samples move toward neutral rather than becoming overconfident.
+    return round(50.0 + (raw - 50.0) * sample_weight, 1)
+
+
+def build_team_handedness_edge(
+    team_rows: pd.DataFrame,
+    opposing_pitcher_id,
+    opposing_pitcher_name: str,
+    opposing_pitcher_throws: str,
+    park_abbr: str,
+) -> dict:
+    splits = fetch_pitcher_hr_hand_splits(opposing_pitcher_id)
+    park = _park_handedness_pull_scores(park_abbr)
+
+    left_pitch = _pitcher_side_vulnerability(splits.get("L", {}), splits.get("R", {}))
+    right_pitch = _pitcher_side_vulnerability(splits.get("R", {}), splits.get("L", {}))
+
+    left_quality, left_count = _hand_candidate_quality(team_rows, "L", opposing_pitcher_throws)
+    right_quality, right_count = _hand_candidate_quality(team_rows, "R", opposing_pitcher_throws)
+
+    left_score = (
+        left_pitch * 0.55
+        + safe_float(park.get("L"), 50.0) * 0.30
+        + left_quality * 0.15
+    )
+    right_score = (
+        right_pitch * 0.55
+        + safe_float(park.get("R"), 50.0) * 0.30
+        + right_quality * 0.15
+    )
+
+    # If Statcast split data is unavailable, this panel stays conservative.
+    split_found = bool(splits.get("found"))
+    if not split_found:
+        left_score = 50.0 + (left_score - 50.0) * 0.45
+        right_score = 50.0 + (right_score - 50.0) * 0.45
+
+    diff = left_score - right_score
+    strongest = max(left_score, right_score)
+
+    if strongest < 46:
+        lean = "WEAK HR ENVIRONMENT"
+        preferred = "NONE"
+        strength = "PASS"
+    elif abs(diff) < 6:
+        lean = "BALANCED"
+        preferred = "BOTH"
+        strength = "NEUTRAL"
+    elif diff >= 6:
+        preferred = "L"
+        lean = "ATTACK LHB"
+        strength = "STRONG" if diff >= 12 and left_score >= 62 else "LEAN"
+    else:
+        preferred = "R"
+        lean = "ATTACK RHB"
+        strength = "STRONG" if diff <= -12 and right_score >= 62 else "LEAN"
+
+    confidence = round(clip(50.0 + abs(diff) * 2.2 + (8 if split_found else -8), 35.0, 92.0), 0)
+
+    reasons = []
+    l_rate = (splits.get("L") or {}).get("hr_per_100_pa")
+    r_rate = (splits.get("R") or {}).get("hr_per_100_pa")
+
+    if split_found and l_rate is not None and r_rate is not None:
+        if l_rate > r_rate + 0.35:
+            reasons.append("pitcher has allowed HR damage more often to LHB")
+        elif r_rate > l_rate + 0.35:
+            reasons.append("pitcher has allowed HR damage more often to RHB")
+        else:
+            reasons.append("pitcher HR split is relatively balanced")
+    else:
+        reasons.append("pitcher handed HR split sample is limited")
+
+    park_diff = safe_float(park.get("L"), 50.0) - safe_float(park.get("R"), 50.0)
+    if park_diff >= 5:
+        reasons.append("park pull geometry favors LHB")
+    elif park_diff <= -5:
+        reasons.append("park pull geometry favors RHB")
+    else:
+        reasons.append("park pull geometry is close to neutral")
+
+    if preferred == "L" and left_count:
+        reasons.append(f"{left_count} surfaced LHB-side option{'s' if left_count != 1 else ''}")
+    elif preferred == "R" and right_count:
+        reasons.append(f"{right_count} surfaced RHB-side option{'s' if right_count != 1 else ''}")
+    elif preferred == "BOTH":
+        reasons.append("no meaningful side advantage")
+
+    return {
+        "pitcher": opposing_pitcher_name,
+        "pitcher_throws": opposing_pitcher_throws,
+        "lean": lean,
+        "preferred": preferred,
+        "strength": strength,
+        "confidence": confidence,
+        "L_score": round(left_score, 1),
+        "R_score": round(right_score, 1),
+        "L_pitch": left_pitch,
+        "R_pitch": right_pitch,
+        "L_park": park.get("L", 50.0),
+        "R_park": park.get("R", 50.0),
+        "L_quality": left_quality,
+        "R_quality": right_quality,
+        "L_count": left_count,
+        "R_count": right_count,
+        "splits": splits,
+        "park_source": park.get("source", ""),
+        "reasons": reasons[:3],
+    }
+
+
+def _hand_edge_num(value):
+    try:
+        if value is None or pd.isna(value):
+            return "—"
+    except Exception:
+        pass
+    return f"{safe_float(value, 0.0):.2f}"
+
+
+def _handedness_edge_card_html(team: str, edge: dict) -> str:
+    lean = str(edge.get("lean", "BALANCED"))
+    strength = str(edge.get("strength", "NEUTRAL"))
+    confidence = safe_int(edge.get("confidence"), 50)
+    pitcher = escape(str(edge.get("pitcher", "Starter Pending")))
+    pitcher_throws = _display_hand(edge.get("pitcher_throws", ""), role="pitcher")
+
+    splits = edge.get("splits", {}) or {}
+    lsplit = splits.get("L", {}) or {}
+    rsplit = splits.get("R", {}) or {}
+
+    l_hr = _hand_edge_num(lsplit.get("hr_per_100_pa"))
+    r_hr = _hand_edge_num(rsplit.get("hr_per_100_pa"))
+    l_pa = safe_int(lsplit.get("pa"), 0)
+    r_pa = safe_int(rsplit.get("pa"), 0)
+    l_barrel = lsplit.get("barrel_allowed_pct")
+    r_barrel = rsplit.get("barrel_allowed_pct")
+
+    if strength == "STRONG":
+        css_class = "strong"
+    elif strength == "LEAN":
+        css_class = "lean"
+    elif strength == "PASS":
+        css_class = "pass"
+    else:
+        css_class = "neutral"
+
+    reason_html = " · ".join(escape(str(x)) for x in (edge.get("reasons") or []))
+
+    return f"""
+<div class="bf-hand-edge {css_class}">
+  <div class="bf-hand-edge-head">
+    <div>
+      <small>🎯 HANDEDNESS EDGE · {escape(str(team))}</small>
+      <strong>{escape(lean)}</strong>
+      <span>vs {pitcher} {escape(pitcher_throws)} · confidence {confidence}/100</span>
+    </div>
+    <div class="bf-hand-edge-scores">
+      <div><small>LHB</small><strong>{safe_float(edge.get("L_score"),50):.0f}</strong></div>
+      <div><small>RHB</small><strong>{safe_float(edge.get("R_score"),50):.0f}</strong></div>
+    </div>
+  </div>
+
+  <div class="bf-hand-edge-grid">
+    <div>
+      <small>PITCHER VS LHB</small>
+      <strong>{l_hr} HR / 100 PA</strong>
+      <span>{l_pa} PA · Barrel {("—" if l_barrel is None else f"{safe_float(l_barrel):.1f}%")}</span>
+    </div>
+    <div>
+      <small>PITCHER VS RHB</small>
+      <strong>{r_hr} HR / 100 PA</strong>
+      <span>{r_pa} PA · Barrel {("—" if r_barrel is None else f"{safe_float(r_barrel):.1f}%")}</span>
+    </div>
+    <div>
+      <small>PARK PULL FIT</small>
+      <strong>L {safe_float(edge.get("L_park"),50):.0f} · R {safe_float(edge.get("R_park"),50):.0f}</strong>
+      <span>existing BF park factor + dimensions</span>
+    </div>
+  </div>
+
+  <div class="bf-hand-edge-reason">{reason_html}</div>
+  <div class="bf-hand-edge-note">
+    Decision aid only · never changes BF Data player rankings, locks, tracker results, or predictions.
+  </div>
+</div>
+"""
+
+
+def render_game_handedness_edge(
+    game: dict,
+    gdf: pd.DataFrame,
+    away_team: str,
+    home_team: str,
+):
+    park_abbr = resolve_game_park_abbr(game)
+
+    # Resolve real pitcher throwing hands from the same MLB person metadata
+    # already used elsewhere in BF Data.
+    ids = []
+    for pid in [game.get("away_pitcher_id"), game.get("home_pitcher_id")]:
+        try:
+            if pid is not None and pd.notna(pid):
+                ids.append(int(pid))
+        except Exception:
+            pass
+    hand_map = fetch_people_hand_map(tuple(sorted(set(ids)))) if ids else {}
+
+    away_pitcher_throws = get_true_pitcher_hand(game.get("away_pitcher_id"), hand_map)
+    home_pitcher_throws = get_true_pitcher_hand(game.get("home_pitcher_id"), hand_map)
+
+    away_rows = gdf[gdf["Team"].astype(str).eq(away_team)].copy()
+    home_rows = gdf[gdf["Team"].astype(str).eq(home_team)].copy()
+
+    away_edge = build_team_handedness_edge(
+        away_rows,
+        game.get("home_pitcher_id"),
+        game.get("home_pitcher", "Starter Pending"),
+        home_pitcher_throws,
+        park_abbr,
+    )
+    home_edge = build_team_handedness_edge(
+        home_rows,
+        game.get("away_pitcher_id"),
+        game.get("away_pitcher", "Starter Pending"),
+        away_pitcher_throws,
+        park_abbr,
+    )
+
+    st.markdown(
+        '<div class="bf-hand-edge-title">HAND TO ATTACK · GAME DECISION SUPPORT</div>',
+        unsafe_allow_html=True,
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        _render_bf_html(_handedness_edge_card_html(away_team, away_edge))
+    with c2:
+        _render_bf_html(_handedness_edge_card_html(home_team, home_edge))
+
+
+# Handedness Edge styling — intentionally compact so per-game scanning stays fast.
+st.markdown(
+    """
+    <style>
+    .bf-hand-edge-title{
+        margin:5px 0 4px;
+        color:var(--bf-accent);
+        font-size:.50rem;
+        font-weight:950;
+        letter-spacing:.10em;
+    }
+    .bf-hand-edge{
+        min-width:0;
+        border:1px solid var(--bf-border);
+        border-radius:9px;
+        background:linear-gradient(145deg,var(--bf-panel-2),var(--bf-panel));
+        padding:7px 8px;
+        margin:0 0 6px;
+    }
+    .bf-hand-edge.strong{border-left:3px solid #35d07f}
+    .bf-hand-edge.lean{border-left:3px solid var(--bf-accent)}
+    .bf-hand-edge.neutral{border-left:3px solid #ffd166}
+    .bf-hand-edge.pass{border-left:3px solid #ff6b6b}
+    .bf-hand-edge-head{
+        display:grid;
+        grid-template-columns:minmax(0,1fr) auto;
+        gap:7px;
+        align-items:start;
+    }
+    .bf-hand-edge-head>div>small{
+        display:block;
+        color:var(--bf-accent);
+        font-size:.42rem;
+        font-weight:950;
+        letter-spacing:.08em;
+    }
+    .bf-hand-edge-head>div>strong{
+        display:block;
+        color:var(--bf-text);
+        font-size:.76rem;
+        margin-top:3px;
+    }
+    .bf-hand-edge-head>div>span{
+        display:block;
+        color:var(--bf-muted);
+        font-size:.47rem;
+        margin-top:2px;
+    }
+    .bf-hand-edge-scores{
+        display:grid;
+        grid-template-columns:repeat(2,45px);
+        gap:4px;
+    }
+    .bf-hand-edge-scores>div{
+        text-align:center;
+        border:1px solid var(--bf-border);
+        border-radius:7px;
+        background:var(--bf-panel-3);
+        padding:3px;
+    }
+    .bf-hand-edge-scores small{
+        display:block;
+        color:var(--bf-muted);
+        font-size:.31rem;
+        font-weight:950;
+    }
+    .bf-hand-edge-scores strong{
+        display:block;
+        color:var(--bf-text);
+        font-size:.66rem;
+        margin-top:1px;
+    }
+    .bf-hand-edge-grid{
+        display:grid;
+        grid-template-columns:repeat(3,minmax(0,1fr));
+        gap:4px;
+        margin-top:6px;
+    }
+    .bf-hand-edge-grid>div{
+        min-width:0;
+        border:1px solid var(--bf-border);
+        border-radius:7px;
+        background:var(--bf-panel-2);
+        padding:5px 6px;
+    }
+    .bf-hand-edge-grid small{
+        display:block;
+        color:var(--bf-muted);
+        font-size:.32rem;
+        font-weight:950;
+        letter-spacing:.05em;
+    }
+    .bf-hand-edge-grid strong{
+        display:block;
+        color:var(--bf-text);
+        font-size:.57rem;
+        margin-top:2px;
+    }
+    .bf-hand-edge-grid span{
+        display:block;
+        color:var(--bf-muted);
+        font-size:.37rem;
+        margin-top:2px;
+        white-space:nowrap;
+        overflow:hidden;
+        text-overflow:ellipsis;
+    }
+    .bf-hand-edge-reason{
+        margin-top:5px;
+        color:var(--bf-text);
+        font-size:.43rem;
+        line-height:1.25;
+        white-space:nowrap;
+        overflow:hidden;
+        text-overflow:ellipsis;
+    }
+    .bf-hand-edge-note{
+        margin-top:3px;
+        color:var(--bf-muted);
+        font-size:.34rem;
+        line-height:1.2;
+    }
+    @media(max-width:640px){
+        .bf-hand-edge{padding:6px}
+        .bf-hand-edge-head>div>strong{font-size:.70rem}
+        .bf-hand-edge-head>div>span{font-size:.43rem}
+        .bf-hand-edge-grid{grid-template-columns:1fr 1fr}
+        .bf-hand-edge-grid>div:last-child{grid-column:1 / -1}
+        .bf-hand-edge-reason{font-size:.40rem;white-space:normal}
+        .bf-hand-edge-note{font-size:.31rem}
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
 base_tabs = ["JR HR Board", "Top 12", "Top HR Targets", "Pitchers to Attack", "HR Combos", "Hits + Runs + RBIs", "Batter Breakdown", "Homerun Tracker", "Lineup Watch", "Live Weather", "Tomorrow Preview", "BF Guide", "Today's Card", "Top 25 HRR"]
 schedule = sort_schedule_rows(schedule)
 game_tabs = [f"{format_game_time_et(g.get('game_time', ''))} | {g['game_key']}" for g in schedule]
@@ -13785,6 +14436,10 @@ for idx, game in enumerate(schedule, start=14):
         ].copy()
         away_team = team_abbr(game["away_team"])
         home_team = team_abbr(game["home_team"])
+
+        # Additive per-game decision support. This does not modify gdf,
+        # player order, rankings, predictions, locks, or tracker state.
+        render_game_handedness_edge(game, gdf, away_team, home_team)
 
         left, right = st.columns(2)
 
