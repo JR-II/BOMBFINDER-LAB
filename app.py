@@ -8927,6 +8927,697 @@ def auto_update_tracker_results(tracker: pd.DataFrame, schedule: list[dict]):
     save_tracker(tracker)
     return tracker
 
+
+# ------------------------------------------------------------------
+# BF DATA COMBO CONVERSION INTELLIGENCE
+# Additive decision layer over the existing HR model.
+#
+# IMPORTANT:
+# - Does NOT change HR probabilities, player ranks, lineups, locks, weather,
+#   Top 12, Core Board, HRR, or the legacy combo generator.
+# - New recommendations are built from already-qualified BF Data hitters.
+# - The goal is to reduce forced combinations and prioritize full-hit paths.
+# ------------------------------------------------------------------
+
+def _bf_norm_prob_score(probability: float) -> float:
+    """Map BF HR probability to a conservative 0-100 decision score."""
+    return clip(safe_float(probability, 0.0) * 3.25, 0.0, 100.0)
+
+
+def _bf_game_attack_score(group: pd.DataFrame) -> dict:
+    if group is None or group.empty:
+        return {
+            "score": 0.0, "candidate_count": 0, "strong_count": 0,
+            "avg_hr": 0.0, "avg_quality": 0.0, "avg_attack": 0.0,
+            "park_score": 50.0, "weather_score": 50.0,
+        }
+
+    work = sort_for_hr(group.copy()).drop_duplicates(
+        subset=["Player", "Team", "Game"], keep="first"
+    ).head(6)
+
+    probs = pd.to_numeric(work.get("HR Probability %"), errors="coerce").fillna(0.0)
+    quality = pd.to_numeric(work.get("Prediction Quality Score"), errors="coerce").fillna(0.0)
+    attack = pd.to_numeric(work.get("HR Attackability Score"), errors="coerce").fillna(0.0)
+    model = pd.to_numeric(work.get("Model Rank Score"), errors="coerce").fillna(0.0)
+    park = pd.to_numeric(work.get("Park Factor"), errors="coerce").fillna(1.0)
+    weather = pd.to_numeric(work.get("WeatherBoost"), errors="coerce").fillna(0.0)
+
+    top_probs = probs.head(4)
+    top_quality = quality.head(4)
+    top_attack = attack.head(4)
+    top_model = model.head(4)
+
+    avg_hr = float(top_probs.mean()) if not top_probs.empty else 0.0
+    avg_quality = float(top_quality.mean()) if not top_quality.empty else 0.0
+    avg_attack = float(top_attack.mean()) if not top_attack.empty else 0.0
+    avg_model = float(top_model.mean()) if not top_model.empty else 0.0
+    avg_park = float(park.head(4).mean()) if not park.empty else 1.0
+    avg_weather = float(weather.head(4).mean()) if not weather.empty else 0.0
+
+    park_score = clip(50.0 + (avg_park - 1.0) * 250.0, 25.0, 90.0)
+    weather_score = clip(50.0 + avg_weather * 5.0, 25.0, 90.0)
+
+    strong_count = int(
+        (
+            probs.ge(22.0)
+            & quality.ge(78.0)
+            & attack.ge(55.0)
+        ).sum()
+    )
+    depth_score = clip(35.0 + min(len(work), 6) * 7.0 + strong_count * 4.0, 35.0, 95.0)
+
+    score = (
+        _bf_norm_prob_score(avg_hr) * 0.27
+        + avg_quality * 0.20
+        + avg_attack * 0.22
+        + avg_model * 0.10
+        + park_score * 0.08
+        + weather_score * 0.05
+        + depth_score * 0.08
+    )
+
+    return {
+        "score": round(clip(score, 0.0, 99.0), 1),
+        "candidate_count": int(len(work)),
+        "strong_count": strong_count,
+        "avg_hr": round(avg_hr, 1),
+        "avg_quality": round(avg_quality, 1),
+        "avg_attack": round(avg_attack, 1),
+        "park_score": round(park_score, 1),
+        "weather_score": round(weather_score, 1),
+    }
+
+
+def build_best_games_to_attack(df: pd.DataFrame) -> pd.DataFrame:
+    """Rank games by the quality/depth of BF Data's already-surfaced HR looks."""
+    if df is None or df.empty or "Game" not in df.columns:
+        return pd.DataFrame()
+
+    work = df.copy()
+    work = work.drop_duplicates(subset=["Player", "Team", "Game", "game_pk"], keep="first")
+
+    rows = []
+    group_cols = ["Game"]
+    if "game_pk" in work.columns:
+        group_cols.append("game_pk")
+
+    for keys, group in work.groupby(group_cols, dropna=False):
+        if not isinstance(keys, tuple):
+            keys = (keys,)
+        game = str(keys[0])
+        game_pk = keys[1] if len(keys) > 1 else pd.NA
+        stats = _bf_game_attack_score(group)
+
+        top_names = (
+            sort_for_hr(group.copy())
+            .drop_duplicates(subset=["Player"], keep="first")
+            .head(4)["Player"].astype(str).tolist()
+        )
+
+        if stats["score"] >= 82:
+            label = "PRIMARY ATTACK"
+        elif stats["score"] >= 74:
+            label = "STRONG ATTACK"
+        elif stats["score"] >= 65:
+            label = "SECONDARY"
+        else:
+            label = "DO NOT FORCE"
+
+        rows.append({
+            "Game": game,
+            "game_pk": game_pk,
+            "Attack Score": stats["score"],
+            "Attack Label": label,
+            "Qualified Bats": stats["candidate_count"],
+            "Strong Bats": stats["strong_count"],
+            "Avg HR %": stats["avg_hr"],
+            "Avg Quality": stats["avg_quality"],
+            "Avg Pitcher Attack": stats["avg_attack"],
+            "Park Score": stats["park_score"],
+            "Weather Score": stats["weather_score"],
+            "Top Targets": " · ".join(top_names),
+        })
+
+    if not rows:
+        return pd.DataFrame()
+
+    return (
+        pd.DataFrame(rows)
+        .sort_values(
+            ["Attack Score", "Strong Bats", "Avg HR %"],
+            ascending=[False, False, False],
+        )
+        .reset_index(drop=True)
+    )
+
+
+def _bf_combo_row_score(rows: pd.DataFrame, game_attack_map: dict, route: str) -> dict:
+    """Score a possible combo for full-hit conversion without changing leg projections."""
+    probs = pd.to_numeric(rows.get("HR Probability %"), errors="coerce").fillna(0.0)
+    quality = pd.to_numeric(rows.get("Prediction Quality Score"), errors="coerce").fillna(0.0)
+    attack = pd.to_numeric(rows.get("HR Attackability Score"), errors="coerce").fillna(0.0)
+    model = pd.to_numeric(rows.get("Model Rank Score"), errors="coerce").fillna(0.0)
+    lineup = rows.get("Lineup Source", pd.Series(["PROJECTED"] * len(rows))).astype(str).str.upper()
+    lineup_spots = pd.to_numeric(rows.get("Lineup Spot"), errors="coerce")
+
+    game_scores = [
+        safe_float(game_attack_map.get(str(game), 50.0), 50.0)
+        for game in rows["Game"].astype(str).tolist()
+    ]
+
+    weakest_prob = float(probs.min()) if len(probs) else 0.0
+    weakest_quality = float(quality.min()) if len(quality) else 0.0
+    weakest_attack = float(attack.min()) if len(attack) else 0.0
+    avg_prob = float(probs.mean()) if len(probs) else 0.0
+    avg_quality = float(quality.mean()) if len(quality) else 0.0
+    avg_attack = float(attack.mean()) if len(attack) else 0.0
+    avg_model = float(model.mean()) if len(model) else 0.0
+    avg_game = sum(game_scores) / len(game_scores) if game_scores else 50.0
+    confirmed_pct = float(lineup.eq("CONFIRMED").mean() * 100.0) if len(lineup) else 0.0
+
+    premium_spot_pct = 0.0
+    if len(lineup_spots):
+        valid_spots = lineup_spots.dropna()
+        if len(valid_spots):
+            premium_spot_pct = float(valid_spots.le(5).mean() * 100.0)
+
+    # "Joint Model Index" is intentionally not called a probability.
+    joint_index = 100.0
+    for p in probs:
+        joint_index *= clip(float(p), 0.0, 100.0) / 100.0
+
+    size = len(rows)
+    score = (
+        _bf_norm_prob_score(weakest_prob) * 0.23
+        + weakest_quality * 0.18
+        + weakest_attack * 0.14
+        + avg_game * 0.17
+        + avg_quality * 0.08
+        + avg_model * 0.07
+        + confirmed_pct * 0.06
+        + premium_spot_pct * 0.04
+        + _bf_norm_prob_score(avg_prob) * 0.03
+    )
+
+    # Route-specific handling. Same-game/team are rewarded only when the
+    # underlying game is already strong; they are not blindly boosted.
+    if route == "SAME_GAME":
+        score += 4.0 if avg_game >= 78 else 1.0 if avg_game >= 70 else -5.0
+    elif route == "SAME_TEAM":
+        score += 3.0 if avg_game >= 80 else 0.0 if avg_game >= 72 else -6.0
+    elif route == "CROSS_GAME":
+        score += 2.0 if len(set(rows["Game"].astype(str))) == size else -4.0
+
+    if size >= 3:
+        score -= (size - 2) * 7.0
+
+    projected_count = int((lineup != "CONFIRMED").sum())
+    score -= projected_count * (1.5 if size == 2 else 3.0)
+
+    return {
+        "score": round(clip(score, 0.0, 99.0), 1),
+        "avg_prob": round(avg_prob, 2),
+        "weakest_prob": round(weakest_prob, 2),
+        "weakest_quality": round(weakest_quality, 2),
+        "weakest_attack": round(weakest_attack, 2),
+        "avg_game_attack": round(avg_game, 1),
+        "joint_index": round(joint_index, 3),
+        "confirmed_pct": round(confirmed_pct, 0),
+    }
+
+
+def build_combo_conversion_board(
+    df: pd.DataFrame,
+    game_attack_board: pd.DataFrame,
+) -> pd.DataFrame:
+    """Build strict additive combo recommendations from existing BF candidates."""
+    from itertools import combinations
+
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    shortlist = get_research_shortlist_pool(df)
+    top12 = get_top12_hybrid(df)
+    if (shortlist is None or shortlist.empty) and (top12 is None or top12.empty):
+        return pd.DataFrame()
+
+    frames = [x for x in [top12, shortlist] if x is not None and not x.empty]
+    pool = pd.concat(frames, ignore_index=True)
+    pool = pool.drop_duplicates(subset=["Player", "Team", "Game"], keep="first")
+    pool = sort_for_hr(pool).head(20).reset_index(drop=True)
+
+    # Do not manufacture a premium combo from weak legs.
+    probs = pd.to_numeric(pool.get("HR Probability %"), errors="coerce").fillna(0.0)
+    quality = pd.to_numeric(pool.get("Prediction Quality Score"), errors="coerce").fillna(0.0)
+    pool = pool[probs.ge(18.0) & quality.ge(74.0)].copy().reset_index(drop=True)
+    if len(pool) < 2:
+        return pd.DataFrame()
+
+    game_attack_map = {}
+    if game_attack_board is not None and not game_attack_board.empty:
+        game_attack_map = dict(
+            zip(
+                game_attack_board["Game"].astype(str),
+                pd.to_numeric(game_attack_board["Attack Score"], errors="coerce").fillna(50.0),
+            )
+        )
+
+    candidates = []
+
+    def add_candidate(rows: pd.DataFrame, route: str):
+        size = len(rows)
+        players = rows["Player"].astype(str).tolist()
+        games = rows["Game"].astype(str).tolist()
+        teams = rows["Team"].astype(str).tolist()
+        if len(set(players)) != size:
+            return
+
+        score_data = _bf_combo_row_score(rows, game_attack_map, route)
+        lineup = rows.get("Lineup Source", pd.Series(["PROJECTED"] * size)).astype(str).str.upper()
+
+        # Stricter floor than the legacy ladder because this board is intended
+        # to be the actionable conversion layer.
+        if size == 2:
+            if (
+                score_data["weakest_prob"] < 20.0
+                or score_data["weakest_quality"] < 78.0
+                or score_data["score"] < 66.0
+            ):
+                return
+        elif size == 3:
+            if (
+                score_data["weakest_prob"] < 22.0
+                or score_data["weakest_quality"] < 82.0
+                or score_data["score"] < 72.0
+            ):
+                return
+
+        labels = [
+            f"{p} ({t})"
+            for p, t in zip(players, teams)
+        ]
+
+        candidates.append({
+            "Combo Type": f"{size}-Leg",
+            "Combo Route": route,
+            "Combo Label": " + ".join(labels),
+            "Players": " | ".join(players),
+            # Repeat games per leg so the existing tracker can score same-game
+            # and same-team combinations without any tracker rewrite.
+            "Games": " | ".join(games),
+            "Avg Leg HR %": score_data["avg_prob"],
+            "Weakest Leg HR %": score_data["weakest_prob"],
+            "Weakest Leg Quality": score_data["weakest_quality"],
+            "Weakest Attack": score_data["weakest_attack"],
+            "Avg Game Attack": score_data["avg_game_attack"],
+            "Joint Model Index": score_data["joint_index"],
+            "Confirmed %": score_data["confirmed_pct"],
+            "Conversion Score": score_data["score"],
+            # Existing tracker stores Combined Score. For these additive rows,
+            # that field intentionally stores the conversion decision score.
+            "Combined Score": score_data["score"],
+            "Source Pool": f"BF_CONVERSION_{route}",
+        })
+
+    # 2-leg candidates: cross-game, same-game-opponents, and same-team.
+    for idxs in combinations(pool.index.tolist(), 2):
+        rows = pool.loc[list(idxs)].copy()
+        games = rows["Game"].astype(str).tolist()
+        teams = rows["Team"].astype(str).tolist()
+
+        if games[0] != games[1]:
+            add_candidate(rows, "CROSS_GAME")
+        elif teams[0] != teams[1]:
+            add_candidate(rows, "SAME_GAME")
+        else:
+            add_candidate(rows, "SAME_TEAM")
+
+    # Only one aggressive 3-leg lane, and require diversification.
+    for idxs in combinations(pool.index.tolist(), 3):
+        rows = pool.loc[list(idxs)].copy()
+        games = rows["Game"].astype(str).tolist()
+        teams = rows["Team"].astype(str).tolist()
+        if len(set(games)) < 2 or len(set(teams)) < 2:
+            continue
+        add_candidate(rows, "AGGRESSIVE_3")
+
+    if not candidates:
+        return pd.DataFrame()
+
+    board = pd.DataFrame(candidates)
+    board = board.sort_values(
+        ["Conversion Score", "Weakest Leg HR %", "Weakest Leg Quality"],
+        ascending=[False, False, False],
+    )
+
+    # Keep the recommendations deliberately small.
+    limits = {
+        "CROSS_GAME": 3,
+        "SAME_GAME": 3,
+        "SAME_TEAM": 3,
+        "AGGRESSIVE_3": 2,
+    }
+    selected = []
+    usage = {}
+
+    for route, limit in limits.items():
+        route_df = board[board["Combo Route"].eq(route)].copy()
+        route_count = 0
+        for _, row in route_df.iterrows():
+            players = [x.strip() for x in str(row["Players"]).split("|") if x.strip()]
+            # Avoid turning one player into the entire recommendation page.
+            if any(usage.get(p, 0) >= 3 for p in players):
+                continue
+            selected.append(row.to_dict())
+            for p in players:
+                usage[p] = usage.get(p, 0) + 1
+            route_count += 1
+            if route_count >= limit:
+                break
+
+    if not selected:
+        return pd.DataFrame()
+
+    result = pd.DataFrame(selected)
+    result["Combo #"] = (
+        result.groupby("Combo Route").cumcount() + 1
+    )
+    return result.reset_index(drop=True)
+
+
+def combo_autopsy_summary(combo_tracker_df: pd.DataFrame) -> pd.DataFrame:
+    """Historical full/partial/miss summary. Display-only; no live model learning."""
+    if combo_tracker_df is None or combo_tracker_df.empty:
+        return pd.DataFrame()
+
+    work = combo_tracker_df.copy()
+    states = work["result_state"].fillna("").astype(str).str.upper()
+    finalized = work[
+        states.isin(["FULL_HIT", "PARTIAL_HIT", "MISS", "FINAL_MISS"])
+    ].copy()
+    if finalized.empty:
+        return pd.DataFrame()
+
+    finalized["_state"] = finalized["result_state"].fillna("").astype(str).str.upper()
+    finalized["_legs_hit"] = pd.to_numeric(finalized.get("legs_hit"), errors="coerce").fillna(0)
+    finalized["_total_legs"] = pd.to_numeric(finalized.get("total_legs"), errors="coerce").fillna(
+        pd.to_numeric(finalized.get("combo_size"), errors="coerce").fillna(0)
+    )
+
+    rows = []
+    for size, group in finalized.groupby("combo_size"):
+        total = len(group)
+        full = int(group["_state"].eq("FULL_HIT").sum())
+        partial = int((group["_legs_hit"].gt(0) & ~group["_state"].eq("FULL_HIT")).sum())
+        one_away = int(
+            (
+                group["_legs_hit"].eq(group["_total_legs"] - 1)
+                & ~group["_state"].eq("FULL_HIT")
+            ).sum()
+        )
+        rows.append({
+            "Combo Size": f"{safe_int(size, 0)}-Leg",
+            "Finalized": total,
+            "Full Hits": full,
+            "Partials": partial,
+            "One Leg Away": one_away,
+            "Full-Hit Rate": round(full / total * 100.0, 1) if total else 0.0,
+            "Partial Rate": round(partial / total * 100.0, 1) if total else 0.0,
+        })
+
+    return pd.DataFrame(rows).sort_values("Combo Size").reset_index(drop=True)
+
+
+def _bf_conversion_pick_card(kicker: str, row, note: str, css_class: str = "") -> str:
+    if row is None:
+        return (
+            f'<div class="bf-convert-pick {css_class}">'
+            f'<small>{escape(kicker)}</small>'
+            '<strong>NO QUALIFIED COMBO</strong>'
+            f'<span>{escape(note)}</span>'
+            '</div>'
+        )
+    return (
+        f'<div class="bf-convert-pick {css_class}">'
+        f'<small>{escape(kicker)}</small>'
+        f'<strong>{escape(str(row.get("Combo Label", "—")))}</strong>'
+        f'<span>{escape(note)}</span>'
+        f'<div class="bf-convert-score">CONVERSION {safe_float(row.get("Conversion Score"),0):.0f}/100'
+        f' · FLOOR {safe_float(row.get("Weakest Leg HR %"),0):.0f}%'
+        f' · GAME {safe_float(row.get("Avg Game Attack"),0):.0f}</div>'
+        '</div>'
+    )
+
+
+def render_combo_conversion_center(
+    game_attack_board: pd.DataFrame,
+    conversion_board: pd.DataFrame,
+    combo_tracker_df: pd.DataFrame,
+):
+    st.markdown("### BF Conversion Center")
+    st.caption(
+        "Additive decision layer: first identify the best games, then build only "
+        "qualified combinations from BF Data's existing hitters. It never changes "
+        "the underlying player predictions."
+    )
+
+    # --------------------------------------------------------------
+    # Best Games to Attack
+    # --------------------------------------------------------------
+    st.markdown("#### Best Games to Attack")
+    if game_attack_board is None or game_attack_board.empty:
+        st.caption("No attack-game read is available yet.")
+    else:
+        games = game_attack_board.head(5).copy()
+        cards = []
+        for rank, (_, row) in enumerate(games.iterrows(), start=1):
+            attack = safe_float(row.get("Attack Score"), 0)
+            css_class = (
+                "primary" if attack >= 82
+                else "strong" if attack >= 74
+                else "secondary"
+            )
+            cards.append(
+                f'<div class="bf-attack-game {css_class}">'
+                f'<div class="bf-attack-rank">#{rank}</div>'
+                '<div class="bf-attack-main">'
+                f'<small>{escape(str(row.get("Attack Label","")))}</small>'
+                f'<strong>{escape(str(row.get("Game","—")))}</strong>'
+                f'<span>{safe_int(row.get("Qualified Bats"),0)} surfaced · '
+                f'{safe_int(row.get("Strong Bats"),0)} strong · '
+                f'avg HR {safe_float(row.get("Avg HR %"),0):.0f}%</span>'
+                f'<p>{escape(str(row.get("Top Targets","")))}</p>'
+                '</div>'
+                f'<div class="bf-attack-score"><small>ATTACK</small><strong>{attack:.0f}</strong></div>'
+                '</div>'
+            )
+        st.markdown('<div class="bf-attack-grid">' + "".join(cards) + '</div>', unsafe_allow_html=True)
+
+    # --------------------------------------------------------------
+    # 2-leg-first actionable plan
+    # --------------------------------------------------------------
+    st.markdown("#### Primary Combo Plan")
+    if conversion_board is None or conversion_board.empty:
+        st.info(
+            "No premium conversion combo clears today's stricter floor. "
+            "BF Data is intentionally not forcing a recommendation."
+        )
+    else:
+        board = conversion_board.copy()
+
+        def best_route(route):
+            frame = board[board["Combo Route"].eq(route)].copy()
+            if frame.empty:
+                return None
+            return frame.sort_values(
+                ["Conversion Score", "Weakest Leg HR %"],
+                ascending=[False, False],
+            ).iloc[0]
+
+        cross = best_route("CROSS_GAME")
+        same_game = best_route("SAME_GAME")
+        same_team = best_route("SAME_TEAM")
+        aggressive = best_route("AGGRESSIVE_3")
+
+        pick_html = '<div class="bf-convert-grid">'
+        pick_html += _bf_conversion_pick_card(
+            "PRIMARY 2-LEG",
+            cross,
+            "Best diversified two-game path. This is the default combo lane.",
+            "primary",
+        )
+        pick_html += _bf_conversion_pick_card(
+            "BEST SAME-GAME DUO",
+            same_game,
+            "Opposing-team hitters sharing one high-rated HR environment.",
+            "game",
+        )
+        pick_html += _bf_conversion_pick_card(
+            "BEST SAME-TEAM POWER PAIR",
+            same_team,
+            "Two qualified bats attacking the same pitcher/environment.",
+            "team",
+        )
+        pick_html += "</div>"
+        st.markdown(pick_html, unsafe_allow_html=True)
+
+        if aggressive is not None:
+            st.markdown(
+                _bf_conversion_pick_card(
+                    "AGGRESSIVE 3-LEG · SMALL EXPOSURE",
+                    aggressive,
+                    "Only shown because all three legs clear the stricter conversion floor.",
+                    "aggressive",
+                ),
+                unsafe_allow_html=True,
+            )
+
+        st.caption(
+            "2-leg first: same-game and same-team pairs are recommendations only when "
+            "the underlying game and both legs clear the stricter floor. 3-leg is aggressive. "
+            "Legacy 4- and 5-leg ladders remain below as longshots."
+        )
+
+        with st.expander("All conversion-qualified combos", expanded=False):
+            show_cols = [
+                "Combo Route", "Combo #", "Combo Label", "Conversion Score",
+                "Weakest Leg HR %", "Weakest Leg Quality", "Weakest Attack",
+                "Avg Game Attack", "Joint Model Index", "Confirmed %", "Games",
+            ]
+            display_existing_columns(
+                board.sort_values(
+                    ["Conversion Score", "Weakest Leg HR %"],
+                    ascending=[False, False],
+                ),
+                [c for c in show_cols if c in board.columns],
+            )
+
+    # --------------------------------------------------------------
+    # Combo Autopsy
+    # --------------------------------------------------------------
+    st.markdown("#### Combo Autopsy")
+    autopsy = combo_autopsy_summary(combo_tracker_df)
+    if autopsy.empty:
+        st.caption("No finalized combo sample is available yet.")
+    else:
+        finalized = int(pd.to_numeric(autopsy["Finalized"], errors="coerce").fillna(0).sum())
+        full = int(pd.to_numeric(autopsy["Full Hits"], errors="coerce").fillna(0).sum())
+        partial = int(pd.to_numeric(autopsy["Partials"], errors="coerce").fillna(0).sum())
+        one_away = int(pd.to_numeric(autopsy["One Leg Away"], errors="coerce").fillna(0).sum())
+
+        a1, a2, a3, a4 = st.columns(4)
+        a1.metric("Finalized", finalized)
+        a2.metric("Full Hits", full)
+        a3.metric("Partials", partial)
+        a4.metric("One Leg Away", one_away)
+
+        display_existing_columns(
+            autopsy,
+            [
+                "Combo Size", "Finalized", "Full Hits", "Partials",
+                "One Leg Away", "Full-Hit Rate", "Partial Rate",
+            ],
+        )
+
+        if finalized < 50:
+            st.caption(
+                f"Learning guardrail: only {finalized} finalized combos are available. "
+                "BF Data records this history now, but it does not rewrite the prediction "
+                "or combo model from such a small sample."
+            )
+        else:
+            st.caption(
+                "The sample is now large enough for structured review, but this page still "
+                "does not automatically rewrite the model. Historical changes should be audited first."
+            )
+
+
+# Compact premium presentation for the new conversion layer.
+st.markdown(
+    """
+    <style>
+    .bf-attack-grid{
+        display:grid;grid-template-columns:repeat(5,minmax(0,1fr));
+        gap:6px;margin:5px 0 10px;
+    }
+    .bf-attack-game{
+        min-width:0;display:grid;grid-template-columns:26px minmax(0,1fr) 48px;
+        gap:6px;align-items:center;border:1px solid var(--bf-border);
+        border-radius:9px;background:var(--bf-panel);padding:7px;
+    }
+    .bf-attack-game.primary{border-color:rgba(53,208,127,.50)}
+    .bf-attack-game.strong{border-color:var(--bf-accent-line)}
+    .bf-attack-game.secondary{border-color:rgba(255,209,102,.35)}
+    .bf-attack-rank{font-size:.76rem;font-weight:950;color:var(--bf-accent);text-align:center}
+    .bf-attack-main{min-width:0}
+    .bf-attack-main small{
+        display:block;color:var(--bf-accent);font-size:.37rem;font-weight:950;letter-spacing:.07em;
+    }
+    .bf-attack-main strong{
+        display:block;color:var(--bf-text);font-size:.63rem;margin-top:2px;
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    }
+    .bf-attack-main span{
+        display:block;color:var(--bf-muted);font-size:.42rem;margin-top:2px;
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    }
+    .bf-attack-main p{
+        margin:3px 0 0 !important;color:var(--bf-muted) !important;font-size:.38rem !important;
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    }
+    .bf-attack-score{
+        text-align:center;border:1px solid var(--bf-border);border-radius:7px;
+        background:var(--bf-panel-2);padding:4px;
+    }
+    .bf-attack-score small{display:block;color:var(--bf-muted);font-size:.30rem;font-weight:950}
+    .bf-attack-score strong{display:block;color:var(--bf-text);font-size:.72rem;margin-top:1px}
+
+    .bf-convert-grid{
+        display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
+        gap:7px;margin:5px 0 7px;
+    }
+    .bf-convert-pick{
+        min-width:0;border:1px solid var(--bf-border);border-radius:10px;
+        background:linear-gradient(145deg,var(--bf-panel-2),var(--bf-panel));
+        padding:8px 9px;
+    }
+    .bf-convert-pick.primary{border-color:rgba(53,208,127,.52)}
+    .bf-convert-pick.game{border-color:var(--bf-accent-line)}
+    .bf-convert-pick.team{border-color:rgba(255,209,102,.42)}
+    .bf-convert-pick.aggressive{border-color:rgba(187,123,255,.42);margin:5px 0 8px}
+    .bf-convert-pick small{
+        display:block;color:var(--bf-accent);font-size:.42rem;font-weight:950;letter-spacing:.09em;
+    }
+    .bf-convert-pick strong{
+        display:block;color:var(--bf-text);font-size:.70rem;line-height:1.28;margin-top:4px;
+        white-space:normal;overflow-wrap:anywhere;
+    }
+    .bf-convert-pick span{
+        display:block;color:var(--bf-muted);font-size:.48rem;line-height:1.3;margin-top:4px;
+    }
+    .bf-convert-score{
+        margin-top:6px;padding-top:5px;border-top:1px solid var(--bf-border);
+        color:var(--bf-accent);font-size:.45rem;font-weight:950;
+    }
+
+    @media(max-width:1200px){
+        .bf-attack-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+    }
+    @media(max-width:900px){
+        .bf-attack-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+    }
+    @media(max-width:700px){
+        .bf-attack-grid,.bf-convert-grid{grid-template-columns:1fr}
+        .bf-attack-main strong{font-size:.66rem}
+        .bf-convert-pick strong{font-size:.68rem}
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
 def _combo_signature(players: list[str]) -> str:
     return " | ".join(sorted(players))
 
@@ -11215,13 +11906,19 @@ def render_today_card(
             combos["Weakest Leg HR %"] * .55
             + combos["Weakest Leg Quality"] * .45
         )
+        if "Conversion Score" in combos.columns:
+            combos["_decision_score"] = pd.to_numeric(
+                combos["Conversion Score"], errors="coerce"
+            ).fillna(combos["Combined Score"])
+        else:
+            combos["_decision_score"] = combos["Combined Score"]
         two = combos[combos["_legs"].eq(2)].copy()
         practical_pool = two if not two.empty else combos
         practical = practical_pool.sort_values(
-            ["_floor", "Combined Score"], ascending=[False, False]
+            ["_decision_score", "_floor"], ascending=[False, False]
         ).iloc[0]
         upside = combos.sort_values(
-            ["Combined Score", "Weakest Leg Quality"], ascending=[False, False]
+            ["_decision_score", "Weakest Leg Quality"], ascending=[False, False]
         ).iloc[0]
         longshot_pool = combos[combos["_legs"].ge(3)].copy()
         longshot = (
@@ -11232,9 +11929,9 @@ def render_today_card(
         )
 
         combo_cards = [
-            ("MOST PRACTICAL", practical, "Best existing two-leg/floor combination."),
-            ("HIGHEST UPSIDE", upside, "Highest existing combined score."),
-            ("SMALL-STAKES LONGSHOT", longshot, "Higher variance; keep exposure small."),
+            ("PRIMARY 2-LEG", practical, "Best conversion-focused two-leg combination."),
+            ("HIGHEST CONVERSION", upside, "Highest BF combo conversion score."),
+            ("AGGRESSIVE LONGSHOT", longshot, "Higher variance; keep exposure small."),
         ]
         # Keep this HTML continuous and left-aligned. Indented multiline HTML
         # can be interpreted by Streamlit Markdown as a code block after the
@@ -13252,8 +13949,29 @@ hrr_tracker = sync_hrr_tracker_with_board(top25_hrr_board)
 
 tracker = sync_tracker_with_board(tracked_df)
 tracker = reconcile_today_tracker_with_visible_board(tracker, tracked_df, schedule)
+
+# Existing combo engine remains unchanged.
 combo_board = build_combo_board(locked_df_raw)
-combo_tracker = sync_combo_tracker_with_board(combo_board)
+
+# Additive conversion intelligence: game targeting + stricter 2-leg-first combos.
+best_games_to_attack = build_best_games_to_attack(locked_df_raw)
+combo_conversion_board = build_combo_conversion_board(
+    locked_df_raw,
+    best_games_to_attack,
+)
+
+# Track both the legacy combo board and the new conversion recommendations.
+# Exact duplicate player sets naturally share the same existing combo_id.
+_combo_tracking_frames = [
+    frame for frame in [combo_board, combo_conversion_board]
+    if frame is not None and not frame.empty
+]
+combo_tracking_board = (
+    pd.concat(_combo_tracking_frames, ignore_index=True)
+    .drop_duplicates(subset=["Players"], keep="last")
+    if _combo_tracking_frames else pd.DataFrame()
+)
+combo_tracker = sync_combo_tracker_with_board(combo_tracking_board)
 
 # Always update results every run. Refresh/update should not be required for HR counts to move off zero.
 tracker = auto_update_tracker_results(tracker, schedule)
@@ -14177,14 +14895,28 @@ with tabs[3]:
 with tabs[4]:
     st.subheader("HR Combo Command Center")
     st.caption(
-        "Display-only decision layer over the existing combo engine. "
-        "Combo generation, player selection, scores, tracking, and results are not recalculated here."
+        "The original combo engine remains intact below. The new BF Conversion Center "
+        "adds game targeting, same-game/same-team pairs, stricter 2-leg-first decisions, "
+        "and historical autopsy without changing player predictions."
     )
 
-    active_combo_count = len(combo_board) if combo_board is not None else 0
+    render_combo_conversion_center(
+        best_games_to_attack,
+        combo_conversion_board,
+        combo_tracker,
+    )
+
+    st.divider()
+    st.markdown("### Existing Legacy Combo Ladder")
+    st.caption(
+        "Preserved exactly as before for comparison and longshot ladders. "
+        "Primary actionable recommendations now live in the BF Conversion Center above."
+    )
+
+    active_combo_count = len(combo_tracking_board) if combo_tracking_board is not None else 0
     active_combo_ids = set()
-    if combo_board is not None and not combo_board.empty:
-        for _, combo_row in combo_board.iterrows():
+    if combo_tracking_board is not None and not combo_tracking_board.empty:
+        for _, combo_row in combo_tracking_board.iterrows():
             active_legs = [
                 value.strip()
                 for value in str(combo_row.get("Players", "")).split("|")
@@ -14449,7 +15181,12 @@ with tabs[11]:
     render_bf_knowledge_center()
 
 with tabs[12]:
-    render_today_card(locked_df, combo_board)
+    _today_combo_board = (
+        combo_conversion_board
+        if combo_conversion_board is not None and not combo_conversion_board.empty
+        else combo_board
+    )
+    render_today_card(locked_df, _today_combo_board)
 
 with tabs[13]:
     render_top25_hrr_tab(locked_df, top25_hrr_board)
