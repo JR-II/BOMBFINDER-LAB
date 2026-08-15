@@ -2969,6 +2969,27 @@ def safe_float(value, default=0.0):
         return default
 
 
+def safe_finite_float(value, default=0.0):
+    """Return a real finite float, otherwise the supplied fallback.
+
+    API payloads can legitimately contain None, pandas NA/NaN, or non-numeric
+    placeholders even when a key exists.  This keeps transient upstream data
+    gaps from crashing the daily board while preserving the app's established
+    neutral defaults.
+    """
+    try:
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("non-finite numeric value")
+        return number
+    except Exception:
+        try:
+            fallback = float(default)
+            return fallback if math.isfinite(fallback) else 0.0
+        except Exception:
+            return 0.0
+
+
 def ip_to_float(ip_value) -> float:
     if ip_value is None:
         return 0.0
@@ -6916,6 +6937,18 @@ def build_hitter_metrics(
     bullpen_arms_prev: int = 0,
     deep_bbe: bool = False,
 ):
+    # Normalize all external/environmental numeric inputs before any scoring or
+    # display rounding. Weather providers may return a present key with None,
+    # NaN, or a text placeholder; dict.get(..., default) does not protect that
+    # case. These are the same neutral fallbacks BF Data already used.
+    park_factor = safe_finite_float(park_factor, 1.0)
+    weather_boost = safe_finite_float(weather_boost, 0.0)
+    temp_f = safe_finite_float(temp_f, 72.0)
+    wind_mph = safe_finite_float(wind_mph, 7.0)
+    bullpen_fatigue_score = safe_finite_float(bullpen_fatigue_score, 0.0)
+    bullpen_ip_prev = safe_finite_float(bullpen_ip_prev, 0.0)
+    bullpen_arms_prev = safe_int(bullpen_arms_prev, 0)
+
     if opp_pitcher_id is None or (isinstance(opp_pitcher_id, float) and pd.isna(opp_pitcher_id)):
         opp_pitcher_id = lookup_mlb_person_id_by_name(opp_pitcher)
 
@@ -8082,10 +8115,10 @@ def build_daily_dataset(deep_bbe: bool = False):
                 pitcher_stats_map=pitcher_stats_map,
                 savant_batter_map=savant_batter_map,
                 hand_map=hand_map,
-                weather_boost=weather.get("WeatherBoost", 0.0),
+                weather_boost=safe_finite_float(weather.get("WeatherBoost"), 0.0),
                 weather_note=weather.get("WeatherNote", "neutral weather"),
-                temp_f=weather.get("TempF", 72.0),
-                wind_mph=weather.get("WindMPH", 7.0),
+                temp_f=safe_finite_float(weather.get("TempF"), 72.0),
+                wind_mph=safe_finite_float(weather.get("WindMPH"), 7.0),
                 bullpen_fatigue_score=home_bullpen.get("BullpenFatigueScore", 0.0),
                 bullpen_fatigue_note=home_bullpen.get("BullpenFatigueNote", "Neutral bullpen rest"),
                 bullpen_ip_prev=home_bullpen.get("BullpenIPPrev", 0.0),
@@ -8117,10 +8150,10 @@ def build_daily_dataset(deep_bbe: bool = False):
                 pitcher_stats_map=pitcher_stats_map,
                 savant_batter_map=savant_batter_map,
                 hand_map=hand_map,
-                weather_boost=weather.get("WeatherBoost", 0.0),
+                weather_boost=safe_finite_float(weather.get("WeatherBoost"), 0.0),
                 weather_note=weather.get("WeatherNote", "neutral weather"),
-                temp_f=weather.get("TempF", 72.0),
-                wind_mph=weather.get("WindMPH", 7.0),
+                temp_f=safe_finite_float(weather.get("TempF"), 72.0),
+                wind_mph=safe_finite_float(weather.get("WindMPH"), 7.0),
                 bullpen_fatigue_score=away_bullpen.get("BullpenFatigueScore", 0.0),
                 bullpen_fatigue_note=away_bullpen.get("BullpenFatigueNote", "Neutral bullpen rest"),
                 bullpen_ip_prev=away_bullpen.get("BullpenIPPrev", 0.0),
