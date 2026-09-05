@@ -8036,7 +8036,7 @@ def _prefetch_cached_calls(call_specs: list[tuple], max_workers: int = 12):
                 pass
 
 
-@st.cache_data(ttl=120, max_entries=4)
+@st.cache_data(ttl=600, max_entries=4, show_spinner=False)
 def build_daily_dataset(deep_bbe: bool = False):
     schedule = sort_schedule_rows(get_today_schedule())
     rows = []
@@ -8977,6 +8977,141 @@ def _bf_norm_prob_score(probability: float) -> float:
     return clip(safe_float(probability, 0.0) * 3.25, 0.0, 100.0)
 
 
+def build_hr_calibration_profile(tracker_df: pd.DataFrame) -> dict:
+    """Learn conservative hit-rate priors from finalized saved HR predictions.
+
+    This is additive calibration only: it never rewrites HR Probability %, Model
+    Rank Score, board membership, locks, or historical predictions.
+    """
+    profile = {"overall": None, "quality": {}, "prob": {}, "samples": 0}
+    if tracker_df is None or tracker_df.empty:
+        return profile
+    work = tracker_df.copy()
+    states = work.get("result_state", pd.Series("", index=work.index)).astype(str).str.upper()
+    final = work[states.str.startswith("FINAL")].copy()
+    if final.empty:
+        return profile
+    result = pd.to_numeric(final.get("result"), errors="coerce")
+    final = final[result.notna()].copy()
+    if final.empty:
+        return profile
+    final["_result"] = pd.to_numeric(final.get("result"), errors="coerce").fillna(0).clip(0, 1)
+    profile["samples"] = int(len(final))
+    profile["overall"] = float(final["_result"].mean() * 100.0)
+
+    if "quality_grade" in final.columns:
+        for key, grp in final.groupby(final["quality_grade"].astype(str).str.upper()):
+            if key and key not in {"NAN", "NONE", "<NA>"} and len(grp) >= 8:
+                # Bayesian shrinkage prevents a tiny bucket from overpowering the model.
+                wins = float(grp["_result"].sum())
+                profile["quality"][key] = round((wins + 2.0) / (len(grp) + 10.0) * 100.0, 1)
+
+    probs = pd.to_numeric(final.get("hr_probability"), errors="coerce")
+    if probs.notna().any():
+        bins = pd.cut(probs, [-1, 14, 18, 22, 27, 101], labels=["<15", "15-18", "19-22", "23-27", "28+"])
+        for key, grp in final.groupby(bins, observed=True):
+            if len(grp) >= 8:
+                wins = float(grp["_result"].sum())
+                profile["prob"][str(key)] = round((wins + 2.0) / (len(grp) + 10.0) * 100.0, 1)
+    return profile
+
+
+def _bf_prob_bucket(value: float) -> str:
+    p = safe_float(value, 0.0)
+    if p < 15: return "<15"
+    if p <= 18: return "15-18"
+    if p <= 22: return "19-22"
+    if p <= 27: return "23-27"
+    return "28+"
+
+
+def add_prediction_convergence(df: pd.DataFrame, tracker_df: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Add a precision-first decision layer without changing underlying predictions."""
+    if df is None or df.empty:
+        return df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    work = df.copy()
+    hist = build_hr_calibration_profile(tracker_df if tracker_df is not None else pd.DataFrame())
+    rows = []
+    for _, row in work.iterrows():
+        hrp = safe_float(row.get("HR Probability %"), 0.0)
+        quality = safe_float(row.get("Prediction Quality Score"), 0.0)
+        attack = safe_float(row.get("HR Attackability Score"), 0.0)
+        barrel = safe_float(row.get("Barrel%"), 0.0)
+        hh = safe_float(row.get("HardHit%"), 0.0)
+        gb = safe_float(row.get("GroundBall%"), 100.0)
+        ev = safe_float(row.get("EV"), 0.0)
+        edge = safe_float(row.get("Matchup Advantage Score"), 0.0)
+        lineup = safe_int(row.get("Lineup Spot"), 99)
+        confirmed = str(row.get("Lineup Source", "")).upper() == "CONFIRMED"
+        trend = str(row.get("Recent Trend", "")).upper()
+
+        positives = sum([
+            hrp >= 20.0, quality >= 78.0, attack >= 58.0, barrel >= 11.0,
+            hh >= 43.0, gb < 45.0, ev >= 90.0, edge >= 62.0,
+            lineup <= 5, confirmed, trend in {"HOT", "LIVE"},
+        ])
+        contradictions = sum([
+            gb >= 50.0, barrel < 8.5, hh < 38.0, attack < 45.0,
+            lineup > 6, trend == "COLD", hrp < 14.0,
+        ])
+        raw = clip(42.0 + positives * 5.4 - contradictions * 7.0, 0.0, 99.0)
+
+        grade = str(row.get("Prediction Quality Grade", "")).upper()
+        hist_rates = []
+        if grade in hist.get("quality", {}): hist_rates.append(hist["quality"][grade])
+        bucket = _bf_prob_bucket(hrp)
+        if bucket in hist.get("prob", {}): hist_rates.append(hist["prob"][bucket])
+        hist_rate = sum(hist_rates) / len(hist_rates) if hist_rates else None
+        # History can refine confidence, never dominate it.
+        calibrated = raw if hist_rate is None else clip(raw * 0.90 + hist_rate * 0.10, 0.0, 99.0)
+
+        if calibrated >= 86 and contradictions <= 1:
+            gate = "ELITE CONVERGENCE"
+        elif calibrated >= 77 and contradictions <= 2:
+            gate = "PRIMARY"
+        elif calibrated >= 68:
+            gate = "QUALIFIED"
+        elif calibrated >= 58:
+            gate = "LEAN"
+        else:
+            gate = "FADE"
+        rows.append((round(calibrated, 1), gate, int(positives), int(contradictions), hist_rate))
+
+    work["Convergence Score"] = [x[0] for x in rows]
+    work["Convergence Gate"] = [x[1] for x in rows]
+    work["Signal Agreement"] = [x[2] for x in rows]
+    work["Signal Contradictions"] = [x[3] for x in rows]
+    work["Historical Calibration %"] = [round(x[4], 1) if x[4] is not None else pd.NA for x in rows]
+    return work
+
+
+def build_combo_leg_reliability(combo_tracker_df: pd.DataFrame) -> dict:
+    """Return conservative per-player combo-leg conversion rates from finalized history."""
+    if combo_tracker_df is None or combo_tracker_df.empty:
+        return {}
+    work = combo_tracker_df.copy()
+    states = work.get("result_state", pd.Series("", index=work.index)).astype(str).str.upper()
+    work = work[states.isin(["FULL_HIT", "PARTIAL_HIT", "MISS", "FINAL_MISS"])].copy()
+    if work.empty or "players" not in work.columns:
+        return {}
+    counts = {}
+    # Existing tracker stores combo-level legs_hit, not leg-by-leg outcomes. Use
+    # full hits as strong evidence and partials as weak evidence, heavily shrunk.
+    for _, row in work.iterrows():
+        players = [p.strip() for p in str(row.get("players", "")).split("|") if p.strip()]
+        total = max(1, safe_int(row.get("total_legs"), len(players)))
+        legs_hit = max(0, safe_int(row.get("legs_hit"), 0))
+        credit = 1.0 if str(row.get("result_state", "")).upper() == "FULL_HIT" else min(0.65, legs_hit / total)
+        for p in players:
+            rec = counts.setdefault(normalize_name(p), [0.0, 0])
+            rec[0] += credit; rec[1] += 1
+    out = {}
+    for p, (credit, n) in counts.items():
+        if n >= 5:
+            out[p] = round((credit + 2.0) / (n + 6.0) * 100.0, 1)
+    return out
+
+
 def _bf_game_attack_score(group: pd.DataFrame) -> dict:
     if group is None or group.empty:
         return {
@@ -9128,6 +9263,10 @@ def _bf_combo_row_score(rows: pd.DataFrame, game_attack_map: dict, route: str) -
     avg_model = float(model.mean()) if len(model) else 0.0
     avg_game = sum(game_scores) / len(game_scores) if game_scores else 50.0
     confirmed_pct = float(lineup.eq("CONFIRMED").mean() * 100.0) if len(lineup) else 0.0
+    convergence = pd.to_numeric(rows.get("Convergence Score", pd.Series([65.0] * len(rows), index=rows.index)), errors="coerce").fillna(65.0)
+    reliability = pd.to_numeric(rows.get("Combo Leg Reliability %", pd.Series([50.0] * len(rows), index=rows.index)), errors="coerce").fillna(50.0)
+    weakest_convergence = float(convergence.min()) if len(convergence) else 65.0
+    weakest_reliability = float(reliability.min()) if len(reliability) else 50.0
 
     premium_spot_pct = 0.0
     if len(lineup_spots):
@@ -9151,6 +9290,8 @@ def _bf_combo_row_score(rows: pd.DataFrame, game_attack_map: dict, route: str) -
         + confirmed_pct * 0.06
         + premium_spot_pct * 0.04
         + _bf_norm_prob_score(avg_prob) * 0.03
+        + weakest_convergence * 0.05
+        + weakest_reliability * 0.03
     )
 
     # Route-specific handling. Same-game/team are rewarded only when the
@@ -9177,12 +9318,16 @@ def _bf_combo_row_score(rows: pd.DataFrame, game_attack_map: dict, route: str) -
         "avg_game_attack": round(avg_game, 1),
         "joint_index": round(joint_index, 3),
         "confirmed_pct": round(confirmed_pct, 0),
+        "weakest_convergence": round(weakest_convergence, 1),
+        "weakest_reliability": round(weakest_reliability, 1),
     }
 
 
 def build_combo_conversion_board(
     df: pd.DataFrame,
     game_attack_board: pd.DataFrame,
+    tracker_df: pd.DataFrame | None = None,
+    combo_tracker_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Build strict additive combo recommendations from existing BF candidates."""
     from itertools import combinations
@@ -9198,6 +9343,11 @@ def build_combo_conversion_board(
     frames = [x for x in [top12, shortlist] if x is not None and not x.empty]
     pool = pd.concat(frames, ignore_index=True)
     pool = pool.drop_duplicates(subset=["Player", "Team", "Game"], keep="first")
+    pool = add_prediction_convergence(pool, tracker_df)
+    leg_history = build_combo_leg_reliability(combo_tracker_df if combo_tracker_df is not None else pd.DataFrame())
+    pool["Combo Leg Reliability %"] = pool["Player"].astype(str).map(lambda x: leg_history.get(normalize_name(x), 50.0))
+    # Convergence is a selection layer only. Existing rankings stay untouched.
+    pool = pool[~pool["Convergence Gate"].eq("FADE")].copy()
     pool = sort_for_hr(pool).head(20).reset_index(drop=True)
 
     # Do not manufacture a premium combo from weak legs.
@@ -9236,6 +9386,7 @@ def build_combo_conversion_board(
                 score_data["weakest_prob"] < 20.0
                 or score_data["weakest_quality"] < 78.0
                 or score_data["score"] < 66.0
+                or score_data["weakest_convergence"] < 64.0
             ):
                 return
         elif size == 3:
@@ -9243,6 +9394,7 @@ def build_combo_conversion_board(
                 score_data["weakest_prob"] < 22.0
                 or score_data["weakest_quality"] < 82.0
                 or score_data["score"] < 72.0
+                or score_data["weakest_convergence"] < 70.0
             ):
                 return
 
@@ -9266,6 +9418,8 @@ def build_combo_conversion_board(
             "Avg Game Attack": score_data["avg_game_attack"],
             "Joint Model Index": score_data["joint_index"],
             "Confirmed %": score_data["confirmed_pct"],
+            "Weakest Convergence": score_data["weakest_convergence"],
+            "Weakest Leg Reliability": score_data["weakest_reliability"],
             "Conversion Score": score_data["score"],
             # Existing tracker stores Combined Score. For these additive rows,
             # that field intentionally stores the conversion decision score.
@@ -9588,23 +9742,23 @@ st.markdown(
         display:block;color:var(--bf-accent);font-size:.37rem;font-weight:950;letter-spacing:.07em;
     }
     .bf-attack-main strong{
-        display:block;color:var(--bf-text);font-size:.63rem;margin-top:2px;
-        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+        display:block;color:var(--bf-text);font-size:.78rem;margin-top:2px;line-height:1.2;
+        white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;
     }
     .bf-attack-main span{
-        display:block;color:var(--bf-muted);font-size:.42rem;margin-top:2px;
-        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+        display:block;color:var(--bf-muted);font-size:.60rem;margin-top:3px;line-height:1.25;
+        white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;
     }
     .bf-attack-main p{
-        margin:3px 0 0 !important;color:var(--bf-muted) !important;font-size:.38rem !important;
-        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+        margin:4px 0 0 !important;color:var(--bf-muted) !important;font-size:.56rem !important;line-height:1.25 !important;
+        white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;
     }
     .bf-attack-score{
         text-align:center;border:1px solid var(--bf-border);border-radius:7px;
         background:var(--bf-panel-2);padding:4px;
     }
-    .bf-attack-score small{display:block;color:var(--bf-muted);font-size:.30rem;font-weight:950}
-    .bf-attack-score strong{display:block;color:var(--bf-text);font-size:.72rem;margin-top:1px}
+    .bf-attack-score small{display:block;color:var(--bf-muted);font-size:.48rem;font-weight:950}
+    .bf-attack-score strong{display:block;color:var(--bf-text);font-size:.90rem;margin-top:2px}
 
     .bf-convert-grid{
         display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
@@ -9620,18 +9774,18 @@ st.markdown(
     .bf-convert-pick.team{border-color:rgba(255,209,102,.42)}
     .bf-convert-pick.aggressive{border-color:rgba(187,123,255,.42);margin:5px 0 8px}
     .bf-convert-pick small{
-        display:block;color:var(--bf-accent);font-size:.42rem;font-weight:950;letter-spacing:.09em;
+        display:block;color:var(--bf-accent);font-size:.58rem;font-weight:950;letter-spacing:.08em;
     }
     .bf-convert-pick strong{
-        display:block;color:var(--bf-text);font-size:.70rem;line-height:1.28;margin-top:4px;
+        display:block;color:var(--bf-text);font-size:.84rem;line-height:1.32;margin-top:4px;
         white-space:normal;overflow-wrap:anywhere;
     }
     .bf-convert-pick span{
-        display:block;color:var(--bf-muted);font-size:.48rem;line-height:1.3;margin-top:4px;
+        display:block;color:var(--bf-muted);font-size:.62rem;line-height:1.35;margin-top:4px;
     }
     .bf-convert-score{
         margin-top:6px;padding-top:5px;border-top:1px solid var(--bf-border);
-        color:var(--bf-accent);font-size:.45rem;font-weight:950;
+        color:var(--bf-accent);font-size:.58rem;font-weight:950;
     }
 
     @media(max-width:1200px){
@@ -13023,7 +13177,7 @@ def render_full_tracker_panel(tracker: pd.DataFrame, key_prefix: str = "tracker"
                 [
                     "Tracker Source", "Player", "Team", "Game", "Pitcher",
                     "Lineup Spot", "HR Probability %", "HR Tier",
-                    "Prediction Quality Grade", "Moonshot Score", "2 HR Score", "Nuke Score", "Stack Score",
+                    "Prediction Quality Grade", "Convergence Gate", "Convergence Score", "Moonshot Score", "2 HR Score", "Nuke Score", "Stack Score",
                     "Actual HR Today", "Matchup Advantage",
                     "HR Attackability Score", "EV", "Barrel%", "HardHit%",
                     "AIR%", "Ranking Reasons", "Why",
@@ -13689,6 +13843,24 @@ def build_top25_hrr_board(locked_board: pd.DataFrame) -> pd.DataFrame:
     else:
         context_pct = pd.Series([75.0] * len(work), index=work.index)
 
+    # Historical HRR calibration is deliberately small and shrunk; it can
+    # separate close candidates but cannot rewrite the core 45/30/15/10 model.
+    _hrr_history = load_hrr_tracker()
+    _hrr_bucket_rates = {}
+    if _hrr_history is not None and not _hrr_history.empty:
+        _hs = _hrr_history.copy()
+        _states = _hs.get("result_state", pd.Series("", index=_hs.index)).astype(str).str.upper()
+        _hs = _hs[_states.str.startswith("FINAL_")].copy()
+        _scores = pd.to_numeric(_hs.get("hrr_score"), errors="coerce")
+        _results = pd.to_numeric(_hs.get("result"), errors="coerce")
+        _hs = _hs[_scores.notna() & _results.notna()].copy()
+        if not _hs.empty:
+            _hs["_bucket"] = (pd.to_numeric(_hs["hrr_score"], errors="coerce") // 5 * 5).clip(0, 95).astype(int)
+            _hs["_result"] = pd.to_numeric(_hs["result"], errors="coerce").fillna(0).clip(0, 1)
+            for _bucket, _grp in _hs.groupby("_bucket"):
+                if len(_grp) >= 8:
+                    _hrr_bucket_rates[int(_bucket)] = (float(_grp["_result"].sum()) + 3.0) / (len(_grp) + 8.0) * 100.0
+
     rows = []
     for idx, row in work.iterrows():
         pid = safe_int(row.get("Player ID"), 0)
@@ -13719,6 +13891,10 @@ def build_top25_hrr_board(locked_board: pd.DataFrame) -> pd.DataFrame:
             0,
             99,
         )
+        _hrr_hist_rate = _hrr_bucket_rates.get(int(final_score // 5 * 5))
+        if _hrr_hist_rate is not None:
+            # Maximum practical movement is small; this is calibration, not a rebuild.
+            final_score = clip(final_score * 0.96 + _hrr_hist_rate * 0.04, 0, 99)
 
         # Supporting card metrics are transparent display summaries.
         hits_per_game = (
@@ -13986,11 +14162,18 @@ tracker = reconcile_today_tracker_with_visible_board(tracker, tracked_df, schedu
 # Existing combo engine remains unchanged.
 combo_board = build_combo_board(locked_df_raw)
 
+# Read existing history once so additive calibration can improve prioritization
+# without changing any underlying BF prediction.
+_tracker_history_for_calibration = load_tracker()
+_combo_history_for_calibration = load_combo_tracker()
+
 # Additive conversion intelligence: game targeting + stricter 2-leg-first combos.
 best_games_to_attack = build_best_games_to_attack(locked_df_raw)
 combo_conversion_board = build_combo_conversion_board(
     locked_df_raw,
     best_games_to_attack,
+    tracker_df=_tracker_history_for_calibration,
+    combo_tracker_df=_combo_history_for_calibration,
 )
 
 # Track both the legacy combo board and the new conversion recommendations.
@@ -14006,10 +14189,23 @@ combo_tracking_board = (
 )
 combo_tracker = sync_combo_tracker_with_board(combo_tracking_board)
 
-# Always update results every run. Refresh/update should not be required for HR counts to move off zero.
-tracker = auto_update_tracker_results(tracker, schedule)
-combo_tracker = auto_update_combo_tracker_results(combo_tracker, schedule)
-hrr_tracker = auto_update_hrr_tracker_results(hrr_tracker, schedule)
+# RAPID-FIRE LIVE RESULTS: do not make boxscore calls on every harmless UI rerun.
+# Pregame opens render immediately from the cached board. During live/final games,
+# results refresh at the existing 120-second heartbeat or on Update Board.
+_has_active_results = any(str(g.get("game_state", "Preview")) != "Preview" for g in schedule)
+_should_refresh_results = bool(
+    st.session_state.get("manual_refresh_trigger", False)
+    or st.session_state.get("force_tracker_refresh", False)
+    or (
+        _has_active_results
+        and time.time() - safe_float(st.session_state.get("bf_last_result_refresh", 0.0), 0.0) >= AUTO_REFRESH_SECONDS
+    )
+)
+if _should_refresh_results:
+    tracker = auto_update_tracker_results(tracker, schedule)
+    combo_tracker = auto_update_combo_tracker_results(combo_tracker, schedule)
+    hrr_tracker = auto_update_hrr_tracker_results(hrr_tracker, schedule)
+    st.session_state.bf_last_result_refresh = time.time()
 st.session_state.manual_refresh_trigger = False
 
 # Display-only live result column.
@@ -14877,7 +15073,7 @@ with tabs[0]:
         st.dataframe(
             hr_df[[
                 "Rank", "Player", "Team", "Game", "Pitcher", "Lineup Spot",
-                "Lineup Source", "Actual HR Today", "HR Probability %", "HR Tier", "Prediction Quality Grade", "Moonshot Score", "2 HR Score", "Nuke Score", "Stack Score", "GroundBall%",
+                "Lineup Source", "Actual HR Today", "HR Probability %", "HR Tier", "Prediction Quality Grade", "Convergence Gate", "Convergence Score", "Moonshot Score", "2 HR Score", "Nuke Score", "Stack Score", "GroundBall%",
                 "GB Rule", "GB Note", "Matchup Advantage", "HR Attackability Score", "WeatherNote", "BullpenFatigueNote", "HardHit%", "FlyBall%", "AIR%", "xSLG", "xwOBA", "Barrel%", "Ranking Reasons", "Why"
             ]],
             use_container_width=True,
@@ -14894,7 +15090,7 @@ with tabs[1]:
         st.dataframe(
             top12[[
                 "Rank", "Player", "Team", "Game", "Pitcher", "Lineup Spot",
-                "Lineup Source", "Actual HR Today", "HR Probability %", "HR Tier", "Prediction Quality Grade", "Moonshot Score", "2 HR Score", "Nuke Score", "Stack Score", "GroundBall%",
+                "Lineup Source", "Actual HR Today", "HR Probability %", "HR Tier", "Prediction Quality Grade", "Convergence Gate", "Convergence Score", "Moonshot Score", "2 HR Score", "Nuke Score", "Stack Score", "GroundBall%",
                 "GB Rule", "GB Note", "Matchup Advantage", "HR Attackability Score", "WeatherNote", "BullpenFatigueNote", "HardHit%", "FlyBall%", "AIR%", "xSLG", "xwOBA", "Barrel%", "Ranking Reasons", "Why"
             ]],
             use_container_width=True,
