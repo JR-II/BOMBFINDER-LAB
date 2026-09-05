@@ -2676,43 +2676,6 @@ LEGACY_SNAPSHOT_DIR = "tracker_snapshots"
 LEGACY_TRACKER_FILE = "hr_tracker.csv"
 LEARNING_PROFILE_FILE = os.path.join(BF_DATA_DIR, "bf_learning_profile.json")
 TRACKER_AUDIT_VERSION = "2.1"
-
-# ------------------------------------------------------------------
-# SUPABASE TRACKER PERSISTENCE
-# Additive storage layer only. It does NOT feed prediction/ranking logic.
-# Local CSV/snapshots remain as a fallback/recovery cache.
-# ------------------------------------------------------------------
-SUPABASE_TRACKER_TABLE = os.environ.get("BF_SUPABASE_TRACKER_TABLE", "bf_hr_tracker")
-
-def _bf_secret(name: str, default: str = "") -> str:
-    try:
-        value = st.secrets.get(name, default)
-        if value is not None and str(value).strip():
-            return str(value).strip()
-    except Exception:
-        pass
-    return str(os.environ.get(name, default) or "").strip()
-
-def _supabase_tracker_config() -> tuple[str, str]:
-    url = _bf_secret("SUPABASE_URL").rstrip("/")
-    key = _bf_secret("SUPABASE_SERVICE_ROLE_KEY") or _bf_secret("SUPABASE_KEY")
-    return url, key
-
-def supabase_tracker_enabled() -> bool:
-    url, key = _supabase_tracker_config()
-    return bool(url and key)
-
-def _supabase_tracker_headers(prefer: str | None = None) -> dict:
-    _, key = _supabase_tracker_config()
-    headers = {
-        "apikey": key,
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-    }
-    if prefer:
-        headers["Prefer"] = prefer
-    return headers
-
 BACKUP_DIR = os.path.join(BF_DATA_DIR, "history_backups")
 os.makedirs(BACKUP_DIR, exist_ok=True)
 _BACKED_UP_PATHS = set()
@@ -3178,103 +3141,6 @@ def _tracker_columns() -> list[str]:
     ]
 
 
-def _supabase_json_value(value):
-    try:
-        if pd.isna(value):
-            return None
-    except Exception:
-        pass
-    if hasattr(value, "item"):
-        try:
-            value = value.item()
-        except Exception:
-            pass
-    if isinstance(value, (datetime, pd.Timestamp)):
-        return value.isoformat()
-    if isinstance(value, (bool, int, float, str)) or value is None:
-        return value
-    return str(value)
-
-
-def _tracker_record_key(row: dict) -> str:
-    raw = "|".join([
-        str(row.get("date") or ""),
-        normalize_name(row.get("player") or ""),
-        str(row.get("team") or ""),
-        str(row.get("game") or ""),
-        str(safe_int(row.get("game_pk"), -1)),
-        str(row.get("tracker_source") or "CORE_BOARD").strip().upper(),
-    ])
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-def _tracker_frame_to_supabase_records(df: pd.DataFrame) -> list[dict]:
-    if df is None or df.empty:
-        return []
-    work = _coerce_tracker_frame(df)
-    records = []
-    for _, series in work.iterrows():
-        record = {col: _supabase_json_value(series.get(col)) for col in _tracker_columns()}
-        record["record_key"] = _tracker_record_key(record)
-        records.append(record)
-    return records
-
-
-def _load_tracker_from_supabase() -> pd.DataFrame:
-    """Read permanent tracker history from Supabase. Failure is non-fatal."""
-    if not supabase_tracker_enabled():
-        return pd.DataFrame(columns=_tracker_columns())
-
-    url, _ = _supabase_tracker_config()
-    endpoint = f"{url}/rest/v1/{SUPABASE_TRACKER_TABLE}"
-    params = {"select": ",".join(_tracker_columns()), "order": "date.asc"}
-
-    rows, offset, page_size = [], 0, 1000
-    try:
-        while True:
-            headers = _supabase_tracker_headers()
-            headers["Range"] = f"{offset}-{offset + page_size - 1}"
-            resp = requests.get(endpoint, headers=headers, params=params, timeout=20)
-            resp.raise_for_status()
-            batch = resp.json() or []
-            if not isinstance(batch, list):
-                break
-            rows.extend(batch)
-            if len(batch) < page_size:
-                break
-            offset += page_size
-    except Exception:
-        return pd.DataFrame(columns=_tracker_columns())
-
-    return _coerce_tracker_frame(pd.DataFrame(rows)) if rows else pd.DataFrame(columns=_tracker_columns())
-
-
-def _save_tracker_to_supabase(df: pd.DataFrame) -> bool:
-    """Upsert tracker history to Supabase by stable record_key."""
-    if not supabase_tracker_enabled():
-        return False
-
-    records = _tracker_frame_to_supabase_records(df)
-    if not records:
-        return True
-
-    url, _ = _supabase_tracker_config()
-    endpoint = f"{url}/rest/v1/{SUPABASE_TRACKER_TABLE}"
-    params = {"on_conflict": "record_key"}
-    headers = _supabase_tracker_headers("resolution=merge-duplicates,return=minimal")
-
-    try:
-        for start in range(0, len(records), 250):
-            resp = requests.post(
-                endpoint, headers=headers, params=params,
-                json=records[start:start + 250], timeout=25
-            )
-            resp.raise_for_status()
-        return True
-    except Exception:
-        return False
-
-
 def _coerce_tracker_frame(df: pd.DataFrame) -> pd.DataFrame:
     columns = _tracker_columns()
     if df is None or df.empty:
@@ -3610,12 +3476,8 @@ def _backfill_saved_tracker_results(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_tracker() -> pd.DataFrame:
-    """Load permanent Supabase history plus local recovery sources."""
+    """Load primary tracker plus daily snapshots and recover saved board rows."""
     frames = []
-
-    remote = _load_tracker_from_supabase()
-    if not remote.empty:
-        frames.append(remote)
 
     primary = _read_tracker_csv(TRACKER_FILE)
     if not primary.empty:
@@ -3641,11 +3503,8 @@ def load_tracker() -> pd.DataFrame:
     tracker = _basic_tracker_dedupe(pd.concat(frames, ignore_index=True))
     tracker = _backfill_saved_tracker_results(tracker)
 
-    # Consolidate recovered history into the local recovery cache.
+    # Consolidate recovered history into the primary file.
     _atomic_write_csv(tracker, TRACKER_FILE)
-
-    # Migrate/backfill any local-only history into durable storage.
-    _save_tracker_to_supabase(tracker)
     return tracker
 
 def dedupe_tracker_rows(df: pd.DataFrame) -> pd.DataFrame:
@@ -3712,9 +3571,6 @@ def save_tracker(df: pd.DataFrame):
         enforce_bf_local_storage_ceiling()
     except Exception:
         pass
-
-    # Durable cross-reboot/deploy persistence; local files remain fallback.
-    _save_tracker_to_supabase(tracker)
 
 
 # ------------------------------------------------------------------
